@@ -29,7 +29,6 @@ docker compose up -d --build
 # 访问
 # 前端: http://localhost:8080
 # 后端 API: http://localhost:8000
-# 默认管理员: superuserx / 123456
 ```
 
 ## 文档地图
