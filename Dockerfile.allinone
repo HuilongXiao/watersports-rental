@@ -1,0 +1,40 @@
+# Single-container image: FastAPI serves both the API and the built frontend.
+# Build context must be the repository root:
+#   docker build -f Dockerfile.allinone -t rental-app:latest .
+
+# --- Stage 1: build the frontend ---
+FROM node:22-alpine AS frontend-build
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+WORKDIR /build
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm config set registry ${NPM_REGISTRY} && npm install
+COPY frontend/ ./
+RUN npm run build
+
+# --- Stage 2: backend + static files in one image ---
+FROM python:3.12-slim
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+WORKDIR /app
+
+COPY backend/requirements.txt ./
+RUN pip install --no-cache-dir --default-timeout=120 -r requirements.txt
+
+COPY backend/app ./app
+COPY --from=frontend-build /build/dist ./static
+
+ENV TZ=Asia/Shanghai \
+    STATIC_DIR=/app/static \
+    DATABASE_URL=sqlite:////app/data/rental_app.db \
+    BACKUP_DIR=/app/backups \
+    AUTO_EXPORT_DIR=/app/exports
+
+# 部署时需由用户填写的变量（名称预填、值留空；TZ 已在上方预置无需再填）。
+# 留空时后端回退到安全默认值（见 backend/app/core/config.py）。
+ENV SESSION_SECRET= \
+    SESSION_COOKIE_SECURE= \
+    INITIAL_ADMIN_USERNAME= \
+    INITIAL_ADMIN_PASSWORD= \
+    SEED_DEFAULT_DATA=
+
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

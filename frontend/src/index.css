@@ -1,0 +1,68 @@
+/* Global responsive resets: eliminate the page-level horizontal scrollbar on
+   mobile so content always fills the viewport width. Table-level scrolling is
+   unaffected (tables scroll inside their own container when needed). */
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  max-width: 100%;
+  /* Allow scrolling/panning but block pinch-zoom and double-tap zoom. */
+  touch-action: pan-x pan-y;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  overflow-x: hidden;
+  overscroll-behavior: none;
+}
+
+/* Mobile app shell: lock to the dynamic viewport height so the bottom TabBar
+   can never move during iOS rubber-band scrolling. 100vh is the fallback for
+   browsers without dvh support. */
+.mobile-app-shell {
+  height: 100vh;
+  height: 100dvh;
+}
+
+/* iOS auto-zooms on focus when form controls use a font size below 16px.
+   Force 16px on touch devices so focusing an input never zooms the page. */
+@media (pointer: coarse) {
+  input,
+  select,
+  textarea,
+  .ant-input,
+  .ant-input-number-input,
+  .ant-select-selection-item,
+  .ant-picker {
+    font-size: 16px !important;
+  }
+}
+
+/* Prevent long content (order numbers, notes) from forcing the page wider. */
+.ant-table {
+  word-break: break-all;
+}
+
+/* Order items table: compact spacing so the item select gets the width. */
+.order-items-table .ant-table-cell {
+  padding-left: 4px;
+  padding-right: 4px;
+}
+
+/* 新建/编辑订单表单：收紧各字段区域之间的垂直间距 */
+.compact-order-form .ant-form-item {
+  margin-bottom: 12px;
+}
+
+/* On narrow screens let table cells wrap instead of overflowing the page. */
+@media (max-width: 768px) {
+  .ant-table-cell {
+    white-space: normal !important;
+    word-break: break-word;
+  }
+  .ant-descriptions-item-content {
+    word-break: break-word;
+  }
+}

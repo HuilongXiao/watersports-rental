@@ -1,0 +1,31 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      args:
+        # China mirrors by default; override with PIP_INDEX_URL env var if needed.
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: sqlite:////app/data/rental_app.db
+      BACKUP_DIR: /app/backups
+      AUTO_EXPORT_DIR: /app/exports
+      TZ: Asia/Shanghai
+    volumes:
+      - ./data:/app/data
+      - ./backups:/app/backups
+      - ./exports:/app/exports
+    expose:
+      - "8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # China mirrors by default; override with NPM_REGISTRY env var if needed.
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"

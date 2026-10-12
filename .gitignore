@@ -1,0 +1,36 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+node_modules/
+dist/
+
+.env
+.env.*
+!.env.example
+
+*.db
+*.db-shm
+*.db-wal
+
+/data/*
+!/data/.gitkeep
+/backups/*
+!/backups/.gitkeep
+
+/exports/*
+!/exports/.gitkeep
+
+.DS_Store
+
+# IDE / Editor
+.trae/
+.vscode/
+.idea/
+
+# Docker image tar exports
+*.tar
+
+# Temp files
+cookies.txt

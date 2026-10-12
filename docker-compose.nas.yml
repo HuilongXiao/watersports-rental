@@ -1,0 +1,30 @@
+# NAS deployment — single container (frontend + backend combined).
+# Image: rental-app:latest  (import rental-app-nas-images.tar first)
+# Access: http://<NAS-IP>:6688   Login: admin / admin123
+#
+# 完全不使用此文件也可以：在 Container Manager 界面手动创建容器，
+# 端口 6688->8000，挂载 data/backups/exports，环境变量见下方。
+
+services:
+  app:
+    image: rental-app:latest
+    container_name: rental-app
+    restart: unless-stopped
+    ports:
+      - "6688:8000"
+    environment:
+      DATABASE_URL: sqlite:////app/data/rental_app.db
+      BACKUP_DIR: /app/backups
+      AUTO_EXPORT_DIR: /app/exports
+      TZ: Asia/Shanghai
+      INITIAL_ADMIN_USERNAME: superuserx
+      INITIAL_ADMIN_PASSWORD: "123456"
+      SEED_DEFAULT_DATA: "false"
+      SESSION_SECRET: nas-rental-app-session-secret-change-me
+      SESSION_COOKIE_SECURE: "false"
+      # 忘记密码时：取消下一行注释设为新密码，启动一次后再注释掉
+      # SUPERUSER_PASSWORD_RESET: newpassword
+    volumes:
+      - ./data:/app/data
+      - ./backups:/app/backups
+      - ./exports:/app/exports
