@@ -33,6 +33,8 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     user = db.get(User, user_id)
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="会话无效")
+    # 供请求耗时中间件记录 user_id
+    request.state.user_id = user.id
     return user
 
 

@@ -11,6 +11,8 @@ services:
       BACKUP_DIR: /app/backups
       AUTO_EXPORT_DIR: /app/exports
       TZ: Asia/Shanghai
+      # 请求耗时日志写入已挂载的 ./data/logs/，便于宿主机查看
+      LOG_DIR: /app/data/logs
     volumes:
       - ./data:/app/data
       - ./backups:/app/backups
