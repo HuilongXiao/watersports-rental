@@ -13,6 +13,8 @@ services:
       TZ: Asia/Shanghai
       # 请求耗时日志写入已挂载的 ./data/logs/，便于宿主机查看
       LOG_DIR: /app/data/logs
+      # 支付方式功能开关（默认关闭）：本地测试可在 .env 设 ENABLE_PAYMENT_METHOD=1
+      ENABLE_PAYMENT_METHOD: ${ENABLE_PAYMENT_METHOD:-0}
     volumes:
       - ./data:/app/data
       - ./backups:/app/backups

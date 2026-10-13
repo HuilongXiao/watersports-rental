@@ -30,6 +30,11 @@ services:
       LOG_DIR: /app/data/logs
       # 前端集中上报接口 /api/_trace 开关：默认关闭，避免日志过量；需要时改 1
       TRACE_REPORT_ENABLED: "0"
+      # ===== 支付方式功能 =====
+      # 开关：0=关闭（默认），1=开启。开启后：/api/payment-methods 管理 API 可用、
+      # 订单可持久化支付方式、前端显示"付款"设置区与订单支付方式摘要。
+      # 关闭时管理 API 返回 404、订单编辑忽略该字段（历史值保留），快速回退无需回滚 schema。
+      ENABLE_PAYMENT_METHOD: "0"
       # 忘记密码时：取消下一行注释设为新密码，启动一次后再注释掉
       # SUPERUSER_PASSWORD_RESET: newpassword
     volumes:

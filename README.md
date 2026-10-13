@@ -80,6 +80,24 @@ docker compose up -d --build
 - NAS 单容器：日志在挂载目录 `./data/logs/backend-requests.log`，SSH 到 NAS 直接查看；
   或 `docker logs rental-app`（stdout，若配置了 propagate）。
 
+## 支付方式（Payment Methods）
+
+功能受环境变量 `ENABLE_PAYMENT_METHOD` 控制（默认 `0` 关闭）。开启（`1`）后：
+
+- 后端：`/api/payment-methods` CRUD 可用（新增/修改/停用需要 `manage_payment_methods`
+  权限或 superuser/admin）；订单可读写 `payment_method_code`（校验必须为启用中的 code）。
+- 数据：`payment_methods` 表由启动时自动创建并幂等写入初始方式 `CASH/现金`（默认）；
+  `orders.payment_method_code` 为增量列（nullable），关闭功能后历史值保留、编辑忽略。
+- 前端："目录与设置 → 系统设置"出现"付款"区域（横线隔开）；订单表单/详情显示支付方式
+  摘要行，编辑使用懒加载弹窗；用户管理权限勾选新增"添加支付方式"。
+- 关闭时管理 API 返回 404、`/api/settings` 的 `payment_methods` 为空数组，前端不显示
+  任何支付方式 UI。
+
+NAS 开关：修改 `docker-compose.nas.yml` 中 `ENABLE_PAYMENT_METHOD` 后重建容器。
+回滚：设 `ENABLE_PAYMENT_METHOD=0` 即时回退行为；schema 回滚可手动
+`DROP TABLE payment_methods; ALTER TABLE orders DROP COLUMN payment_method_code`
+（SQLite 3.35+）或还原备份 DB（备份：停容器后复制 `data/rental_app.db` 到 `backups/`）。
+
 ## 特别说明
 
 `docs/DISTILL_RAW.md` 和 `docs/DECISIONS_LOG.md` 中的 **Open Questions** 为未决事项，请勿自行处理，需等待项目负责人确认。
