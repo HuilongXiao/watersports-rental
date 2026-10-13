@@ -244,6 +244,102 @@ def create_order(db: Session, user: User, payload, active_group_id: str | None =
     return order
 
 
+def check_duplicate_order(
+    db: Session, payload, active_group_id: str | None = None
+) -> list[dict]:
+    """检查是否存在与当前创建订单雷同的订单。
+
+    雷同条件：同一客户 + 同一业务日期（Asia/Shanghai）+ 船型类型有交集。
+    仅检查 active 和 in_progress 状态的订单。不写库，仅预警。
+    """
+    # 解析客户：有 customer_id 直接用；极速模式按昵称查找已有客户
+    if payload.customer_id:
+        customer_id = payload.customer_id
+    else:
+        group_id = active_group_id
+        nickname = (payload.customer_wechat_nickname or "").strip() or None
+        name = (payload.customer_name or "").strip() or None
+        if nickname:
+            existing = db.scalar(
+                select(Customer)
+                .where(Customer.group_id == group_id, Customer.wechat_nickname == nickname)
+                .order_by(Customer.updated_at.desc())
+            )
+            customer_id = existing.id if existing else None
+        elif name:
+            existing = db.scalar(
+                select(Customer)
+                .where(Customer.group_id == group_id, Customer.name == name)
+                .order_by(Customer.updated_at.desc())
+            )
+            customer_id = existing.id if existing else None
+        else:
+            customer_id = None
+
+    if customer_id is None:
+        return []
+
+    # 提取新订单中的船型 spec_id 集合
+    new_spec_ids = {
+        item.equipment_spec_id for item in payload.items if item.equipment_spec_id
+    }
+    if not new_spec_ids:
+        return []
+
+    # 按业务日期和客户筛选现有订单
+    start_at = _normalize_utc(payload.start_at)
+    target_date = business_date(start_at)
+
+    stmt = (
+        select(Order)
+        .where(Order.customer_id == customer_id)
+        .where(Order.status.in_(["active", "in_progress"]))
+    )
+    if active_group_id is not None:
+        stmt = stmt.where(Order.group_id == active_group_id)
+
+    duplicates: list[dict] = []
+    for order in db.scalars(stmt).all():
+        if business_date(order.start_at) != target_date:
+            continue
+        # 检查该订单的船型是否与新订单有交集
+        order_items = list(
+            db.scalars(
+                select(OrderItem).where(OrderItem.order_id == order.id)
+            ).all()
+        )
+        order_spec_ids = {
+            oi.equipment_spec_id for oi in order_items if oi.equipment_spec_id
+        }
+        if order_spec_ids & new_spec_ids:
+            # 获取船型名称
+            spec_names = {}
+            if order_spec_ids:
+                specs = db.scalars(
+                    select(EquipmentSpec).where(EquipmentSpec.id.in_(order_spec_ids))
+                ).all()
+                spec_names = {s.id: s.name for s in specs}
+
+            duplicates.append({
+                "order_id": order.id,
+                "order_number": order.order_number,
+                "start_at": _normalize_utc(order.start_at).isoformat(),
+                "status": order.status,
+                "customer_name": order.customer_name,
+                "customer_wechat_nickname": order.customer_wechat_nickname,
+                "adult_count": order.adult_count,
+                "child_count": order.child_count,
+                "items": [
+                    {
+                        "name": spec_names.get(oi.equipment_spec_id, ""),
+                        "quantity": oi.quantity,
+                    }
+                    for oi in order_items if oi.equipment_spec_id
+                ],
+            })
+    return duplicates
+
+
 def get_order(
     db: Session, order_id: str, user: User | None = None, active_group_id: str | None = None
 ) -> Order:
