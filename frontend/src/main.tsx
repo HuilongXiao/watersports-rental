@@ -6,6 +6,7 @@ import 'dayjs/locale/zh-cn'
 import dayjs from 'dayjs'
 import App from './App'
 import { AuthProvider } from './auth'
+import { SettingsProvider } from './contexts/SettingsContext'
 import './index.css'
 
 dayjs.locale('zh-cn')
@@ -22,7 +23,10 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     >
       <AntApp>
         <AuthProvider>
-          <App />
+          {/* 全局设置 Context：须在 AuthProvider 内（依赖登录态与 activeGroup） */}
+          <SettingsProvider>
+            <App />
+          </SettingsProvider>
         </AuthProvider>
       </AntApp>
     </ConfigProvider>

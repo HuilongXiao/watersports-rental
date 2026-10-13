@@ -22,9 +22,10 @@ import { DeleteOutlined, MinusOutlined, PlusOutlined, SnippetsOutlined } from '@
 import dayjs from 'dayjs'
 import { api } from '../api'
 import { useAuth } from '../auth'
+import { useSettings } from '../contexts/SettingsContext'
 import { fenToYuan } from '../utils'
 import { GenderCheckboxes } from './Customers'
-import type { AppSettings, Catalog, Customer, InventoryConflict, Order } from '../types'
+import type { Catalog, Customer, InventoryConflict, Order } from '../types'
 
 interface DraftItem {
   key: string
@@ -49,7 +50,9 @@ export default function OrderForm() {
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const [existingOrder, setExistingOrder] = useState<Order | null>(null)
   const [submitting, setSubmitting] = useState(false)
-  const [fastMode, setFastMode] = useState(false)
+  // 极速客户模式改从全局 SettingsContext 读取（缓存优先，避免挂载后等网络造成闪烁）
+  const { settings } = useSettings()
+  const fastMode = settings.fast_customer_mode
   const [customerWechatNickname, setCustomerWechatNickname] = useState('')
 
   // Customer selection (search → confirm)
@@ -116,7 +119,6 @@ export default function OrderForm() {
 
   useEffect(() => {
     api.get<Catalog>('/api/catalog').then(setCatalog).catch(() => message.error('目录加载失败'))
-    api.get<AppSettings>('/api/settings').then((s) => setFastMode(s.fast_customer_mode)).catch(() => {})
     if (id) {
       api
         .get<Order>(`/api/orders/${id}`)
@@ -322,6 +324,77 @@ export default function OrderForm() {
   const submit = async (force = false) => {
     const body = buildOrderBody()
     if (!body) return
+
+    // 重复订单检查：仅新建订单（编辑不检查），同一客户+同一业务日期+船型有交集时预警
+    if (!force && !editing) {
+      try {
+        const dupResult = await api.post<{ duplicates: Array<{
+          order_id: string
+          order_number: string
+          start_at: string
+          status: string
+          customer_name: string | null
+          customer_wechat_nickname: string | null
+          adult_count: number
+          child_count: number
+          items: Array<{ name: string; quantity: number }>
+        }> }>('/api/orders/duplicate-check', body)
+        if (dupResult.duplicates.length > 0) {
+          const confirmed = await new Promise<boolean>(resolve => {
+            Modal.confirm({
+              title: '类似订单提醒',
+              content: (
+                <div>
+                  <p style={{ marginBottom: 12 }}>
+                    当前创建的订单与以下订单类似，是否确认创建？
+                  </p>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    {dupResult.duplicates.map(d => (
+                      <div
+                        key={d.order_id}
+                        style={{
+                          border: '1px solid #ffe58f',
+                          background: '#fffbe6',
+                          borderRadius: 6,
+                          padding: '8px 12px',
+                        }}
+                      >
+                        <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                          {d.order_number}
+                        </div>
+                        <div style={{ fontSize: 13, color: '#666' }}>
+                          客户：{d.customer_wechat_nickname || d.customer_name || '—'}
+                        </div>
+                        <div style={{ fontSize: 13, color: '#666' }}>
+                          日期：{dayjs(d.start_at).format('YYYY-MM-DD')}
+                        </div>
+                        <div style={{ fontSize: 13, color: '#666' }}>
+                          开始时间：{dayjs(d.start_at).format('HH:mm')}
+                        </div>
+                        <div style={{ fontSize: 13, color: '#666' }}>
+                          人数：成人 {d.adult_count}，儿童 {d.child_count}
+                        </div>
+                        <div style={{ fontSize: 13, color: '#666' }}>
+                          船型：{d.items.map(i => `${i.name}×${i.quantity}`).join('、')}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ),
+              okText: '确认创建',
+              cancelText: '返回',
+              onOk: () => resolve(true),
+              onCancel: () => resolve(false),
+            })
+          })
+          if (!confirmed) return
+        }
+      } catch (error) {
+        // 重复检查失败不阻断保存流程
+        console.warn('重复订单检查失败', error)
+      }
+    }
 
     // 首次保存先做库存冲突预检；进行中订单仅调整销售项目，无需预检；
     // 用户在预警弹窗中再次确认后跳过预检直接保存
