@@ -41,6 +41,8 @@ class OrderInput(BaseModel):
     note: str | None = None
     is_walk_in: bool = False
     note_popup: bool = False
+    # 支付方式 code；仅在 ENABLE_PAYMENT_METHOD=1 时持久化，否则忽略
+    payment_method_code: str | None = None
     items: list[OrderItemInput] = Field(min_length=1)
 
 

@@ -42,6 +42,7 @@ def user_dict(user: User) -> dict:
         "perm_export_report": user.perm_export_report,
         "perm_manage_users": user.perm_manage_users,
         "perm_view_revenue": user.perm_view_revenue,
+        "perm_manage_payment_methods": user.perm_manage_payment_methods,
         "created_at": to_iso_z(user.created_at),
     }
 
@@ -159,6 +160,7 @@ def order_dict(db: Session, order: Order, items: list[OrderItem] | None = None,
         "note": order.note,
         "is_walk_in": order.is_walk_in,
         "note_popup": order.note_popup,
+        "payment_method_code": order.payment_method_code,
         "items": [
             order_item_dict(i, spec_names, sale_names, spec_colors, locked) for i in items
         ],

@@ -42,3 +42,8 @@ REQUEST_TIMING = os.getenv("REQUEST_TIMING", "1").lower() not in ("0", "false", 
 # POST /api/_trace client-side trace reporting endpoint. Default off to avoid
 # generating large amounts of logs; enable with TRACE_REPORT_ENABLED=1.
 TRACE_REPORT_ENABLED = os.getenv("TRACE_REPORT_ENABLED", "0").lower() in ("1", "true", "on")
+
+# 支付方式功能总开关（ENABLE_PAYMENT_METHOD）。默认关闭：管理 API 返回 404，
+# 订单不持久化 payment_method_code，前端不显示相关 UI。NAS 上快速开/关：
+# 修改 docker-compose 环境变量后重启容器即可。
+ENABLE_PAYMENT_METHOD = os.getenv("ENABLE_PAYMENT_METHOD", "0").lower() in ("1", "true", "on")

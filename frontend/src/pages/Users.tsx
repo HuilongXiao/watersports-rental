@@ -51,6 +51,9 @@ function PermissionCheckboxes() {
       <Form.Item name="perm_view_revenue" valuePropName="checked" noStyle>
         <Checkbox>看营业额</Checkbox>
       </Form.Item>
+      <Form.Item name="perm_manage_payment_methods" valuePropName="checked" noStyle>
+        <Checkbox>添加支付方式</Checkbox>
+      </Form.Item>
     </Space>
   )
 }
@@ -123,6 +126,7 @@ export default function Users() {
       perm_export_report: values.perm_export_report ?? false,
       perm_manage_users: values.perm_manage_users ?? false,
       perm_view_revenue: values.perm_view_revenue ?? false,
+      perm_manage_payment_methods: values.perm_manage_payment_methods ?? false,
       ...(isSuperuser ? { group_id: values.group_id } : {}),
     }
     try {
@@ -145,6 +149,7 @@ export default function Users() {
       perm_export_report: record.perm_export_report,
       perm_manage_users: record.perm_manage_users,
       perm_view_revenue: record.perm_view_revenue,
+      perm_manage_payment_methods: record.perm_manage_payment_methods,
       is_active: record.is_active,
     })
   }
@@ -162,6 +167,7 @@ export default function Users() {
       body.perm_edit_order = values.perm_edit_order
       body.perm_export_report = values.perm_export_report
       body.perm_manage_users = values.perm_manage_users
+      body.perm_manage_payment_methods = values.perm_manage_payment_methods
     } else if (isAdmin) {
       body.display_name = values.display_name.trim()
       body.perm_create_order = values.perm_create_order
@@ -169,6 +175,7 @@ export default function Users() {
       body.perm_export_report = values.perm_export_report
       body.perm_manage_users = values.perm_manage_users
       body.perm_view_revenue = values.perm_view_revenue
+      body.perm_manage_payment_methods = values.perm_manage_payment_methods
     }
     if (values.password) body.password = values.password
     try {

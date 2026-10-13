@@ -17,6 +17,7 @@ from app.api.dashboard import router as dashboard_router
 from app.api.groups import router as groups_router
 from app.api.inventory import router as inventory_router
 from app.api.orders import router as orders_router
+from app.api.payment_methods import router as payment_methods_router
 from app.api.payments import router as payments_router
 from app.api.settings import router as settings_router
 from app.api.users import router as users_router
@@ -66,6 +67,7 @@ app.include_router(catalog_router)
 app.include_router(inventory_router)
 app.include_router(orders_router)
 app.include_router(payments_router)
+app.include_router(payment_methods_router)
 app.include_router(settings_router)
 app.include_router(dashboard_router)
 app.include_router(groups_router)

@@ -6,12 +6,14 @@ lives here, never in the API/frontend.
 """
 
 from datetime import datetime, timedelta, timezone
+import logging
 from uuid import uuid4
 
 from fastapi import HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from app.core.config import ENABLE_PAYMENT_METHOD
 from app.core.time_utils import (
     ORDER_DURATION_HOURS,
     business_date,
@@ -24,8 +26,11 @@ from app.models.inventory import InventoryConfiguration
 from app.models.order import Order, OrderItem
 from app.models.settings import DEFAULT_AUTO_RETURN_MINUTES, Setting
 from app.models.user import User
+from app.services import payment_method_service
 from app.services.inventory_service import occupied_quantity
 from app.services.settings_service import get_settings
+
+logger = logging.getLogger(__name__)
 
 ALLOWED_TRANSITIONS = {
     ("active", "in_progress"),
@@ -181,6 +186,22 @@ def _resolve_fast_customer(
     raise HTTPException(status_code=422, detail="请提供客户微信昵称")
 
 
+def _resolve_payment_method_code(db: Session, payload) -> str | None:
+    """功能开启时校验并返回要持久化的支付方式 code；未开启时忽略（返回 None）。
+
+    空字符串视为清除；非法 code（不存在或已停用）返回 422。
+    """
+    if not ENABLE_PAYMENT_METHOD:
+        return None
+    raw = getattr(payload, "payment_method_code", None)
+    if raw is None or not raw.strip():
+        return None
+    code = raw.strip()
+    if not payment_method_service.validate_active_code(db, code):
+        raise HTTPException(status_code=422, detail=f"支付方式 '{code}' 不存在或已停用")
+    return code
+
+
 def create_order(db: Session, user: User, payload, active_group_id: str | None = None) -> Order:
     if not payload.customer_id:
         customer = _resolve_fast_customer(db, user, payload, active_group_id)
@@ -221,6 +242,7 @@ def create_order(db: Session, user: User, payload, active_group_id: str | None =
         note=(payload.note.strip() if payload.note and payload.note.strip() else None),
         is_walk_in=bool(getattr(payload, "is_walk_in", False)),
         note_popup=bool(getattr(payload, "note_popup", False)),
+        payment_method_code=_resolve_payment_method_code(db, payload),
         created_by_user_id=user.id,
         updated_by_user_id=user.id,
     )
@@ -447,6 +469,15 @@ def update_order(
     order.note = payload.note.strip() if payload.note and payload.note.strip() else None
     order.is_walk_in = bool(getattr(payload, "is_walk_in", False))
     order.note_popup = bool(getattr(payload, "note_popup", False))
+    # 功能关闭时完全忽略该字段（保留历史值），开启时才校验并更新
+    if ENABLE_PAYMENT_METHOD:
+        new_pm = _resolve_payment_method_code(db, payload)
+        if new_pm != order.payment_method_code:
+            logger.info(
+                "order payment_method changed operator=%s order_id=%s old=%s new=%s",
+                user.id, order.id, order.payment_method_code, new_pm,
+            )
+        order.payment_method_code = new_pm
     order.updated_by_user_id = user.id
 
     for old in list_items(db, order.id):

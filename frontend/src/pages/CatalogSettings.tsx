@@ -15,6 +15,7 @@ import {
   List,
   Modal,
   Popconfirm,
+  Radio,
   Row,
   Select,
   Space,
@@ -36,6 +37,7 @@ import type {
   EquipmentSpec,
   EquipmentType,
   InventoryRow,
+  PaymentMethod,
   SaleItem,
 } from '../types'
 import Users from './Users'
@@ -534,6 +536,192 @@ function SaleTab() {
 
 /* ---------------- System settings ---------------- */
 
+// 支付方式管理区（付款区域）：仅 ENABLE_PAYMENT_METHOD=1（settings.payment_methods
+// 非空）时渲染；新增/编辑/删除/设默认需要 manage_payment_methods 权限（或
+// superuser/admin），无权限时只读展示。
+// 回滚：删除本组件与 SystemTab 中的 <Divider /> + <PaymentSection /> 即可。
+function PaymentSection() {
+  const { user } = useAuth()
+  const { message } = App.useApp()
+  const { refresh: refreshGlobalSettings } = useSettings()
+  const [methods, setMethods] = useState<PaymentMethod[]>([])
+  const [addOpen, setAddOpen] = useState(false)
+  const [newName, setNewName] = useState('')
+  const [newCode, setNewCode] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const canManage = Boolean(
+    user && (user.role === 'superuser' || user.role === 'admin' || user.permissions.manage_payment_methods),
+  )
+
+  const load = useCallback(async () => {
+    try {
+      setMethods(await api.get<PaymentMethod[]>('/api/payment-methods?active_only=true'))
+    } catch {
+      // 功能未启用/接口异常时静默，不影响其它设置加载
+    }
+  }, [])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  const afterChange = async () => {
+    await load()
+    refreshGlobalSettings()
+  }
+
+  const addMethod = async () => {
+    if (!newName.trim()) {
+      message.warning('请输入支付方式名称')
+      return
+    }
+    setBusy(true)
+    try {
+      await api.post('/api/payment-methods', {
+        name: newName.trim(),
+        code: newCode.trim() || undefined,
+      })
+      message.success('支付方式已添加')
+      setAddOpen(false)
+      setNewName('')
+      setNewCode('')
+      await afterChange()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '添加失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const setDefault = async (code: string) => {
+    setBusy(true)
+    try {
+      await api.put(`/api/payment-methods/${code}`, { is_default: true })
+      message.success('默认支付方式已更新')
+      await afterChange()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '操作失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const renameMethod = (method: PaymentMethod) => {
+    let name = method.name
+    Modal.confirm({
+      title: `重命名 ${method.code}`,
+      content: (
+        <Input
+          defaultValue={method.name}
+          onChange={(e) => {
+            name = e.target.value
+          }}
+        />
+      ),
+      okText: '保存',
+      cancelText: '取消',
+      onOk: async () => {
+        if (!name.trim() || name.trim() === method.name) return
+        try {
+          await api.put(`/api/payment-methods/${method.code}`, { name: name.trim() })
+          message.success('已更新')
+          await afterChange()
+        } catch (error) {
+          message.error(error instanceof Error ? error.message : '更新失败')
+        }
+      },
+    })
+  }
+
+  const removeMethod = async (code: string) => {
+    try {
+      await api.del(`/api/payment-methods/${code}`)
+      message.success('支付方式已停用')
+      await afterChange()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '停用失败')
+    }
+  }
+
+  return (
+    <>
+      <Divider />
+      <div style={{ maxWidth: 420 }}>
+        <Space style={{ justifyContent: 'space-between', width: '100%', marginBottom: 8 }}>
+          <strong>付款</strong>
+          {canManage && (
+            <Button size="small" onClick={() => setAddOpen(true)}>
+              新增支付方式
+            </Button>
+          )}
+        </Space>
+        <List
+          size="small"
+          bordered
+          dataSource={methods}
+          locale={{ emptyText: '暂无启用的支付方式' }}
+          renderItem={(m) => (
+            <List.Item
+              actions={
+                canManage
+                  ? [
+                      ...(m.is_default
+                        ? []
+                        : [
+                            <Button key="default" size="small" type="link" disabled={busy} onClick={() => setDefault(m.code)}>
+                              设为默认
+                            </Button>,
+                            <Button key="edit" size="small" type="link" onClick={() => renameMethod(m)}>
+                              重命名
+                            </Button>,
+                            <Popconfirm
+                              key="del"
+                              title="停用该支付方式？"
+                              description="停用为软删除，历史订单仍保留该方式。"
+                              onConfirm={() => removeMethod(m.code)}
+                            >
+                              <Button size="small" type="link" danger>
+                                停用
+                              </Button>
+                            </Popconfirm>,
+                          ]),
+                    ]
+                  : []
+              }
+            >
+              <Space>
+                <Radio checked={m.is_default} disabled={!canManage || m.is_default} onClick={() => canManage && !m.is_default && setDefault(m.code)} />
+                <span>{m.name}</span>
+                <Tag>{m.code}</Tag>
+                {m.is_default && <Tag color="blue">默认</Tag>}
+              </Space>
+            </List.Item>
+          )}
+        />
+      </div>
+      <Modal
+        title="新增支付方式"
+        open={addOpen}
+        onOk={addMethod}
+        okText="添加"
+        cancelText="取消"
+        confirmLoading={busy}
+        onCancel={() => setAddOpen(false)}
+      >
+        <Form layout="vertical">
+          <Form.Item label="展示名称" required>
+            <Input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="如：POS机" />
+          </Form.Item>
+          <Form.Item label="code（可选，大写字母/数字/下划线，留空自动生成）">
+            <Input value={newCode} onChange={(e) => setNewCode(e.target.value)} placeholder="如：POS" />
+          </Form.Item>
+        </Form>
+      </Modal>
+    </>
+  )
+}
+
 function SystemTab() {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [minutes, setMinutes] = useState(120)
@@ -605,6 +793,8 @@ function SystemTab() {
           </p>
         )}
       </Form>
+      {/* 付款区域：功能启用（payment_methods 非空）时显示，以横线与上方隔开 */}
+      {(settings?.payment_methods?.length ?? 0) > 0 && <PaymentSection />}
       <Divider />
       <Descriptions size="small" column={1}>
         <Descriptions.Item label="系统版本">v1.1.8</Descriptions.Item>

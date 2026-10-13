@@ -24,5 +24,7 @@ class User(Base):
     perm_export_report: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     perm_manage_users: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     perm_view_revenue: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # 添加支付方式（MANAGE_PAYMENT_METHODS）：控制谁可以管理支付方式
+    perm_manage_payment_methods: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[object] = mapped_column(UtcDateTime(), default=utc_now, nullable=False)
     updated_at: Mapped[object] = mapped_column(UtcDateTime(), default=utc_now, onupdate=utc_now, nullable=False)

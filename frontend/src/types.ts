@@ -6,6 +6,7 @@ export interface UserPermissions {
   export_report: boolean
   manage_users: boolean
   view_revenue: boolean
+  manage_payment_methods: boolean
 }
 
 export interface User {
@@ -32,6 +33,7 @@ export interface UserAccount {
   perm_export_report: boolean
   perm_manage_users: boolean
   perm_view_revenue: boolean
+  perm_manage_payment_methods: boolean
   created_at: string
 }
 
@@ -167,6 +169,7 @@ export interface Order {
   note: string | null
   is_walk_in: boolean
   note_popup: boolean
+  payment_method_code: string | null
   items: OrderItem[]
   items_total_fen: number
   refund_amount_fen: number
@@ -210,10 +213,19 @@ export interface PaymentView {
   adjustments: PaymentAdjustment[]
 }
 
+export interface PaymentMethod {
+  code: string
+  name: string
+  is_default: boolean
+  active?: boolean
+}
+
 export interface AppSettings {
   auto_return_after_minutes: number
   fast_customer_mode: boolean
   updated_at: string
+  payment_methods: PaymentMethod[]
+  default_payment_method: string | null
 }
 
 export interface DashboardData {

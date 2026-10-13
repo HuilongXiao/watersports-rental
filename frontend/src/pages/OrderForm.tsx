@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, lazy, Suspense } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   App,
@@ -26,6 +26,9 @@ import { useSettings } from '../contexts/SettingsContext'
 import { fenToYuan } from '../utils'
 import { GenderCheckboxes } from './Customers'
 import type { Catalog, Customer, InventoryConflict, Order } from '../types'
+
+// 支付方式选择器：懒加载，仅在点击编辑时才加载组件 JS，不影响首屏性能
+const PaymentMethodSelector = lazy(() => import('../components/PaymentMethodSelector'))
 
 interface DraftItem {
   key: string
@@ -72,6 +75,11 @@ export default function OrderForm() {
   const [walkIn, setWalkIn] = useState(false)
   const [notePopup, setNotePopup] = useState(false)
   const [note, setNote] = useState('')
+  // 支付方式（feature flag 开启时 settings.payment_methods 非空才显示摘要行）
+  const [paymentCode, setPaymentCode] = useState<string | null>(null)
+  const [payEditOpen, setPayEditOpen] = useState(false)
+  // 用户手动改过支付方式后不再自动填默认值
+  const pmTouched = useRef(false)
   // http 局域网环境无法直接读取剪贴板时，用弹窗捕获用户手动粘贴的内容
   const [pasteFallbackOpen, setPasteFallbackOpen] = useState(false)
   // 开始日期日历弹窗
@@ -147,6 +155,7 @@ export default function OrderForm() {
           setWalkIn(order.is_walk_in ?? false)
           setNotePopup(order.note_popup ?? false)
           setNote(order.note ?? '')
+          setPaymentCode(order.payment_method_code ?? null)
           setCustomerWechatNickname(order.customer_wechat_nickname ?? '')
           setItems(
             order.items.map((item) => ({
@@ -259,6 +268,33 @@ export default function OrderForm() {
     return sum + (meta ? meta.price * item.quantity : 0)
   }, 0)
 
+  // 新建订单：未手动选择过时自动填系统默认支付方式（feature 关闭时默认值为 null，不生效）
+  useEffect(() => {
+    if (id || pmTouched.current || paymentCode) return
+    if (settings.default_payment_method) setPaymentCode(settings.default_payment_method)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.default_payment_method, id])
+
+  // 支付方式紧凑摘要：渲染在订单项目"合计"右侧（feature 未开启时为 null）
+  const paymentSummary =
+    settings.payment_methods.length > 0 ? (
+      <span style={{ color: '#666', fontSize: 13, whiteSpace: 'nowrap' }}>
+        支付方式：
+        {paymentCode
+          ? settings.payment_methods.find((m) => m.code === paymentCode)?.name ??
+            `未知方式(${paymentCode})`
+          : '未选择'}
+        <Button
+          size="small"
+          type="link"
+          disabled={terminalLocked}
+          onClick={() => setPayEditOpen(true)}
+        >
+          编辑
+        </Button>
+      </span>
+    ) : null
+
   // 库存冲突预检弹窗
   const [conflictOpen, setConflictOpen] = useState(false)
   const [conflicts, setConflicts] = useState<InventoryConflict[]>([])
@@ -298,6 +334,8 @@ export default function OrderForm() {
       is_walk_in: walkIn,
       // 备注为空时弹窗标记不生效，与客户提醒的约定一致
       note_popup: note.trim() ? notePopup : false,
+      // 功能未开启时不发送该字段（后端也会忽略）
+      ...(settings.payment_methods.length > 0 ? { payment_method_code: paymentCode } : {}),
       items: items.map((item) =>
         item.kind === 'equipment'
           ? { equipment_spec_id: item.item_id, quantity: item.quantity }
@@ -607,7 +645,8 @@ export default function OrderForm() {
         ]),
     {
       title: '',
-      width: 36,
+      // feature 开启时加宽本列（仅桌面端），用于在合计行右侧展示支付方式摘要
+      width: !isMobile && settings.payment_methods.length > 0 ? 190 : 36,
       render: (_: unknown, record: DraftItem) => (
         <Button
           type="text"
@@ -886,10 +925,20 @@ export default function OrderForm() {
           <Table.Summary.Row>
             {isMobile ? (
               <>
-                <Table.Summary.Cell index={0} colSpan={2}>
-                  <strong>合计 ¥{fenToYuan(totalFen)}</strong>
+                <Table.Summary.Cell index={0} colSpan={3}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 12,
+                      flexWrap: 'wrap',
+                    }}
+                  >
+                    <strong>合计 ¥{fenToYuan(totalFen)}</strong>
+                    {paymentSummary}
+                  </div>
                 </Table.Summary.Cell>
-                <Table.Summary.Cell index={2} />
               </>
             ) : (
               <>
@@ -899,7 +948,7 @@ export default function OrderForm() {
                 <Table.Summary.Cell index={4} align="right">
                   <strong>¥{fenToYuan(totalFen)}</strong>
                 </Table.Summary.Cell>
-                <Table.Summary.Cell index={5} />
+                <Table.Summary.Cell index={5} align="right">{paymentSummary}</Table.Summary.Cell>
               </>
             )}
           </Table.Summary.Row>
@@ -933,6 +982,33 @@ export default function OrderForm() {
           打开订单时展示气泡对话框，提示备注内容，并点击"确认"关闭气泡对话框
         </Checkbox>
       </div>
+
+      <Modal
+        title="选择支付方式"
+        open={payEditOpen}
+        onCancel={() => setPayEditOpen(false)}
+        onOk={() => setPayEditOpen(false)}
+        okText="确定"
+        cancelText="清除选择"
+        cancelButtonProps={{
+          onClick: () => {
+            pmTouched.current = true
+            setPaymentCode(null)
+            setPayEditOpen(false)
+          },
+        }}
+        destroyOnClose
+      >
+        <Suspense fallback={<div style={{ padding: 24, textAlign: 'center' }}>加载中…</div>}>
+          <PaymentMethodSelector
+            value={paymentCode}
+            onChange={(code) => {
+              pmTouched.current = true
+              setPaymentCode(code)
+            }}
+          />
+        </Suspense>
+      </Modal>
 
       {/* http 环境无法直接读取剪贴板：用户长按输入框选择“粘贴”后自动捕获并回填 */}
       <Modal
