@@ -51,3 +51,90 @@ export const TYPE_COLOR_HEX: Record<string, string> = Object.fromEntries(
 export function typeColorHex(color?: string | null): string | undefined {
   return color ? TYPE_COLOR_HEX[color] : undefined
 }
+
+// ---- Orders 列表快照（sessionStorage，用于返回列表时瞬时恢复）----
+// key 模式：orders:snapshot:${encodeURIComponent(location.search)}；
+// 仅保留当前 searchKey 的一条快照（保存时清掉其它），5 分钟过期即删。
+// sessionStorage 不可用（隐私模式等）时全部静默降级为"无快照"，按 URL 正常请求。
+
+const SNAPSHOT_PREFIX = 'orders:snapshot:'
+const SNAPSHOT_TTL_MS = 5 * 60 * 1000
+
+export interface OrdersSnapshot {
+  /** 当前列表数据（仅保留列表渲染所需的最小字段） */
+  items: unknown[]
+  pageMeta: { page: number; pageSize: number }
+  /** window 滚动位置（桌面端） */
+  scrollY: number
+  /** .ant-layout-content 滚动位置（移动端） */
+  contentY: number
+  /** 保存时的 location.search，返回按钮无历史可退时用于恢复筛选 */
+  search: string
+  ts: number
+}
+
+export function ordersSnapshotKey(search: string): string {
+  return SNAPSHOT_PREFIX + encodeURIComponent(search)
+}
+
+function snapshotKeys(): string[] {
+  const keys: string[] = []
+  for (let i = 0; i < sessionStorage.length; i++) {
+    const k = sessionStorage.key(i)
+    if (k && k.startsWith(SNAPSHOT_PREFIX)) keys.push(k)
+  }
+  return keys
+}
+
+export function saveOrdersSnapshot(snapshot: OrdersSnapshot): void {
+  try {
+    // 总量控制：每个 searchKey 只保留一条，保存新快照时清掉其它旧快照
+    const keep = ordersSnapshotKey(snapshot.search)
+    for (const k of snapshotKeys()) {
+      if (k !== keep) sessionStorage.removeItem(k)
+    }
+    sessionStorage.setItem(keep, JSON.stringify(snapshot))
+  } catch {
+    // 静默降级
+  }
+}
+
+export function readOrdersSnapshot(search: string): OrdersSnapshot | null {
+  try {
+    const key = ordersSnapshotKey(search)
+    const raw = sessionStorage.getItem(key)
+    if (!raw) return null
+    const snap = JSON.parse(raw) as OrdersSnapshot
+    if (!snap || typeof snap.ts !== 'number' || Date.now() - snap.ts > SNAPSHOT_TTL_MS) {
+      sessionStorage.removeItem(key) // 过期即删
+      return null
+    }
+    return snap
+  } catch {
+    return null
+  }
+}
+
+/** 读取未过期的最新一条快照（详情页无历史可退时用于恢复列表筛选参数） */
+export function readLatestOrdersSnapshot(): OrdersSnapshot | null {
+  try {
+    let best: OrdersSnapshot | null = null
+    for (const k of snapshotKeys()) {
+      const raw = sessionStorage.getItem(k)
+      if (!raw) continue
+      try {
+        const snap = JSON.parse(raw) as OrdersSnapshot
+        if (!snap || typeof snap.ts !== 'number' || Date.now() - snap.ts > SNAPSHOT_TTL_MS) {
+          sessionStorage.removeItem(k)
+          continue
+        }
+        if (!best || snap.ts > best.ts) best = snap
+      } catch {
+        sessionStorage.removeItem(k)
+      }
+    }
+    return best
+  } catch {
+    return null
+  }
+}
