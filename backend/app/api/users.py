@@ -31,6 +31,7 @@ class UserCreateInput(BaseModel):
     perm_export_report: bool = False
     perm_manage_users: bool = False
     perm_view_revenue: bool = False
+    perm_manage_payment_methods: bool = False
 
     @field_validator("username")
     @classmethod
@@ -50,6 +51,7 @@ class UserUpdateInput(BaseModel):
     perm_export_report: bool | None = None
     perm_manage_users: bool | None = None
     perm_view_revenue: bool | None = None
+    perm_manage_payment_methods: bool | None = None
     is_active: bool | None = None
 
 
@@ -128,6 +130,7 @@ def create_user(
         perm_export_report=payload.perm_export_report,
         perm_manage_users=payload.perm_manage_users,
         perm_view_revenue=payload.perm_view_revenue,
+        perm_manage_payment_methods=payload.perm_manage_payment_methods,
     )
     db.add(new_user)
     db.commit()
@@ -190,6 +193,7 @@ def update_user(
         "perm_export_report",
         "perm_manage_users",
         "perm_view_revenue",
+        "perm_manage_payment_methods",
         "is_active",
     ):
         if field in data:
