@@ -22,6 +22,14 @@ services:
       SEED_DEFAULT_DATA: "false"
       SESSION_SECRET: nas-rental-app-session-secret-change-me
       SESSION_COOKIE_SECURE: "false"
+      # ===== 请求耗时追踪 =====
+      # 开关：1=开启（默认），0/false=关闭。开启后每个请求返回 X-Server-Timing 头
+      # 并把 JSON 耗时写入 LOG_DIR/backend-requests.log。
+      REQUEST_TIMING: "1"
+      # 耗时日志写入已挂载的 ./data/logs/，SSH 到 NAS 可直接查看
+      LOG_DIR: /app/data/logs
+      # 前端集中上报接口 /api/_trace 开关：默认关闭，避免日志过量；需要时改 1
+      TRACE_REPORT_ENABLED: "0"
       # 忘记密码时：取消下一行注释设为新密码，启动一次后再注释掉
       # SUPERUSER_PASSWORD_RESET: newpassword
     volumes:

@@ -44,6 +44,41 @@ docker compose up -d --build
 | `DECISIONS_LOG.md` | 已否决方案记录 + 未决开放问题 |
 | `DISTILL_RAW.md` | 全部已确认信息的原始蒸馏稿（188 条） |
 
+## 请求耗时追踪（Request Timing）
+
+后端内置请求耗时中间件，前端 API 层同步记录客户端耗时，便于定位慢请求。
+
+### 后端
+
+- **开关**：环境变量 `REQUEST_TIMING`（默认开启；生产设 `0`/`false` 关闭）。
+- **响应头**：每个请求返回 `X-Server-Timing: total=123.4; db=45.2; handler=78.2`（单位 ms）。
+- **日志**：JSON 行写入 `LOG_DIR/backend-requests.log`（默认 `<项目>/data/logs/`，
+  已随 `./data` 挂载到宿主机；RotatingFileHandler，5MB × 5 份轮转）。
+  每行字段：`timestamp / path / method / status_code / total_ms / db_ms / handler_ms / client_ip / user_id`。
+  示例行：
+
+  ```json
+  {"timestamp": "2026-10-13T09:12:30+00:00", "path": "/api/orders", "method": "GET",
+   "status_code": 200, "total_ms": 18.3, "db_ms": 6.1, "handler_ms": 12.2,
+   "client_ip": "172.20.0.1", "user_id": null}
+  ```
+
+- **DB 耗时采集**：通过 SQLAlchemy `before/after_cursor_execute` event hooks 按请求累加。
+  若该 hook 引发异常，回滚只需注释掉 `main.py` 中的 `setup_db_timing()` 并重启。
+
+### 前端
+
+- 浏览器 console 每次 API 请求输出一行：
+  `[timing] GET /api/orders — client:120ms — server total=100.0; db=40.0; handler=60.0 (status 200)`
+- **集中上报（默认关闭）**：仅当浏览器 `localStorage.setItem('enable_tracing','1')`
+  **且** 后端 `TRACE_REPORT_ENABLED=1` 时，才 POST summary 到 `/api/_trace` 落日志。
+
+### 查看方式
+
+- 本地/Docker Compose：`type data\logs\backend-requests.log`（Windows）或 `tail -f data/logs/backend-requests.log`。
+- NAS 单容器：日志在挂载目录 `./data/logs/backend-requests.log`，SSH 到 NAS 直接查看；
+  或 `docker logs rental-app`（stdout，若配置了 propagate）。
+
 ## 特别说明
 
-`docs/DISTILL_RAW.md` 和 `docs/DECISIONS_LOG.md` 中的 **Open Questions** 部分为未决事项，请勿自行处理，需等待项目负责人确认。
+`docs/DISTILL_RAW.md` 和 `docs/DECISIONS_LOG.md` 中的 **Open Questions** 为未决事项，请勿自行处理，需等待项目负责人确认。

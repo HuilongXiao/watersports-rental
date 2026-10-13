@@ -103,6 +103,22 @@ def create_order(
     return order_dict(db, order)
 
 
+@router.post("/duplicate-check")
+def check_duplicate(
+    payload: OrderInput,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    active_group_id: str | None = Depends(get_active_group_id),
+):
+    """创建订单前重复检查：同一客户 + 同一业务日期 + 船型类型有交集。
+
+    仅检查 active 和 in_progress 状态的订单。不写库，仅预警，
+    前端由用户二次确认后仍可正常创建。
+    """
+    duplicates = order_service.check_duplicate_order(db, payload, active_group_id)
+    return {"duplicates": duplicates}
+
+
 @router.post("/conflicts")
 def check_conflicts(
     payload: OrderInput,

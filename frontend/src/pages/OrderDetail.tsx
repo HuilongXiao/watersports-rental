@@ -169,7 +169,8 @@ export default function OrderDetail() {
           </Space>
         }
         extra={
-          screens.md ? <Button onClick={() => navigate('/orders')}>返回列表</Button> : undefined
+          // 返回上一页（订单列表），保留列表 URL 的筛选/分页参数以恢复状态与滚动位置
+          screens.md ? <Button onClick={() => navigate(-1)}>返回列表</Button> : undefined
         }
       >
         {warnings.length > 0 && (

@@ -21,8 +21,14 @@ from app.api.payments import router as payments_router
 from app.api.settings import router as settings_router
 from app.api.users import router as users_router
 from app.api.reports import router as reports_router
+from app.core.config import TRACE_REPORT_ENABLED
 from app.db.init_db import check_database_connection, initialize_database
 from app.db.seed import seed_system_data
+from app.middleware.timing_middleware import (
+    log_trace,
+    setup_db_timing,
+    timing_middleware,
+)
 
 
 @asynccontextmanager
@@ -40,12 +46,18 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="Rental App API", version="0.1.0", lifespan=lifespan)
 
+# 请求耗时统计：X-Server-Timing 头 + JSON 轮转日志（REQUEST_TIMING 控制开关）
+setup_db_timing()
+app.middleware("http")(timing_middleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_credentials=True,
     allow_methods=["*"],
+    # 允许前端 JS 读取 X-Server-Timing 响应头
     allow_headers=["*"],
+    expose_headers=["X-Server-Timing"],
 )
 
 app.include_router(auth_router)
@@ -75,6 +87,25 @@ def database_health() -> dict[str, str]:
         "status": "ok" if connected else "error",
         "database": "connected" if connected else "unavailable",
     }
+
+
+@app.post("/api/_trace")
+async def client_trace(payload: dict):
+    """接收前端上报的请求耗时 summary（集中汇总调试用）。
+
+    由环境变量 TRACE_REPORT_ENABLED 控制，默认关闭；关闭时直接返回 disabled，
+    不写日志，避免产生大量日志。
+    """
+    if not TRACE_REPORT_ENABLED:
+        return {"status": "disabled"}
+    log_trace({
+        "path": payload.get("path"),
+        "method": payload.get("method"),
+        "client_timing_ms": payload.get("client_timing_ms"),
+        "server_header": payload.get("server_header"),
+        "extra": payload.get("extra"),
+    })
+    return {"status": "ok"}
 
 
 # --- Single-container mode: serve the pre-built frontend from /app/static ---

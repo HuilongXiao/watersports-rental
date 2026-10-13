@@ -28,6 +28,7 @@ import { RightOutlined } from '@ant-design/icons'
 import type { Dayjs } from 'dayjs'
 import { api } from '../api'
 import { useAuth } from '../auth'
+import { useSettings } from '../contexts/SettingsContext'
 import { fenToYuan, typeColorHex, TYPE_COLOR_OPTIONS, yuanToFen } from '../utils'
 import type {
   AppSettings,
@@ -539,6 +540,8 @@ function SystemTab() {
   const [fastMode, setFastMode] = useState(false)
   const [saving, setSaving] = useState(false)
   const { message } = App.useApp()
+  // 保存成功后刷新全局 SettingsContext（更新缓存，OrderForm 等页面立即生效）
+  const { refresh: refreshGlobalSettings } = useSettings()
 
   useEffect(() => {
     api
@@ -559,6 +562,7 @@ function SystemTab() {
         fast_customer_mode: fastMode,
       })
       setSettings(result)
+      refreshGlobalSettings()
       message.success('设置已保存')
     } catch (error) {
       message.error(error instanceof Error ? error.message : '保存失败')

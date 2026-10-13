@@ -47,7 +47,7 @@ const EMPTY_FILTER: OrderFilter = { statuses: [], customerId: null, day: null, s
 
 export default function Orders() {
   const navigate = useNavigate()
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const { ordersRefreshKey } = useOutletContext<{ ordersRefreshKey: number }>()
   const { message } = App.useApp()
   const { user } = useAuth()
@@ -59,18 +59,73 @@ export default function Orders() {
     document.querySelector('.ant-layout-content')?.scrollTo(0, 0)
   }
 
+  // ---- 进入详情前保存滚动位置，返回列表时按 URL 参数匹配恢复 ----
+  // 桌面端滚动容器是 window，移动端是 .ant-layout-content，两者都记录。
+  const SCROLL_KEY = 'orders_scroll_y'
+  const saveScrollPosition = () => {
+    try {
+      const content = document.querySelector('.ant-layout-content')
+      const entry = {
+        search: window.location.search,
+        windowY: window.scrollY,
+        contentY: content?.scrollTop ?? 0,
+      }
+      sessionStorage.setItem(SCROLL_KEY, JSON.stringify(entry))
+    } catch {
+      // sessionStorage 不可用时静默忽略
+    }
+  }
+  const pendingScroll = useRef<{ search: string; windowY: number; contentY: number } | null>(null)
+  // 首次数据加载完成标记：确保滚动在列表有高度后才恢复（loading 初值为 false，
+  // 若不门控会在数据到达前触发 scrollTo 被截断）
+  const firstLoadDone = useRef(false)
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(SCROLL_KEY)
+      if (!raw) return
+      sessionStorage.removeItem(SCROLL_KEY)
+      const entry = JSON.parse(raw) as { search: string; windowY: number; contentY: number }
+      // 仅当列表状态（URL 参数）与离开时一致才恢复，避免筛选不同却跳滚
+      if (entry.search === window.location.search) pendingScroll.current = entry
+    } catch {
+      // 解析失败静默忽略
+    }
+  }, [])
+
+  // ---- URL query params <-> 列表状态（tab/分页/筛选/预订日期）双向同步 ----
+  // 回滚：删除本段 URL 读取与下方同步 effect，并把各 useState 恢复为硬编码初始值；
+  // 同时删除行点击中的 saveScrollPosition 调用与上方滚动恢复 effect。
+  const spTab = searchParams.get('tab')
+  const spPage = Number(searchParams.get('page') || '0')
+  const spDay = searchParams.get('day')
+  const urlFilterActive = Boolean(
+    searchParams.get('fs') || searchParams.get('fc') || searchParams.get('fd') ||
+      searchParams.get('fp') || searchParams.get('fr'),
+  )
+
   // 从工作台“订单分布”跳转过来时，URL 携带 status 参数，自动筛选当日该状态订单
   const initialStatus = searchParams.get('status') as OrderStatus | null
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(false)
-  const [status, setStatus] = useState<OrderStatus | ''>(
-    initialStatus ? '' : 'active',
-  )
-  const [filter, setFilter] = useState<OrderFilter>(
-    initialStatus
+  const [status, setStatus] = useState<OrderStatus | ''>(() => {
+    if (urlFilterActive || initialStatus) return '' // 筛选模式展示在“全部”tab 下
+    if (spTab !== null) return spTab === 'all' ? '' : (spTab as OrderStatus)
+    return 'active'
+  })
+  const [filter, setFilter] = useState<OrderFilter>(() => {
+    if (urlFilterActive) {
+      return {
+        statuses: (searchParams.get('fs') || '').split(',').filter(Boolean) as OrderStatus[],
+        customerId: searchParams.get('fc'),
+        day: searchParams.get('fd'),
+        specName: searchParams.get('fp'),
+        hasRefund: searchParams.get('fr') === '1',
+      }
+    }
+    return initialStatus
       ? { statuses: [initialStatus], customerId: null, day: dayjs().format('YYYY-MM-DD'), specName: null, hasRefund: false }
-      : EMPTY_FILTER,
-  )
+      : EMPTY_FILTER
+  })
   const [filterOpen, setFilterOpen] = useState(false)
   // 弹窗内的草稿，点击“确认”后才应用
   const [draftStatuses, setDraftStatuses] = useState<OrderStatus[]>([])
@@ -82,13 +137,42 @@ export default function Orders() {
   const [specOptions, setSpecOptions] = useState<{ value: string; label: string }[]>([])
   const customerSearchTimer = useRef<number | null>(null)
   const customerFilterSelectRef = useRef<any>(null)
-  const [currentPage, setCurrentPage] = useState(1)
+  const [currentPage, setCurrentPage] = useState(() => (spPage > 0 ? spPage : 1))
   // 预订 tab 可翻日期查看，默认今天；- 号在所选日期 ≤ 今天时禁用（过去的日子无预订订单）
-  const [bookingDay, setBookingDay] = useState(() => dayjs())
+  const [bookingDay, setBookingDay] = useState(() => (spDay ? dayjs(spDay) : dayjs()))
 
   const filtersActive = Boolean(
     filter.statuses.length > 0 || filter.customerId || filter.day || filter.specName || filter.hasRefund,
   )
+
+  // 状态 -> URL query params 同步（replace 避免产生大量历史条目）
+  useEffect(() => {
+    const next = new URLSearchParams()
+    if (filtersActive) {
+      if (filter.statuses.length) next.set('fs', filter.statuses.join(','))
+      if (filter.customerId) next.set('fc', filter.customerId)
+      if (filter.day) next.set('fd', filter.day)
+      if (filter.specName) next.set('fp', filter.specName)
+      if (filter.hasRefund) next.set('fr', '1')
+      next.set('tab', 'all')
+    } else {
+      next.set('tab', status === '' ? 'all' : status)
+      if (status === 'active') next.set('day', bookingDay.format('YYYY-MM-DD'))
+    }
+    if (currentPage > 1) next.set('page', String(currentPage))
+    setSearchParams(next, { replace: true })
+  }, [status, filter, filtersActive, bookingDay, currentPage, setSearchParams])
+
+  // 数据加载完成后再恢复滚动（列表高度不足时浏览器会截断 scrollTo）
+  useEffect(() => {
+    const entry = pendingScroll.current
+    if (!firstLoadDone.current || loading || !entry) return
+    pendingScroll.current = null
+    requestAnimationFrame(() => {
+      window.scrollTo(0, entry.windowY)
+      document.querySelector('.ant-layout-content')?.scrollTo(0, entry.contentY)
+    })
+  }, [loading])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -157,6 +241,7 @@ export default function Orders() {
     } catch (error) {
       message.error(error instanceof Error ? error.message : '加载失败')
     } finally {
+      firstLoadDone.current = true
       setLoading(false)
     }
   }, [status, filter, filtersActive, bookingDay, message])
@@ -653,7 +738,13 @@ export default function Orders() {
             scrollToTop()
           },
         }}
-        onRow={(record) => ({ onClick: () => navigate(`/orders/${record.id}`) })}
+        onRow={(record) => ({
+          onClick: () => {
+            // 进入详情前保存滚动位置（按当前 URL 参数区分），返回时恢复
+            saveScrollPosition()
+            navigate(`/orders/${record.id}`)
+          },
+        })}
       />
     </Card>
   )
