@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, lazy, Suspense } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   App,
@@ -26,6 +26,9 @@ import { useSettings } from '../contexts/SettingsContext'
 import { fenToYuan } from '../utils'
 import { GenderCheckboxes } from './Customers'
 import type { Catalog, Customer, InventoryConflict, Order } from '../types'
+
+// 支付方式选择器：懒加载，仅在点击编辑时才加载组件 JS，不影响首屏性能
+const PaymentMethodSelector = lazy(() => import('../components/PaymentMethodSelector'))
 
 interface DraftItem {
   key: string
@@ -72,6 +75,9 @@ export default function OrderForm() {
   const [walkIn, setWalkIn] = useState(false)
   const [notePopup, setNotePopup] = useState(false)
   const [note, setNote] = useState('')
+  // 支付方式（feature flag 开启时 settings.payment_methods 非空才显示摘要行）
+  const [paymentCode, setPaymentCode] = useState<string | null>(null)
+  const [payEditOpen, setPayEditOpen] = useState(false)
   // http 局域网环境无法直接读取剪贴板时，用弹窗捕获用户手动粘贴的内容
   const [pasteFallbackOpen, setPasteFallbackOpen] = useState(false)
   // 开始日期日历弹窗
@@ -147,6 +153,7 @@ export default function OrderForm() {
           setWalkIn(order.is_walk_in ?? false)
           setNotePopup(order.note_popup ?? false)
           setNote(order.note ?? '')
+          setPaymentCode(order.payment_method_code ?? null)
           setCustomerWechatNickname(order.customer_wechat_nickname ?? '')
           setItems(
             order.items.map((item) => ({
@@ -298,6 +305,8 @@ export default function OrderForm() {
       is_walk_in: walkIn,
       // 备注为空时弹窗标记不生效，与客户提醒的约定一致
       note_popup: note.trim() ? notePopup : false,
+      // 功能未开启时不发送该字段（后端也会忽略）
+      ...(settings.payment_methods.length > 0 ? { payment_method_code: paymentCode } : {}),
       items: items.map((item) =>
         item.kind === 'equipment'
           ? { equipment_spec_id: item.item_id, quantity: item.quantity }
@@ -933,6 +942,41 @@ export default function OrderForm() {
           打开订单时展示气泡对话框，提示备注内容，并点击"确认"关闭气泡对话框
         </Checkbox>
       </div>
+
+      {/* 支付方式：单行紧凑摘要 + 编辑按钮（懒加载弹窗），功能未开启时整行不渲染，
+          不移动其他字段位置。回滚：删除本块与上方 paymentCode/payEditOpen 状态即可。 */}
+      {settings.payment_methods.length > 0 && (
+        <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ color: '#666' }}>支付方式：</span>
+          <span>
+            {paymentCode
+              ? settings.payment_methods.find((m) => m.code === paymentCode)?.name ?? `未知方式(${paymentCode})`
+              : '未选择'}
+          </span>
+          <Button size="small" type="link" disabled={locked} onClick={() => setPayEditOpen(true)}>
+            编辑
+          </Button>
+        </div>
+      )}
+      <Modal
+        title="选择支付方式"
+        open={payEditOpen}
+        onCancel={() => setPayEditOpen(false)}
+        onOk={() => setPayEditOpen(false)}
+        okText="确定"
+        cancelText="清除选择"
+        cancelButtonProps={{
+          onClick: () => {
+            setPaymentCode(null)
+            setPayEditOpen(false)
+          },
+        }}
+        destroyOnClose
+      >
+        <Suspense fallback={<div style={{ padding: 24, textAlign: 'center' }}>加载中…</div>}>
+          <PaymentMethodSelector value={paymentCode} onChange={(code) => setPaymentCode(code)} />
+        </Suspense>
+      </Modal>
 
       {/* http 环境无法直接读取剪贴板：用户长按输入框选择“粘贴”后自动捕获并回填 */}
       <Modal

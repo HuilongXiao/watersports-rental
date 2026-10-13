@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, lazy, Suspense } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   Alert,
@@ -20,8 +20,12 @@ import {
 } from 'antd'
 import { api } from '../api'
 import { useAuth } from '../auth'
+import { useSettings } from '../contexts/SettingsContext'
 import { fenToYuan, formatDateTime, formatDurationBetween, typeColorHex } from '../utils'
 import type { Order, OrderStatus, PaymentView } from '../types'
+
+// 支付方式选择器：懒加载，仅在点击编辑时才加载组件 JS
+const PaymentMethodSelector = lazy(() => import('../components/PaymentMethodSelector'))
 
 const STATUS_META: Record<OrderStatus, { label: string; color: string }> = {
   active: { label: '预订', color: 'green' },
@@ -46,6 +50,41 @@ export default function OrderDetail() {
   const [adjustForm] = Form.useForm()
   const [adjustQty, setAdjustQty] = useState(1)
   const [adjustTab, setAdjustTab] = useState<'charge' | 'refund'>('charge')
+  // 支付方式编辑（懒加载弹窗）
+  const { settings } = useSettings()
+  const [payEditOpen, setPayEditOpen] = useState(false)
+  const [payDraft, setPayDraft] = useState<string | null>(null)
+  const [paySaving, setPaySaving] = useState(false)
+
+  // PUT 需要完整订单入参：从已加载订单重建 body，仅替换 payment_method_code
+  const savePaymentMethod = async () => {
+    if (!order) return
+    setPaySaving(true)
+    try {
+      const updated = await api.put<Order>(`/api/orders/${order.id}`, {
+        customer_id: order.customer_id,
+        start_at: order.start_at,
+        adult_count: order.adult_count,
+        child_count: order.child_count,
+        note: order.note,
+        is_walk_in: order.is_walk_in,
+        note_popup: order.note_popup,
+        payment_method_code: payDraft,
+        items: order.items.map((i) => ({
+          equipment_spec_id: i.equipment_spec_id,
+          sale_item_id: i.sale_item_id,
+          quantity: i.quantity,
+        })),
+      })
+      setOrder(updated)
+      setPayEditOpen(false)
+      message.success('支付方式已更新')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '保存失败')
+    } finally {
+      setPaySaving(false)
+    }
+  }
 
   const load = useCallback(async (): Promise<Order> => {
     if (!id) return order!
@@ -208,6 +247,29 @@ export default function OrderDetail() {
             {order.adult_count} 位成人{order.child_count > 0 ? `，${order.child_count} 位儿童` : ''}
           </Descriptions.Item>
           <Descriptions.Item label="散客">{order.is_walk_in ? '是' : '否'}</Descriptions.Item>
+          {/* 支付方式：feature 开启时展示；编辑按钮受订单编辑权限控制，
+              点击后懒加载选择弹窗（首屏不加载组件 JS）。回滚：删除本 Item 与
+              savePaymentMethod/payEditOpen 相关代码即可。 */}
+          {(settings.payment_methods.length > 0 || order.payment_method_code) && (
+            <Descriptions.Item label="支付方式">
+              {order.payment_method_code
+                ? settings.payment_methods.find((m) => m.code === order.payment_method_code)?.name ??
+                  `未知方式(${order.payment_method_code})`
+                : '—'}
+              {order.editable && canEditOrder && settings.payment_methods.length > 0 && (
+                <Button
+                  size="small"
+                  type="link"
+                  onClick={() => {
+                    setPayDraft(order.payment_method_code ?? null)
+                    setPayEditOpen(true)
+                  }}
+                >
+                  编辑
+                </Button>
+              )}
+            </Descriptions.Item>
+          )}
           <Descriptions.Item label="使用时长">
             {order.return_at
               ? order.check_in_at
@@ -341,6 +403,21 @@ export default function OrderDetail() {
           <span style={{ color: '#999' }}>支付记录加载失败</span>
         )}
       </Card>
+
+      <Modal
+        title="选择支付方式"
+        open={payEditOpen}
+        onCancel={() => setPayEditOpen(false)}
+        onOk={savePaymentMethod}
+        okText="保存"
+        cancelText="取消"
+        confirmLoading={paySaving}
+        destroyOnClose
+      >
+        <Suspense fallback={<div style={{ padding: 24, textAlign: 'center' }}>加载中…</div>}>
+          <PaymentMethodSelector value={payDraft} onChange={(code) => setPayDraft(code)} />
+        </Suspense>
+      </Modal>
 
       <Modal
         title="添加调整项"

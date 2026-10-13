@@ -13,11 +13,14 @@ import type { AppSettings } from '../types'
 const CACHE_KEY = 'app_settings'
 const CACHE_TTL_MS = 5 * 60 * 1000 // 5 分钟缓存失效
 
-// 安全默认值：接口失败且无缓存时使用（极速模式关闭 = 完整表单）
+// 安全默认值：接口失败且无缓存时使用（极速模式关闭 = 完整表单）。
+// payment_methods 为空数组 = 功能未启用或降级，UI 不显示支付方式相关控件。
 const DEFAULT_SETTINGS: AppSettings = {
   auto_return_after_minutes: 120,
   fast_customer_mode: false,
   updated_at: '',
+  payment_methods: [],
+  default_payment_method: null,
 }
 
 interface SettingsState {
@@ -42,7 +45,12 @@ function readCache(groupId: string | null): AppSettings | null {
     const entry = JSON.parse(raw) as CacheEntry
     if (Date.now() - entry.ts > CACHE_TTL_MS) return null
     if ((entry.group_id ?? null) !== groupId) return null
-    return entry.settings
+    // 兼容旧缓存条目（缺少 payment_methods 字段）：归一化为默认值，避免 undefined
+    return {
+      ...DEFAULT_SETTINGS,
+      ...entry.settings,
+      payment_methods: entry.settings.payment_methods ?? [],
+    }
   } catch {
     return null
   }
