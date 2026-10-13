@@ -24,6 +24,7 @@ from app.core.security import hash_password
 from app.db.session import SessionLocal
 from app.models.customer import Customer
 from app.models.group import Group
+from app.models.payment_method import PaymentMethod
 from app.models.settings import DEFAULT_AUTO_RETURN_MINUTES, SETTINGS_SINGLETON_ID, Setting
 from app.models.user import User
 from app.services.user_service import find_by_username
@@ -49,6 +50,11 @@ def seed_system_data() -> None:
     db: Session = SessionLocal()
     try:
         system = _get_or_create_system_user(db)
+
+        # 初始支付方式：CASH/现金（全局唯一默认，幂等；与 ENABLE_PAYMENT_METHOD
+        # 开关无关，保证开启功能时数据已就绪）
+        if db.scalar(select(PaymentMethod).where(PaymentMethod.code == "CASH")) is None:
+            db.add(PaymentMethod(code="CASH", name="现金", is_default=True, active=True))
 
         admin = find_by_username(db, INITIAL_ADMIN_USERNAME)
         if admin is None:

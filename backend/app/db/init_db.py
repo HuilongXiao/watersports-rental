@@ -33,6 +33,8 @@ _ADDITIVE_COLUMNS = [
     ("equipment_specs", "sort_order", "INTEGER NOT NULL DEFAULT 0"),
     ("orders", "is_walk_in", "BOOLEAN NOT NULL DEFAULT 0"),
     ("orders", "note_popup", "BOOLEAN NOT NULL DEFAULT 0"),
+    ("orders", "payment_method_code", "VARCHAR(32)"),
+    ("users", "perm_manage_payment_methods", "BOOLEAN NOT NULL DEFAULT 0"),
 ]
 
 
