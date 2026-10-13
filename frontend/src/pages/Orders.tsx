@@ -7,7 +7,7 @@ import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
 import { api } from '../api'
 import { useAuth } from '../auth'
-import { typeColorHex } from '../utils'
+import { typeColorHex, saveOrdersSnapshot, readOrdersSnapshot, type OrdersSnapshot } from '../utils'
 import type { Customer, Order, OrderStatus } from '../types'
 
 // 状态展示顺序：进行中 → 预订 → 已完成 → 爽约 → 已取消（与概览“订单分布”配色一致）
@@ -59,42 +59,48 @@ export default function Orders() {
     document.querySelector('.ant-layout-content')?.scrollTo(0, 0)
   }
 
-  // ---- 进入详情前保存滚动位置，返回列表时按 URL 参数匹配恢复 ----
+  // ---- 进入详情前保存列表快照（数据 + 滚动位置），返回列表时瞬时恢复 ----
+  // 快照按 location.search 存于 sessionStorage（orders:snapshot:*），5 分钟过期。
   // 桌面端滚动容器是 window，移动端是 .ant-layout-content，两者都记录。
-  const SCROLL_KEY = 'orders_scroll_y'
-  const saveScrollPosition = () => {
-    try {
-      const content = document.querySelector('.ant-layout-content')
-      const entry = {
-        search: window.location.search,
-        windowY: window.scrollY,
-        contentY: content?.scrollTop ?? 0,
-      }
-      sessionStorage.setItem(SCROLL_KEY, JSON.stringify(entry))
-    } catch {
-      // sessionStorage 不可用时静默忽略
-    }
+  // 回滚：删除本段快照读写、下方 orders 初始化的 snapshotRef、恢复滚动的 effect，
+  // 并把 orders useState 恢复为 useState<Order[]>([])、行点击中的 saveSnapshot 调用删除。
+  const snapshotRef = useRef<OrdersSnapshot | null>(null)
+  const snapshotLoaded = useRef(false)
+  if (!snapshotLoaded.current) {
+    snapshotLoaded.current = true
+    snapshotRef.current = readOrdersSnapshot(window.location.search)
   }
-  const pendingScroll = useRef<{ search: string; windowY: number; contentY: number } | null>(null)
-  // 首次数据加载完成标记：确保滚动在列表有高度后才恢复（loading 初值为 false，
-  // 若不门控会在数据到达前触发 scrollTo 被截断）
-  const firstLoadDone = useRef(false)
-  useEffect(() => {
-    try {
-      const raw = sessionStorage.getItem(SCROLL_KEY)
-      if (!raw) return
-      sessionStorage.removeItem(SCROLL_KEY)
-      const entry = JSON.parse(raw) as { search: string; windowY: number; contentY: number }
-      // 仅当列表状态（URL 参数）与离开时一致才恢复，避免筛选不同却跳滚
-      if (entry.search === window.location.search) pendingScroll.current = entry
-    } catch {
-      // 解析失败静默忽略
-    }
-  }, [])
+  const restoredScroll = useRef<OrdersSnapshot | null>(snapshotRef.current)
+
+  const saveSnapshot = () => {
+    const content = document.querySelector('.ant-layout-content')
+    // 仅保存列表渲染所需的最小字段，避免快照过大
+    const items = orders.map((o) => ({
+      id: o.id,
+      order_number: o.order_number,
+      status: o.status,
+      customer_id: o.customer_id,
+      customer_name: o.customer_name,
+      customer_wechat_nickname: o.customer_wechat_nickname,
+      start_at: o.start_at,
+      check_in_at: o.check_in_at,
+      note_popup: o.note_popup,
+      refund_amount_fen: o.refund_amount_fen,
+      items: o.items,
+    }))
+    saveOrdersSnapshot({
+      items,
+      pageMeta: { page: currentPage, pageSize: 20 },
+      scrollY: window.scrollY,
+      contentY: content?.scrollTop ?? 0,
+      search: window.location.search,
+      ts: Date.now(),
+    })
+  }
 
   // ---- URL query params <-> 列表状态（tab/分页/筛选/预订日期）双向同步 ----
   // 回滚：删除本段 URL 读取与下方同步 effect，并把各 useState 恢复为硬编码初始值；
-  // 同时删除行点击中的 saveScrollPosition 调用与上方滚动恢复 effect。
+  // 同时删除行点击中的 saveSnapshot 调用与上方快照相关代码。
   const spTab = searchParams.get('tab')
   const spPage = Number(searchParams.get('page') || '0')
   const spDay = searchParams.get('day')
@@ -105,8 +111,13 @@ export default function Orders() {
 
   // 从工作台“订单分布”跳转过来时，URL 携带 status 参数，自动筛选当日该状态订单
   const initialStatus = searchParams.get('status') as OrderStatus | null
-  const [orders, setOrders] = useState<Order[]>([])
+  // 命中未过期快照时立即用快照数据渲染（瞬时恢复），后台再拉真实数据刷新
+  const [orders, setOrders] = useState<Order[]>(
+    () => (snapshotRef.current?.items as Order[] | undefined) ?? [],
+  )
   const [loading, setLoading] = useState(false)
+  // 首次数据加载完成标记：确保滚动在列表有高度后才恢复
+  const firstLoadDone = useRef(false)
   const [status, setStatus] = useState<OrderStatus | ''>(() => {
     if (urlFilterActive || initialStatus) return '' // 筛选模式展示在“全部”tab 下
     if (spTab !== null) return spTab === 'all' ? '' : (spTab as OrderStatus)
@@ -163,15 +174,28 @@ export default function Orders() {
     setSearchParams(next, { replace: true })
   }, [status, filter, filtersActive, bookingDay, currentPage, setSearchParams])
 
-  // 数据加载完成后再恢复滚动（列表高度不足时浏览器会截断 scrollTo）
+  // 恢复滚动：命中快照时数据首帧已渲染，立即恢复（瞬时体验）；
+  // 无快照时等待首次数据加载完成（列表高度不足时浏览器会截断 scrollTo）。
   useEffect(() => {
-    const entry = pendingScroll.current
-    if (!firstLoadDone.current || loading || !entry) return
-    pendingScroll.current = null
+    if (snapshotRef.current) {
+      const snap = restoredScroll.current
+      restoredScroll.current = null
+      if (snap) {
+        requestAnimationFrame(() => {
+          window.scrollTo(0, snap.scrollY)
+          document.querySelector('.ant-layout-content')?.scrollTo(0, snap.contentY)
+        })
+      }
+      return
+    }
+    const snap = restoredScroll.current
+    if (!firstLoadDone.current || loading || !snap) return
+    restoredScroll.current = null
     requestAnimationFrame(() => {
-      window.scrollTo(0, entry.windowY)
-      document.querySelector('.ant-layout-content')?.scrollTo(0, entry.contentY)
+      window.scrollTo(0, snap.scrollY)
+      document.querySelector('.ant-layout-content')?.scrollTo(0, snap.contentY)
     })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading])
 
   const load = useCallback(async () => {
@@ -740,8 +764,8 @@ export default function Orders() {
         }}
         onRow={(record) => ({
           onClick: () => {
-            // 进入详情前保存滚动位置（按当前 URL 参数区分），返回时恢复
-            saveScrollPosition()
+            // 进入详情前保存列表快照（数据 + 滚动位置，按当前 URL 参数区分），返回时恢复
+            saveSnapshot()
             navigate(`/orders/${record.id}`)
           },
         })}

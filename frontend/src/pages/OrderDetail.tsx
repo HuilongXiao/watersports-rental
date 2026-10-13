@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, lazy, Suspense } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   Alert,
@@ -18,14 +18,12 @@ import {
   Tabs,
   Tag,
 } from 'antd'
+import { LeftOutlined } from '@ant-design/icons'
 import { api } from '../api'
 import { useAuth } from '../auth'
 import { useSettings } from '../contexts/SettingsContext'
-import { fenToYuan, formatDateTime, formatDurationBetween, typeColorHex } from '../utils'
+import { fenToYuan, formatDateTime, formatDurationBetween, typeColorHex, readLatestOrdersSnapshot } from '../utils'
 import type { Order, OrderStatus, PaymentView } from '../types'
-
-// 支付方式选择器：懒加载，仅在点击编辑时才加载组件 JS
-const PaymentMethodSelector = lazy(() => import('../components/PaymentMethodSelector'))
 
 const STATUS_META: Record<OrderStatus, { label: string; color: string }> = {
   active: { label: '预订', color: 'green' },
@@ -50,39 +48,17 @@ export default function OrderDetail() {
   const [adjustForm] = Form.useForm()
   const [adjustQty, setAdjustQty] = useState(1)
   const [adjustTab, setAdjustTab] = useState<'charge' | 'refund'>('charge')
-  // 支付方式编辑（懒加载弹窗）
+  // 支付方式只读展示所需：从全局设置读取 code→name 映射
   const { settings } = useSettings()
-  const [payEditOpen, setPayEditOpen] = useState(false)
-  const [payDraft, setPayDraft] = useState<string | null>(null)
-  const [paySaving, setPaySaving] = useState(false)
 
-  // PUT 需要完整订单入参：从已加载订单重建 body，仅替换 payment_method_code
-  const savePaymentMethod = async () => {
-    if (!order) return
-    setPaySaving(true)
-    try {
-      const updated = await api.put<Order>(`/api/orders/${order.id}`, {
-        customer_id: order.customer_id,
-        start_at: order.start_at,
-        adult_count: order.adult_count,
-        child_count: order.child_count,
-        note: order.note,
-        is_walk_in: order.is_walk_in,
-        note_popup: order.note_popup,
-        payment_method_code: payDraft,
-        items: order.items.map((i) => ({
-          equipment_spec_id: i.equipment_spec_id,
-          sale_item_id: i.sale_item_id,
-          quantity: i.quantity,
-        })),
-      })
-      setOrder(updated)
-      setPayEditOpen(false)
-      message.success('支付方式已更新')
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '保存失败')
-    } finally {
-      setPaySaving(false)
+  // 返回订单列表：有历史可退则等价浏览器后退（配合列表快照恢复筛选与滚动）；
+  // 无历史可退（如直接分享链接打开详情）则跳到列表页并带上快照记录的筛选参数。
+  const goBack = () => {
+    if (window.history.length > 1) {
+      navigate(-1)
+    } else {
+      const snap = readLatestOrdersSnapshot()
+      navigate(`/orders${snap ? snap.search : ''}`)
     }
   }
 
@@ -199,6 +175,17 @@ export default function OrderDetail() {
       <Card
         title={
           <Space>
+            {/* 移动端左上角返回按钮（与浏览器后退等价，配合列表快照恢复；左滑手势保留） */}
+            {!screens.md && (
+              <Button
+                size="small"
+                type="text"
+                icon={<LeftOutlined />}
+                onClick={goBack}
+                aria-label="返回"
+                style={{ marginLeft: -8 }}
+              />
+            )}
             订单 {order.order_number}
             <Tag color={STATUS_META[order.status].color}>{STATUS_META[order.status].label}</Tag>
             {order.checked_in && <Tag color="processing">已签到</Tag>}
@@ -209,7 +196,7 @@ export default function OrderDetail() {
         }
         extra={
           // 返回上一页（订单列表），保留列表 URL 的筛选/分页参数以恢复状态与滚动位置
-          screens.md ? <Button onClick={() => navigate(-1)}>返回列表</Button> : undefined
+          screens.md ? <Button onClick={goBack}>返回列表</Button> : undefined
         }
       >
         {warnings.length > 0 && (
@@ -247,27 +234,13 @@ export default function OrderDetail() {
             {order.adult_count} 位成人{order.child_count > 0 ? `，${order.child_count} 位儿童` : ''}
           </Descriptions.Item>
           <Descriptions.Item label="散客">{order.is_walk_in ? '是' : '否'}</Descriptions.Item>
-          {/* 支付方式：feature 开启时展示；编辑按钮受订单编辑权限控制，
-              点击后懒加载选择弹窗（首屏不加载组件 JS）。回滚：删除本 Item 与
-              savePaymentMethod/payEditOpen 相关代码即可。 */}
+          {/* 支付方式：只读展示（编辑入口仅在创建/编辑订单页）。回滚：删除本 Item。 */}
           {(settings.payment_methods.length > 0 || order.payment_method_code) && (
             <Descriptions.Item label="支付方式">
               {order.payment_method_code
                 ? settings.payment_methods.find((m) => m.code === order.payment_method_code)?.name ??
                   `未知方式(${order.payment_method_code})`
                 : '—'}
-              {order.editable && canEditOrder && settings.payment_methods.length > 0 && (
-                <Button
-                  size="small"
-                  type="link"
-                  onClick={() => {
-                    setPayDraft(order.payment_method_code ?? null)
-                    setPayEditOpen(true)
-                  }}
-                >
-                  编辑
-                </Button>
-              )}
             </Descriptions.Item>
           )}
           <Descriptions.Item label="使用时长">
@@ -403,21 +376,6 @@ export default function OrderDetail() {
           <span style={{ color: '#999' }}>支付记录加载失败</span>
         )}
       </Card>
-
-      <Modal
-        title="选择支付方式"
-        open={payEditOpen}
-        onCancel={() => setPayEditOpen(false)}
-        onOk={savePaymentMethod}
-        okText="保存"
-        cancelText="取消"
-        confirmLoading={paySaving}
-        destroyOnClose
-      >
-        <Suspense fallback={<div style={{ padding: 24, textAlign: 'center' }}>加载中…</div>}>
-          <PaymentMethodSelector value={payDraft} onChange={(code) => setPayDraft(code)} />
-        </Suspense>
-      </Modal>
 
       <Modal
         title="添加调整项"
