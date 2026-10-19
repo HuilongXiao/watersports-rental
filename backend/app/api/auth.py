@@ -73,6 +73,7 @@ def _user_payload(user: User, db: Session | None = None) -> dict:
         "id": user.id,
         "username": user.username,
         "display_name": user.display_name,
+        "operator_code": user.operator_code,
         "is_system": user.is_system,
         "role": user.role,
         "group_id": user.group_id,

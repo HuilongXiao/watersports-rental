@@ -1,43 +1,33 @@
 # NAS deployment — single container (frontend + backend combined).
-# Image: rental-app:latest  (import rental-app-nas-images.tar first)
-# Access: http://<NAS-IP>:6688   Login: admin / admin123
+# Image: watersports-rental:<version>（导入对应版本 tar 后获得）
+# Access: http://<NAS-IP>:6688
+# 首次登录：superuserx / 123456（仅首次建库生效，登录后请及时改密）
 #
 # 完全不使用此文件也可以：在 Container Manager 界面手动创建容器，
-# 端口 6688->8000，挂载 data/backups/exports，环境变量见下方。
+# 端口 6688->8000，挂载三个目录（见下方 volumes），环境变量只需 SESSION_SECRET。
+#
+# 镜像已内置全部默认值（数据库路径、备份/导出/日志目录、时区、
+# SESSION_COOKIE_SECURE=false、SEED_DEFAULT_DATA=false、请求耗时开关等），
+# 无需重复配置。
 
 services:
   app:
-    image: rental-app:latest
+    image: watersports-rental:1.1.14
     container_name: rental-app
     restart: unless-stopped
     ports:
       - "6688:8000"
     environment:
-      DATABASE_URL: sqlite:////app/data/rental_app.db
-      BACKUP_DIR: /app/backups
-      AUTO_EXPORT_DIR: /app/exports
-      TZ: Asia/Shanghai
-      INITIAL_ADMIN_USERNAME: superuserx
-      INITIAL_ADMIN_PASSWORD: "123456"
-      SEED_DEFAULT_DATA: "false"
-      SESSION_SECRET: nas-rental-app-session-secret-change-me
-      SESSION_COOKIE_SECURE: "false"
-      # ===== 请求耗时追踪 =====
-      # 开关：1=开启（默认），0/false=关闭。开启后每个请求返回 X-Server-Timing 头
-      # 并把 JSON 耗时写入 LOG_DIR/backend-requests.log。
-      REQUEST_TIMING: "1"
-      # 耗时日志写入已挂载的 ./data/logs/，SSH 到 NAS 可直接查看
-      LOG_DIR: /app/data/logs
-      # 前端集中上报接口 /api/_trace 开关：默认关闭，避免日志过量；需要时改 1
-      TRACE_REPORT_ENABLED: "0"
-      # ===== 支付方式功能 =====
-      # 开关：0=关闭（默认），1=开启。开启后：/api/payment-methods 管理 API 可用、
-      # 订单可持久化支付方式、前端显示"付款"设置区与订单支付方式摘要。
-      # 关闭时管理 API 返回 404、订单编辑忽略该字段（历史值保留），快速回退无需回滚 schema。
-      ENABLE_PAYMENT_METHOD: "0"
+      # 必填：填写一段随机长字符串；留空则使用内置默认值（仅建议测试时）
+      SESSION_SECRET: change-me-to-a-long-random-secret
       # 忘记密码时：取消下一行注释设为新密码，启动一次后再注释掉
       # SUPERUSER_PASSWORD_RESET: newpassword
     volumes:
+      # SQLite 数据库 rental_app.db 及日志 data/logs/
+      # （backend-requests-日期.log = 后端请求耗时；frontend-trace-日期.log = 前端上报，
+      #   两者均按天生成，文件名带当天日期，默认保留 30 天）
       - ./data:/app/data
+      # 数据库手动/自动备份
       - ./backups:/app/backups
+      # 每日 00:00 自动导出的订单 CSV
       - ./exports:/app/exports

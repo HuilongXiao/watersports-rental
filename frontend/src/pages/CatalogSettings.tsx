@@ -536,10 +536,8 @@ function SaleTab() {
 
 /* ---------------- System settings ---------------- */
 
-// 支付方式管理区（付款区域）：仅 ENABLE_PAYMENT_METHOD=1（settings.payment_methods
-// 非空）时渲染；新增/编辑/删除/设默认需要 manage_payment_methods 权限（或
-// superuser/admin），无权限时只读展示。
-// 回滚：删除本组件与 SystemTab 中的 <Divider /> + <PaymentSection /> 即可。
+// 支付方式管理区（付款方式区域）：新增/编辑/删除/设默认需要
+// manage_payment_methods 权限（或 superuser/admin），无权限时只读展示。
 function PaymentSection() {
   const { user } = useAuth()
   const { message } = App.useApp()
@@ -594,10 +592,10 @@ function PaymentSection() {
     }
   }
 
-  const setDefault = async (code: string) => {
+  const setDefault = async (id: number) => {
     setBusy(true)
     try {
-      await api.put(`/api/payment-methods/${code}`, { is_default: true })
+      await api.put(`/api/payment-methods/${id}`, { is_default: true })
       message.success('默认支付方式已更新')
       await afterChange()
     } catch (error) {
@@ -624,7 +622,7 @@ function PaymentSection() {
       onOk: async () => {
         if (!name.trim() || name.trim() === method.name) return
         try {
-          await api.put(`/api/payment-methods/${method.code}`, { name: name.trim() })
+          await api.put(`/api/payment-methods/${method.id}`, { name: name.trim() })
           message.success('已更新')
           await afterChange()
         } catch (error) {
@@ -634,9 +632,9 @@ function PaymentSection() {
     })
   }
 
-  const removeMethod = async (code: string) => {
+  const removeMethod = async (id: number) => {
     try {
-      await api.del(`/api/payment-methods/${code}`)
+      await api.del(`/api/payment-methods/${id}`)
       message.success('支付方式已停用')
       await afterChange()
     } catch (error) {
@@ -649,10 +647,10 @@ function PaymentSection() {
       <Divider />
       <div style={{ maxWidth: 420 }}>
         <Space style={{ justifyContent: 'space-between', width: '100%', marginBottom: 8 }}>
-          <strong>付款</strong>
+          <strong>付款方式</strong>
           {canManage && (
-            <Button size="small" onClick={() => setAddOpen(true)}>
-              新增支付方式
+            <Button type="primary" size="small" onClick={() => setAddOpen(true)}>
+              + 新增支付方式
             </Button>
           )}
         </Space>
@@ -669,7 +667,7 @@ function PaymentSection() {
                       ...(m.is_default
                         ? []
                         : [
-                            <Button key="default" size="small" type="link" disabled={busy} onClick={() => setDefault(m.code)}>
+                            <Button key="default" size="small" type="link" disabled={busy} onClick={() => setDefault(m.id)}>
                               设为默认
                             </Button>,
                             <Button key="edit" size="small" type="link" onClick={() => renameMethod(m)}>
@@ -679,7 +677,7 @@ function PaymentSection() {
                               key="del"
                               title="停用该支付方式？"
                               description="停用为软删除，历史订单仍保留该方式。"
-                              onConfirm={() => removeMethod(m.code)}
+                              onConfirm={() => removeMethod(m.id)}
                             >
                               <Button size="small" type="link" danger>
                                 停用
@@ -691,7 +689,7 @@ function PaymentSection() {
               }
             >
               <Space>
-                <Radio checked={m.is_default} disabled={!canManage || m.is_default} onClick={() => canManage && !m.is_default && setDefault(m.code)} />
+                <Radio checked={m.is_default} disabled={!canManage || m.is_default} onClick={() => canManage && !m.is_default && setDefault(m.id)} />
                 <span>{m.name}</span>
                 <Tag>{m.code}</Tag>
                 {m.is_default && <Tag color="blue">默认</Tag>}
@@ -727,9 +725,20 @@ function SystemTab() {
   const [minutes, setMinutes] = useState(120)
   const [fastMode, setFastMode] = useState(false)
   const [saving, setSaving] = useState(false)
+  // 调试上报开关：写入当前浏览器（含 PWA 独立存储）的 localStorage，仅本机生效。
+  const [tracingOn, setTracingOn] = useState<boolean>(
+    () => localStorage.getItem('enable_tracing') === '1',
+  )
   const { message } = App.useApp()
   // 保存成功后刷新全局 SettingsContext（更新缓存，OrderForm 等页面立即生效）
   const { refresh: refreshGlobalSettings } = useSettings()
+
+  const toggleTracing = (on: boolean) => {
+    setTracingOn(on)
+    if (on) localStorage.setItem('enable_tracing', '1')
+    else localStorage.removeItem('enable_tracing')
+    message.success(on ? '调试上报已开启' : '调试上报已关闭')
+  }
 
   useEffect(() => {
     api
@@ -793,11 +802,24 @@ function SystemTab() {
           </p>
         )}
       </Form>
+      {/* 调试上报开关：写入当前浏览器（含 PWA 独立存储）的 localStorage，
+          开启后所有网络请求会附带一条摘要上报到后端 POST /api/_trace，
+          NAS 上 ./data/logs/frontend-trace-YYYY-MM-DD.log 按天生成。 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16, marginBottom: 12, padding: '10px 12px', background: '#fafafa', borderRadius: 6 }}>
+        <Switch checked={tracingOn} onChange={toggleTracing} />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 500 }}>调试上报</div>
+          <div style={{ color: '#888', fontSize: 12 }}>
+            开启后，本机所有网络请求会将耗时摘要上报到服务器的 trace 日志，便于定位卡顿。
+            仅对当前设备/浏览器生效（PWA 与 Safari 存储隔离，需在各自环境内分别开启）。
+          </div>
+        </div>
+      </div>
       {/* 付款区域：功能启用（payment_methods 非空）时显示，以横线与上方隔开 */}
       {(settings?.payment_methods?.length ?? 0) > 0 && <PaymentSection />}
       <Divider />
       <Descriptions size="small" column={1}>
-        <Descriptions.Item label="系统版本">v1.1.8</Descriptions.Item>
+        <Descriptions.Item label="系统版本">v1.1.14</Descriptions.Item>
       </Descriptions>
     </Card>
   )

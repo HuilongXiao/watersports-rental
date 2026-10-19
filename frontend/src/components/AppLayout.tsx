@@ -274,7 +274,7 @@ export default function AppLayout() {
           mode="inline"
           selectedKeys={[selectedKey]}
           items={[
-            { key: '/dashboard', icon: <DashboardOutlined />, label: '工作台' },
+            { key: '/dashboard', icon: <DashboardOutlined />, label: '概览' },
             { key: '/orders', icon: <ShoppingOutlined />, label: '订单管理' },
             { key: '/customers', icon: <TeamOutlined />, label: '客户管理' },
             ...(canManageUsers

@@ -191,6 +191,13 @@ export default function Users() {
   const columns: ColumnsType<UserAccount> = [
     { title: '用户名', dataIndex: 'username' },
     { title: '姓名', dataIndex: 'display_name' },
+    {
+      title: '编号',
+      dataIndex: 'operator_code',
+      width: 72,
+      render: (code: string | null) =>
+        code ? <Tag style={{ marginInlineEnd: 0 }}>{code}</Tag> : <span style={{ color: '#999' }}>-</span>,
+    },
     ...(isSuperuser
       ? [
           {

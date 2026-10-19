@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom'
 import { App, Button, Card, DatePicker, Grid, Popover, Select, Space, Table, Tabs, Tag } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -33,6 +33,29 @@ const STATUS_HEX: Record<OrderStatus, string> = {
   completed: '#1890ff',
   no_show: '#ff4d4f',
   cancelled: '#bfbfbf',
+}
+
+// 订单表的一行：普通订单，或时间分隔行（__divider 存该行的半小时刻度标签）
+type OrderRow = Order & { __divider?: string }
+
+// 时间分隔行：两侧灰线 + 中间半小时刻度
+function TimeDivider({ label }: { label: string }) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        color: '#999',
+        fontSize: 12,
+        lineHeight: '16px',
+      }}
+    >
+      <span style={{ flex: 1, borderTop: '1px solid #d9d9d9' }} />
+      <span style={{ whiteSpace: 'nowrap' }}>{label}</span>
+      <span style={{ flex: 1, borderTop: '1px solid #d9d9d9' }} />
+    </div>
+  )
 }
 
 interface OrderFilter {
@@ -118,6 +141,9 @@ export default function Orders() {
   const [loading, setLoading] = useState(false)
   // 首次数据加载完成标记：确保滚动在列表有高度后才恢复
   const firstLoadDone = useRef(false)
+  // 并发请求序号：仅最新一次请求的结果/loading 才会生效，避免过期响应覆盖新数据
+  // （这正是“tab 已切到预订、内容仍是进行中”的根因）
+  const loadSeq = useRef(0)
   const [status, setStatus] = useState<OrderStatus | ''>(() => {
     if (urlFilterActive || initialStatus) return '' // 筛选模式展示在“全部”tab 下
     if (spTab !== null) return spTab === 'all' ? '' : (spTab as OrderStatus)
@@ -141,7 +167,8 @@ export default function Orders() {
   // 弹窗内的草稿，点击“确认”后才应用
   const [draftStatuses, setDraftStatuses] = useState<OrderStatus[]>([])
   const [draftCustomerId, setDraftCustomerId] = useState<string | null>(null)
-  const [draftDay, setDraftDay] = useState<Dayjs | null>(null)
+  // 弹窗打开时若未应用日期，默认预填当日
+  const [draftDay, setDraftDay] = useState<Dayjs | null>(() => dayjs())
   const [draftSpecName, setDraftSpecName] = useState<string | null>(null)
   const [draftHasRefund, setDraftHasRefund] = useState(false)
   const [customerOptions, setCustomerOptions] = useState<Customer[]>([])
@@ -199,11 +226,19 @@ export default function Orders() {
   }, [loading])
 
   const load = useCallback(async () => {
-    setLoading(true)
+    // 并发保护：记录本次请求序号，只有最新请求才会写入结果与 loading 状态
+    const reqId = ++loadSeq.current
+    // 快照已命中且 orders 有数据时，静默后台刷新——不遮罩已渲染的列表
+    const silentRefresh = Boolean(snapshotRef.current) && orders.length > 0
+    if (!silentRefresh) setLoading(true)
     try {
       const params = new URLSearchParams()
       if (filtersActive) {
         if (filter.day) params.set('business_day', filter.day)
+        // 筛选里未勾选状态时不传 statuses：不限制状态，展示全部状态
+        // （预订/进行中/已完成/爽约/取消）；勾选了状态才按所选状态请求。
+        // 注意：三个 tab 的“默认订单库”仍只加载预订+进行中，见下方 else 分支。
+        if (filter.statuses.length > 0) params.set('statuses', filter.statuses.join(','))
       } else {
         if (status) params.set('status', status)
         if (status === 'active') {
@@ -219,6 +254,8 @@ export default function Orders() {
         }
       }
       let result = await api.get<Order[]>(`/api/orders?${params.toString()}`)
+      // 期间已发出更新的请求：丢弃本次过期响应，不覆盖界面（否则会出现 tab 与内容不一致）
+      if (reqId !== loadSeq.current) return
       if (filtersActive) {
         if (filter.statuses.length > 0) {
           result = result.filter((o) => filter.statuses.includes(o.status))
@@ -263,10 +300,15 @@ export default function Orders() {
       }
       setOrders(result)
     } catch (error) {
+      // 过期请求的错误同样忽略（例如被后续请求取代）
+      if (reqId !== loadSeq.current) return
       message.error(error instanceof Error ? error.message : '加载失败')
     } finally {
-      firstLoadDone.current = true
-      setLoading(false)
+      // 仅最新请求负责结束 loading，避免旧请求提前关闭遮罩
+      if (reqId === loadSeq.current) {
+        firstLoadDone.current = true
+        setLoading(false)
+      }
     }
   }, [status, filter, filtersActive, bookingDay, message])
 
@@ -326,7 +368,8 @@ export default function Orders() {
   const openFilterPopover = () => {
     setDraftStatuses(filter.statuses)
     setDraftCustomerId(filter.customerId)
-    setDraftDay(filter.day ? dayjs(filter.day) : null)
+    // 打开弹窗时若未应用过日期，默认预填当日
+    setDraftDay(filter.day ? dayjs(filter.day) : dayjs())
     setDraftSpecName(filter.specName)
     setDraftHasRefund(filter.hasRefund)
     if (customerOptions.length === 0) searchCustomers('')
@@ -354,7 +397,7 @@ export default function Orders() {
     setDraftDay(null)
     setDraftSpecName(null)
     setDraftHasRefund(false)
-    setFilterOpen(false)
+    // 不关闭筛选弹窗，用户可继续选择或直接点"确认"
     setCurrentPage(1)
   }
 
@@ -432,10 +475,45 @@ export default function Orders() {
     )
   }
 
-  const columns: ColumnsType<Order> = [
+  // 预订 tab：按开始时间向下取整到半小时刻度，刻度变化处插入时间分隔行（仅展示用，不改订单顺序）
+  const withTimeDividers = !filtersActive && status === 'active'
+  const { tableRows, noRowBorderIds } = useMemo(() => {
+    if (!withTimeDividers) {
+      return { tableRows: orders as OrderRow[], noRowBorderIds: new Set<string>() }
+    }
+    const rows: OrderRow[] = []
+    // 分隔行及它上面那一行都要去掉表格默认的底边线，只留分隔行自己的时间线
+    const noRowBorderIds = new Set<string>()
+    let prev = ''
+    let prevOrderId = ''
+    orders.forEach((o) => {
+      const d = dayjs(o.start_at)
+      // 向下取整：12:29 → 12:00，12:31 → 12:30
+      const label = (d.minute() < 30 ? d.minute(0) : d.minute(30)).format('HH:mm')
+      if (prev && label !== prev) {
+        const dividerId = `divider-${o.id}`
+        rows.push({ ...o, id: dividerId, __divider: label })
+        noRowBorderIds.add(dividerId)
+        if (prevOrderId) noRowBorderIds.add(prevOrderId)
+      }
+      prev = label
+      prevOrderId = o.id
+      rows.push(o)
+    })
+    return { tableRows: rows, noRowBorderIds }
+  }, [orders, withTimeDividers])
+
+  const columns: ColumnsType<OrderRow> = [
     {
       title: '客户',
       render: (_, record) => {
+        // 时间分隔行：colSpan 铺满整行，只在本列渲染
+        if (record.__divider) {
+          return {
+            children: <TimeDivider label={record.__divider} />,
+            props: { colSpan: 3, style: { padding: '2px 4px' } },
+          }
+        }
         const name = record.customer_wechat_nickname || record.customer_name || '游客'
         // 勾选备注弹窗的订单，客户名用红色显示以示提醒
         const content = record.note_popup ? (
@@ -476,11 +554,10 @@ export default function Orders() {
       dataIndex: 'start_at',
       width: isMobile ? 92 : undefined,
       render: (value: string, record) => {
+        // 时间分隔行已由首列铺满，本列不再渲染
+        if (record.__divider) return { children: null, props: { colSpan: 0 } }
         const isTodayTab = status === 'active' || status === 'in_progress'
-        const source =
-          !filtersActive && status === 'in_progress'
-            ? (record.check_in_at ?? value)
-            : value
+        const source = record.check_in_at ?? value
         // 预订订单迟到 30 分钟以上 → 时间标红
         const isLate =
           record.status === 'active' &&
@@ -539,6 +616,8 @@ export default function Orders() {
       title: '项目',
       width: isMobile ? 68 : undefined,
       render: (_, record) => {
+        // 时间分隔行已由首列铺满，本列不再渲染
+        if (record.__divider) return { children: null, props: { colSpan: 0 } }
         const eqItems = record.items.filter((i) => i.equipment_spec_name)
         if (!isMobile) {
           // 桌面端：显示所有项目（船型+销售），保持原格式
@@ -733,10 +812,13 @@ export default function Orders() {
         )}
       </Space>
       <Table
+        className="orders-table"
+        // 分隔行与其上一行去掉默认底边线，避免出现多余的两条线
+        rowClassName={(record) => (noRowBorderIds.has(record.id) ? 'orders-no-row-border' : '')}
         rowKey="id"
         loading={loading}
         columns={columns}
-        dataSource={orders}
+        dataSource={tableRows}
         tableLayout={isMobile ? 'fixed' : undefined}
         components={
           isMobile
@@ -762,13 +844,18 @@ export default function Orders() {
             scrollToTop()
           },
         }}
-        onRow={(record) => ({
-          onClick: () => {
-            // 进入详情前保存列表快照（数据 + 滚动位置，按当前 URL 参数区分），返回时恢复
-            saveSnapshot()
-            navigate(`/orders/${record.id}`)
-          },
-        })}
+        onRow={(record) =>
+          // 时间分隔行不可点击、不响应悬停高亮
+          record.__divider
+            ? { style: { cursor: 'default', pointerEvents: 'none' } }
+            : {
+                onClick: () => {
+                  // 进入详情前保存列表快照（数据 + 滚动位置，按当前 URL 参数区分），返回时恢复
+                  saveSnapshot()
+                  navigate(`/orders/${record.id}`)
+                },
+              }
+        }
       />
     </Card>
   )

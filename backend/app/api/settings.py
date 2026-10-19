@@ -4,7 +4,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.auth import get_active_group_id, get_current_user
-from app.core.config import ENABLE_PAYMENT_METHOD
 from app.core.time_utils import to_iso_z
 from app.db.session import get_db
 from app.models.group import Group
@@ -49,18 +48,17 @@ def get_settings(
         "fast_customer_mode": setting.fast_customer_mode,
         "updated_at": to_iso_z(setting.updated_at),
     }
-    # 支付方式功能开启时随设置一起返回（active 列表 + 默认 code），
+    # 支付方式随设置一起返回（active 列表 + 默认 code），
     # 前端 SettingsContext 一次请求取齐，避免额外往返
-    if ENABLE_PAYMENT_METHOD:
-        methods = payment_method_service.list_methods(db, active_only=True)
-        result["payment_methods"] = [
-            {"code": m.code, "name": m.name, "is_default": m.is_default} for m in methods
-        ]
-        default_method = next((m for m in methods if m.is_default), None)
-        result["default_payment_method"] = default_method.code if default_method else None
-    else:
-        result["payment_methods"] = []
-        result["default_payment_method"] = None
+    methods = payment_method_service.list_methods(
+        db, active_only=True, user_group_id=group_id
+    )
+    result["payment_methods"] = [
+        {"id": m.id, "code": m.code, "name": m.name, "is_default": m.is_default}
+        for m in methods
+    ]
+    default_method = next((m for m in methods if m.is_default), None)
+    result["default_payment_method"] = default_method.code if default_method else None
     return result
 
 

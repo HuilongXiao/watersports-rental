@@ -5,7 +5,13 @@ event hooks 按请求累加）与 handler 耗时（handler_ms = total - db），
 通过 X-Server-Timing 响应头返回给前端，并以 JSON 行写入轮转日志文件。
 
 开关：环境变量 REQUEST_TIMING（默认开启；生产可设为 0/false 关闭）。
-日志：LOG_DIR/backend-requests.log（RotatingFileHandler，5MB x 5 份），
+日志：按业务日期（Asia/Shanghai）每天一个文件，文件名带日期，便于按天取用：
+
+  LOG_DIR/backend-requests-YYYY-MM-DD.log   后端每个请求的耗时（本中间件）
+  LOG_DIR/frontend-trace-YYYY-MM-DD.log     前端上报的耗时（POST /api/_trace）
+
+跨天时自动切换到当天文件（写入时判断日期，无需重启）。每份文件仍按大小轮转
+（5MB x 2 份），并清理 30 天前的旧文件，避免磁盘占满。
 容器内默认落在 /app/data/logs/（已挂载到 host ./data，NAS 上可直接查看）。
 回滚：如 DB event hook 引发异常，注释掉 setup_db_timing() 调用即可。
 """
@@ -15,14 +21,23 @@ import logging
 import os
 import time
 from contextvars import ContextVar
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from sqlalchemy import event
 
 from app.core.config import PROJECT_ROOT, REQUEST_TIMING
+from app.core.time_utils import BUSINESS_TZ
 from app.db.session import engine
+
+# 日志保留天数：每次切换到新的一天时清理更早的文件。
+LOG_RETENTION_DAYS = 30
+_LOG_MAX_BYTES = 5 * 1024 * 1024
+_LOG_BACKUP_COUNT = 2
+# 日志类别 -> 文件名前缀
+REQUEST_LOG_PREFIX = "backend-requests"
+CLIENT_TRACE_LOG_PREFIX = "frontend-trace"
 
 # 注意：BaseHTTPMiddleware 的 call_next 在独立 task 中运行，contextvars 的
 # set() 不会回传到中间件上下文，因此这里用可变容器（list/dict）承载累加值，
@@ -31,26 +46,68 @@ _db_seconds: ContextVar[list | None] = ContextVar("db_seconds", default=None)
 _conn_t0: ContextVar[dict | None] = ContextVar("conn_t0", default=None)
 
 trace_logger = logging.getLogger("app.request_timing")
+client_trace_logger = logging.getLogger("app.client_trace")
 _log_dir: Path | None = None
+# 类别 -> (已绑定的日期, handler)；写入时发现日期变了就换文件
+_handlers: dict[str, tuple[str, logging.Handler]] = {}
 
 
-def _setup_logging() -> Path:
+def _log_directory() -> Path:
     global _log_dir
-    if _log_dir is not None:
-        return _log_dir
-    _log_dir = Path(os.getenv("LOG_DIR", str(PROJECT_ROOT / "data" / "logs")))
-    _log_dir.mkdir(parents=True, exist_ok=True)
+    if _log_dir is None:
+        _log_dir = Path(os.getenv("LOG_DIR", str(PROJECT_ROOT / "data" / "logs")))
+        _log_dir.mkdir(parents=True, exist_ok=True)
+    return _log_dir
+
+
+def _today() -> str:
+    """当前业务日期（Asia/Shanghai），形如 2026-10-15。"""
+    return datetime.now(BUSINESS_TZ).strftime("%Y-%m-%d")
+
+
+def _bind_log_file(logger: logging.Logger, key: str, prefix: str) -> None:
+    """把 logger 绑定到「当天」的日志文件；跨天时自动切换到新文件。"""
+    day = _today()
+    bound = _handlers.get(key)
+    if bound is not None and bound[0] == day:
+        return
+    if bound is not None:
+        logger.removeHandler(bound[1])
+        bound[1].close()
     handler = RotatingFileHandler(
-        _log_dir / "backend-requests.log",
-        maxBytes=5 * 1024 * 1024,
-        backupCount=5,
+        _log_directory() / f"{prefix}-{day}.log",
+        maxBytes=_LOG_MAX_BYTES,
+        backupCount=_LOG_BACKUP_COUNT,
         encoding="utf-8",
     )
     handler.setFormatter(logging.Formatter("%(message)s"))
-    trace_logger.addHandler(handler)
-    trace_logger.setLevel(logging.INFO)
-    trace_logger.propagate = False
-    return _log_dir
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    _handlers[key] = (day, handler)
+    if bound is not None:  # 只有跨天时才需要清理旧文件
+        _prune_old_files(prefix)
+
+
+def _prune_old_files(prefix: str) -> None:
+    """删除保留期之外的旧日志（含轮转产生的 .1/.2 后缀文件）。"""
+    cutoff = (datetime.now(BUSINESS_TZ) - timedelta(days=LOG_RETENTION_DAYS)).date()
+    for path in _log_directory().glob(f"{prefix}-*.log*"):
+        stamp = path.name[len(prefix) + 1:][:10]
+        try:
+            day = datetime.strptime(stamp, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if day < cutoff:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
+def _setup_logging() -> Path:
+    _bind_log_file(trace_logger, REQUEST_LOG_PREFIX, REQUEST_LOG_PREFIX)
+    return _log_directory()
 
 
 def setup_db_timing() -> None:
@@ -77,8 +134,13 @@ def setup_db_timing() -> None:
 
 
 def log_trace(record: dict) -> None:
-    _setup_logging()
-    trace_logger.info(json.dumps({"type": "client_trace", **record}, ensure_ascii=False))
+    """前端上报的耗时单独写一份日志，不与后端请求日志混在一起。"""
+    _bind_log_file(client_trace_logger, CLIENT_TRACE_LOG_PREFIX, CLIENT_TRACE_LOG_PREFIX)
+    client_trace_logger.info(json.dumps({
+        "timestamp": datetime.now(BUSINESS_TZ).isoformat(),
+        "type": "client_trace",
+        **record,
+    }, ensure_ascii=False))
 
 
 async def timing_middleware(request, call_next):
@@ -113,7 +175,7 @@ async def timing_middleware(request, call_next):
 
 def _write_log(request, response, status_code: int, total_ms: float, db_ms: float) -> None:
     trace_logger.info(json.dumps({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(BUSINESS_TZ).isoformat(),
         "path": request.url.path,
         "method": request.method,
         "status_code": status_code,

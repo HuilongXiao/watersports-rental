@@ -56,6 +56,12 @@ body {
   margin-bottom: 12px;
 }
 
+/* 订单页「预订」tab 的半小时间隔行：去掉表格默认的上下两条分隔线，
+   只保留分隔行自身那条带时间标签的线（分隔行与它上面那一行都去底边线）。 */
+.orders-table .ant-table-tbody > tr.orders-no-row-border > td {
+  border-bottom: none !important;
+}
+
 /* On narrow screens let table cells wrap instead of overflowing the page. */
 @media (max-width: 768px) {
   .ant-table-cell {

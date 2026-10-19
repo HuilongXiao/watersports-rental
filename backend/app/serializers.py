@@ -34,6 +34,7 @@ def user_dict(user: User) -> dict:
         "group_id": user.group_id,
         "username": user.username,
         "display_name": user.display_name,
+        "operator_code": user.operator_code,
         "role": user.role,
         "is_active": user.is_active,
         "is_system": user.is_system,
@@ -47,15 +48,18 @@ def user_dict(user: User) -> dict:
     }
 
 
-def _user_name_map(db: Session, user_ids: set[str | None]) -> tuple[dict[str, str], set[str]]:
-    """返回 (用户ID→显示名, 系统用户ID集合)。"""
+def _user_name_map(
+    db: Session, user_ids: set[str | None]
+) -> tuple[dict[str, str], set[str], dict[str, str | None]]:
+    """返回 (用户ID→显示名, 系统用户ID集合, 用户ID→操作员编号)。"""
     ids = {uid for uid in user_ids if uid}
     if not ids:
-        return {}, set()
+        return {}, set(), {}
     users = db.scalars(select(User).where(User.id.in_(ids))).all()
     return (
         {u.id: u.display_name for u in users},
         {u.id for u in users if u.is_system},
+        {u.id: u.operator_code for u in users},
     )
 
 
@@ -100,23 +104,24 @@ def order_item_dict(
     }
 
 
-def order_dict(db: Session, order: Order, items: list[OrderItem] | None = None,
-               check_in_warnings: list[dict] | None = None) -> dict:
-    items = items if items is not None else list(
-        db.scalars(
-            select(OrderItem).where(OrderItem.order_id == order.id).order_by(OrderItem.created_at)
-        ).all()
-    )
-    spec_names, sale_names, spec_colors = _catalog_names(db, items)
-    names, system_ids = _user_name_map(
-        db,
-        {
-            order.created_by_user_id,
-            order.updated_by_user_id,
-            order.check_in_by_user_id,
-            order.return_by_user_id,
-        },
-    )
+def _order_payload(
+    order: Order,
+    items: list[OrderItem],
+    spec_names: dict,
+    sale_names: dict,
+    spec_colors: dict,
+    names: dict,
+    system_ids: set,
+    codes: dict,
+    adjustments_total: int,
+    refund_total: int,
+    check_in_warnings: list[dict] | None = None,
+) -> dict:
+    """由已预取的关联数据组装订单响应体（不做任何 DB 查询）。
+
+    单条路径见 ``order_dict``，批量路径见 ``orders_dict``，两者共用本函数以保证
+    输出结构完全一致。
+    """
     locked = order.check_in_at is not None
     auto_return_due_at = None
     if order.check_in_at is not None and order.auto_return_after_minutes and order.return_at is None:
@@ -125,24 +130,6 @@ def order_dict(db: Session, order: Order, items: list[OrderItem] | None = None,
             order.check_in_at + timedelta(minutes=order.auto_return_after_minutes)
         )
     items_total = sum(i.quantity * i.unit_price for i in items)
-    # 支付调整项总额（含正项“其他”和负项退款）
-    adjustments_total = int(
-        db.scalar(
-            select(func.coalesce(func.sum(PaymentItem.amount), 0))
-            .join(Payment, Payment.id == PaymentItem.payment_id)
-            .where(Payment.order_id == order.id)
-        )
-        or 0
-    )
-    # 退款金额：该订单所有负金额调整项之和（无支付记录或无退款时为 0）
-    refund_total = int(
-        db.scalar(
-            select(func.coalesce(func.sum(PaymentItem.amount), 0))
-            .join(Payment, Payment.id == PaymentItem.payment_id)
-            .where(Payment.order_id == order.id, PaymentItem.amount < 0)
-        )
-        or 0
-    )
     return {
         "id": order.id,
         "order_number": order.order_number,
@@ -173,6 +160,7 @@ def order_dict(db: Session, order: Order, items: list[OrderItem] | None = None,
         "check_in_at": to_iso_z(order.check_in_at),
         "check_in_by_user_id": order.check_in_by_user_id,
         "check_in_by_user_name": names.get(order.check_in_by_user_id),
+        "check_in_by_user_code": codes.get(order.check_in_by_user_id),
         "auto_return_after_minutes": order.auto_return_after_minutes,
         "auto_return_due_at": auto_return_due_at,
         "auto_return_at": to_iso_z(order.auto_return_at),
@@ -180,14 +168,123 @@ def order_dict(db: Session, order: Order, items: list[OrderItem] | None = None,
         "return_at": to_iso_z(order.return_at),
         "return_by_user_id": order.return_by_user_id,
         "return_by_user_name": names.get(order.return_by_user_id),
+        "return_by_user_code": codes.get(order.return_by_user_id),
         # 归还操作人是系统用户（2 小时自动归还 / 23:59 强制归还）时为 True
         "return_by_system": order.return_by_user_id in system_ids,
         "daily_forced_return_occurred": order.daily_forced_return_occurred,
         "created_by_user_id": order.created_by_user_id,
         "created_by_user_name": names.get(order.created_by_user_id),
+        "created_by_user_code": codes.get(order.created_by_user_id),
         "created_at": to_iso_z(order.created_at),
         "updated_by_user_id": order.updated_by_user_id,
         "updated_by_user_name": names.get(order.updated_by_user_id),
+        "updated_by_user_code": codes.get(order.updated_by_user_id),
         "updated_at": to_iso_z(order.updated_at),
         "inventory_warnings": check_in_warnings or [],
     }
+
+
+def order_dict(db: Session, order: Order, items: list[OrderItem] | None = None,
+               check_in_warnings: list[dict] | None = None) -> dict:
+    """单条订单序列化（详情/创建/编辑等路径使用）。"""
+    items = items if items is not None else list(
+        db.scalars(
+            select(OrderItem).where(OrderItem.order_id == order.id).order_by(OrderItem.created_at)
+        ).all()
+    )
+    spec_names, sale_names, spec_colors = _catalog_names(db, items)
+    names, system_ids, codes = _user_name_map(
+        db,
+        {
+            order.created_by_user_id,
+            order.updated_by_user_id,
+            order.check_in_by_user_id,
+            order.return_by_user_id,
+        },
+    )
+    # 支付调整项总额（含正项“其他”和负项退款）
+    adjustments_total = int(
+        db.scalar(
+            select(func.coalesce(func.sum(PaymentItem.amount), 0))
+            .join(Payment, Payment.id == PaymentItem.payment_id)
+            .where(Payment.order_id == order.id)
+        )
+        or 0
+    )
+    # 退款金额：该订单所有负金额调整项之和（无支付记录或无退款时为 0）
+    refund_total = int(
+        db.scalar(
+            select(func.coalesce(func.sum(PaymentItem.amount), 0))
+            .join(Payment, Payment.id == PaymentItem.payment_id)
+            .where(Payment.order_id == order.id, PaymentItem.amount < 0)
+        )
+        or 0
+    )
+    return _order_payload(
+        order, items, spec_names, sale_names, spec_colors,
+        names, system_ids, codes, adjustments_total, refund_total, check_in_warnings,
+    )
+
+
+def orders_dict(db: Session, orders: list[Order]) -> list[dict]:
+    """批量序列化订单列表：以固定数量的查询替代逐单 N+1。
+
+    原先每条订单要单独查询 订单项/船型/售卖项/用户/调整项合计/退款合计（约 6–7 次），
+    订单量一大就会出现数秒级耗时。这里按订单 id 一次性预取并分组，输出与
+    ``order_dict`` 完全一致。
+    """
+    if not orders:
+        return []
+    order_ids = [o.id for o in orders]
+    # 1) 订单项一次性取回，按订单 id 分组
+    items_by_order: dict[str, list[OrderItem]] = {}
+    all_items = list(
+        db.scalars(
+            select(OrderItem)
+            .where(OrderItem.order_id.in_(order_ids))
+            .order_by(OrderItem.created_at)
+        ).all()
+    )
+    for it in all_items:
+        items_by_order.setdefault(it.order_id, []).append(it)
+    # 2) 目录名称/颜色：全部订单项合并一次查询
+    spec_names, sale_names, spec_colors = _catalog_names(db, all_items)
+    # 3) 操作用户：全部订单涉及的用户合并一次查询
+    user_ids: set[str | None] = set()
+    for o in orders:
+        user_ids.update(
+            (
+                o.created_by_user_id,
+                o.updated_by_user_id,
+                o.check_in_by_user_id,
+                o.return_by_user_id,
+            )
+        )
+    names, system_ids, codes = _user_name_map(db, user_ids)
+    # 4) 调整项合计 / 退款合计：按订单分组聚合，各一次查询
+    adjustments: dict[str, int] = {}
+    refunds: dict[str, int] = {}
+    for oid, total in db.execute(
+        select(Payment.order_id, func.coalesce(func.sum(PaymentItem.amount), 0))
+        .join(PaymentItem, PaymentItem.payment_id == Payment.id)
+        .where(Payment.order_id.in_(order_ids))
+        .group_by(Payment.order_id)
+    ).all():
+        adjustments[oid] = int(total)
+    for oid, total in db.execute(
+        select(Payment.order_id, func.coalesce(func.sum(PaymentItem.amount), 0))
+        .join(PaymentItem, PaymentItem.payment_id == Payment.id)
+        .where(Payment.order_id.in_(order_ids), PaymentItem.amount < 0)
+        .group_by(Payment.order_id)
+    ).all():
+        refunds[oid] = int(total)
+    return [
+        _order_payload(
+            o,
+            items_by_order.get(o.id, []),
+            spec_names, sale_names, spec_colors,
+            names, system_ids, codes,
+            adjustments.get(o.id, 0), refunds.get(o.id, 0),
+        )
+        for o in orders
+    ]

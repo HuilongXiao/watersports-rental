@@ -26,5 +26,7 @@ class User(Base):
     perm_view_revenue: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # 添加支付方式（MANAGE_PAYMENT_METHODS）：控制谁可以管理支付方式
     perm_manage_payment_methods: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # 操作员编号（group 内按创建顺序分配：A0-A9、B0…；超级管理员固定 SU），用于界面替代姓名展示
+    operator_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
     created_at: Mapped[object] = mapped_column(UtcDateTime(), default=utc_now, nullable=False)
     updated_at: Mapped[object] = mapped_column(UtcDateTime(), default=utc_now, onupdate=utc_now, nullable=False)

@@ -34,6 +34,7 @@ class EquipmentType(Base):
             "color IN (" + ", ".join(f"'{c}'" for c in EQUIPMENT_TYPE_COLORS) + ")",
             name="ck_equipment_types_color",
         ),
+        UniqueConstraint("group_id", "name", name="uq_equipment_types_group_name"),
     )
 
 
@@ -61,7 +62,7 @@ class EquipmentSpec(Base):
     equipment_type: Mapped[EquipmentType] = relationship(back_populates="equipment_specs")
 
     __table_args__ = (
-        UniqueConstraint("equipment_type_id", "name", name="uq_equipment_specs_type_name"),
+        UniqueConstraint("group_id", "equipment_type_id", "name", name="uq_equipment_specs_group_type_name"),
         CheckConstraint("price >= 0", name="ck_equipment_specs_price_non_negative"),
         CheckConstraint("capacity IS NULL OR capacity >= 1", name="ck_equipment_specs_capacity"),
     )
@@ -82,4 +83,7 @@ class SaleItem(Base):
     created_at: Mapped[object] = mapped_column(UtcDateTime(), default=utc_now, nullable=False)
     updated_at: Mapped[object] = mapped_column(UtcDateTime(), default=utc_now, onupdate=utc_now, nullable=False)
 
-    __table_args__ = (CheckConstraint("price >= 0", name="ck_sale_items_price_non_negative"),)
+    __table_args__ = (
+        CheckConstraint("price >= 0", name="ck_sale_items_price_non_negative"),
+        UniqueConstraint("group_id", "name", name="uq_sale_items_group_name"),
+    )

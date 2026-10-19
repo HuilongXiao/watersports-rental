@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import dayjs from 'dayjs'
 import {
   Alert,
   App,
@@ -18,7 +19,7 @@ import {
   Tabs,
   Tag,
 } from 'antd'
-import { LeftOutlined } from '@ant-design/icons'
+import { LeftOutlined, PlusOutlined } from '@ant-design/icons'
 import { api } from '../api'
 import { useAuth } from '../auth'
 import { useSettings } from '../contexts/SettingsContext'
@@ -32,6 +33,13 @@ const STATUS_META: Record<OrderStatus, { label: string; color: string }> = {
   cancelled: { label: '已取消', color: 'default' },
   no_show: { label: '爽约', color: 'red' },
 }
+
+// 紧凑表格：缩小单元格内边距（手机端保证表头不换行）
+const compactCell = () => ({ style: { padding: '4px 6px' } })
+const centerHeader = () => ({
+  style: { padding: '4px 6px', textAlign: 'center' as const, whiteSpace: 'nowrap' as const },
+})
+const nowrapCell = () => ({ style: { padding: '4px 6px', whiteSpace: 'nowrap' as const } })
 
 export default function OrderDetail() {
   const { id } = useParams<{ id: string }>()
@@ -48,6 +56,9 @@ export default function OrderDetail() {
   const [adjustForm] = Form.useForm()
   const [adjustQty, setAdjustQty] = useState(1)
   const [adjustTab, setAdjustTab] = useState<'charge' | 'refund'>('charge')
+  const [adjustSubmitting, setAdjustSubmitting] = useState(false)
+  // 提交锁：防止快速连点或「成功后 load() 失败误导读用户重试」产生重复调整项
+  const adjustSubmittingRef = useRef(false)
   // 支付方式只读展示所需：从全局设置读取 code→name 映射
   const { settings } = useSettings()
 
@@ -120,30 +131,44 @@ export default function OrderDetail() {
   }
 
   const submitAdjustment = async () => {
-    const values = await adjustForm.validateFields()
-    const amountFen = yuanToFenSafe(values.amount)
-    if (amountFen <= 0) {
-      message.warning('金额必须大于 0（最小 0.01 元）')
-      return
-    }
-    if (adjustQty === 0) {
-      message.warning('数量不能为 0')
-      return
-    }
+    // 提交锁：请求进行中忽略后续点击，避免重复创建调整项
+    if (adjustSubmittingRef.current) return
+    adjustSubmittingRef.current = true
+    setAdjustSubmitting(true)
     try {
+      const values = await adjustForm.validateFields()
+      const amountFen = yuanToFenSafe(values.amount)
+      if (amountFen <= 0) {
+        message.warning('金额必须大于 0（最小 0.01 元）')
+        return
+      }
+      if (adjustQty === 0) {
+        message.warning('数量不能为 0')
+        return
+      }
       await api.post(`/api/orders/${id}/payment/adjustments`, {
         quantity: adjustTab === 'refund' ? -adjustQty : adjustQty,
         unit_amount: amountFen,
         note: values.note,
       })
+      // POST 成功即代表调整项已落库：立即关闭弹窗并重置表单，
+      // 避免后续 load() 失败时弹窗仍开着、用户误以为没保存而重试。
       message.success('调整已添加')
       setAdjustOpen(false)
       adjustForm.resetFields()
       setAdjustQty(1)
       setAdjustTab('charge')
-      await load()
+      // load() 仅用于刷新展示；失败不应让用户以为调整没加上，
+      // 所以单独 catch，只给温和提示，不抛出。
+      await load().catch(() => {
+        message.warning('调整已保存，但页面刷新失败，请手动下拉刷新')
+      })
     } catch (error) {
+      // 仅 POST 本身失败才走到这里（后端校验未通过等），提示真实错误
       message.error(error instanceof Error ? error.message : '添加失败')
+    } finally {
+      adjustSubmittingRef.current = false
+      setAdjustSubmitting(false)
     }
   }
 
@@ -188,10 +213,6 @@ export default function OrderDetail() {
             )}
             订单 {order.order_number}
             <Tag color={STATUS_META[order.status].color}>{STATUS_META[order.status].label}</Tag>
-            {order.checked_in && <Tag color="processing">已签到</Tag>}
-            {order.returned && <Tag color="success">已归还</Tag>}
-            {order.auto_return_occurred && <Tag color="purple">系统自动归还</Tag>}
-            {order.daily_forced_return_occurred && <Tag color="magenta">每日强制归还</Tag>}
           </Space>
         }
         extra={
@@ -215,71 +236,156 @@ export default function OrderDetail() {
           />
         )}
 
-        <Descriptions bordered column={2} size="small">
-          <Descriptions.Item label="订单状态">
-            <Tag color={STATUS_META[order.status].color} style={{ margin: 0 }}>
-              {STATUS_META[order.status].label}
-            </Tag>
-          </Descriptions.Item>
-          <Descriptions.Item label="客户">
-            {order.customer_name || order.customer_wechat_nickname || '游客'}
-          </Descriptions.Item>
-          <Descriptions.Item label="性别">{order.customer_gender || '—'}</Descriptions.Item>
-          <Descriptions.Item label="手机号">{order.customer_phone || '—'}</Descriptions.Item>
+        {/* label 宽度不限，宽度足够时一行显示；不足时浏览器自动折叠换行（偶数字数自然均分）。
+            时间类内容用 <div> 拆成日期/时间两行，确保不出现"日期+时间"/"操作人"被截断的情况。 */}
+        {/* 手机端窄屏：label/content 格子内边距由默认 8px 缩至 4px（缩 50%），
+            腾出宽度给白色内容格；label 允许自然折行（4 字 → 2+2） */}
+        <Descriptions
+          bordered
+          column={2}
+          size="small"
+          labelStyle={{ padding: '4px 4px', textAlign: 'center' }}
+          contentStyle={{ padding: '4px 4px', textAlign: 'center' }}
+        >
+          {/* 姓名：始终保留此栏。有姓名+性别 → "张磊先生"；仅有姓名 → "张磊"；无姓名 → 留空。 */}
+          {(() => {
+            const namePart = order.customer_name?.trim() ?? ''
+            const genderPart = order.customer_gender?.trim() ?? ''
+            const label = namePart ? namePart + (genderPart || '') : ''
+            return order.customer_id && label ? (
+              <Descriptions.Item label="姓名">
+                <Button
+                  type="link"
+                  size="small"
+                  style={{ padding: 0, height: 'auto' }}
+                  onClick={() => navigate(`/customers/${order.customer_id}`)}
+                >
+                  {label}
+                </Button>
+              </Descriptions.Item>
+            ) : (
+              <Descriptions.Item label="姓名">{label}</Descriptions.Item>
+            )
+          })()}
           <Descriptions.Item label="微信">
-            {[order.customer_wechat_nickname, order.customer_wechat_id].filter(Boolean).join(' / ') || '—'}
+            {order.customer_wechat_nickname && order.customer_id ? (
+              <Button
+                type="link"
+                size="small"
+                style={{ padding: 0, height: 'auto' }}
+                onClick={() => navigate(`/customers/${order.customer_id}`)}
+              >
+                {order.customer_wechat_nickname}
+                {order.customer_wechat_id ? ` / ${order.customer_wechat_id}` : ''}
+              </Button>
+            ) : (
+              [order.customer_wechat_nickname, order.customer_wechat_id].filter(Boolean).join(' / ') || ''
+            )}
           </Descriptions.Item>
-          <Descriptions.Item label="开始时间">{formatDateTime(order.start_at)}</Descriptions.Item>
+          <Descriptions.Item label="手机号">{order.customer_phone ?? ''}</Descriptions.Item>
+          <Descriptions.Item label="散客">{order.is_walk_in ? '是' : '否'}</Descriptions.Item>
           <Descriptions.Item label="人数">
             {order.adult_count} 位成人{order.child_count > 0 ? `，${order.child_count} 位儿童` : ''}
           </Descriptions.Item>
-          <Descriptions.Item label="散客">{order.is_walk_in ? '是' : '否'}</Descriptions.Item>
-          {/* 支付方式：只读展示（编辑入口仅在创建/编辑订单页）。回滚：删除本 Item。 */}
-          {(settings.payment_methods.length > 0 || order.payment_method_code) && (
-            <Descriptions.Item label="支付方式">
-              {order.payment_method_code
-                ? settings.payment_methods.find((m) => m.code === order.payment_method_code)?.name ??
-                  `未知方式(${order.payment_method_code})`
-                : '—'}
-            </Descriptions.Item>
-          )}
+          {/* 支付方式：始终保留此栏（保持 Descriptions 布局稳定） */}
+          <Descriptions.Item label="支付方式">
+            {settings.payment_methods.length > 0 && order.payment_method_code
+              ? settings.payment_methods.find((m) => m.code === order.payment_method_code)?.name ?? ''
+              : ''}
+          </Descriptions.Item>
+          {/* 时间类字段：拆成日期一行 + 时间一行，避免窄屏时被拆成"日期+时间"/"（操作人）" */}
+          {(() => {
+            if (!order.start_at) return <Descriptions.Item label="开始时间">{null}</Descriptions.Item>
+            const d = dayjs(order.start_at)
+            return (
+              <Descriptions.Item label="开始时间">
+                <div>{d.format('YYYY-MM-DD')}</div>
+                <div style={{ color: '#888' }}>{d.format('HH:mm')}</div>
+              </Descriptions.Item>
+            )
+          })()}
+          {(() => {
+            if (!order.check_in_at) return <Descriptions.Item label="签到">{null}</Descriptions.Item>
+            const d = dayjs(order.check_in_at)
+            const by = order.check_in_by_user_code ?? order.check_in_by_user_name
+            return (
+              <Descriptions.Item label="签到">
+                <div>{d.format('YYYY-MM-DD')}</div>
+                <div style={{ color: '#888' }}>
+                  {d.format('HH:mm')}{by ? `（${by}）` : ''}
+                </div>
+              </Descriptions.Item>
+            )
+          })()}
+          {(() => {
+            if (!order.return_at) return <Descriptions.Item label="归还">{null}</Descriptions.Item>
+            const d = dayjs(order.return_at)
+            const by = order.return_by_system
+              ? '系统'
+              : (order.return_by_user_code ?? order.return_by_user_name ?? '')
+            return (
+              <Descriptions.Item label="归还">
+                <div>{d.format('YYYY-MM-DD')}</div>
+                <div style={{ color: '#888' }}>
+                  {d.format('HH:mm')}{by ? `（${by}）` : ''}
+                </div>
+              </Descriptions.Item>
+            )
+          })()}
           <Descriptions.Item label="使用时长">
             {order.return_at
               ? order.check_in_at
                 ? formatDurationBetween(order.check_in_at, order.return_at)
                 : '2小时'
-              : '—'}
+              : ''}
           </Descriptions.Item>
-          <Descriptions.Item label="签到">
-            {order.check_in_at
-              ? `${formatDateTime(order.check_in_at)}（${order.check_in_by_user_name ?? ''}）`
-              : '—'}
-          </Descriptions.Item>
-          <Descriptions.Item label="归还">
-            {order.return_at
-              ? `${formatDateTime(order.return_at)}（${order.return_by_system ? '系统' : (order.return_by_user_name ?? '')}）`
-              : '—'}
-          </Descriptions.Item>
-          <Descriptions.Item label="创建时间">
-            {`${formatDateTime(order.created_at)}（${order.created_by_user_name ?? ''}）`}
-          </Descriptions.Item>
-          <Descriptions.Item label="最后改动">
-            {`${formatDateTime(order.updated_at)}（${order.updated_by_user_name ?? ''}）`}
-          </Descriptions.Item>
-          <Descriptions.Item label="备注" span={2}>
-            {order.note || '—'}
+          {(() => {
+            const d = dayjs(order.created_at)
+            const by = order.created_by_user_code ?? order.created_by_user_name
+            return (
+              <Descriptions.Item label="创建时间">
+                <div>{d.format('YYYY-MM-DD')}</div>
+                <div style={{ color: '#888' }}>
+                  {d.format('HH:mm')}{by ? `（${by}）` : ''}
+                </div>
+              </Descriptions.Item>
+            )
+          })()}
+          {(() => {
+            const d = dayjs(order.updated_at)
+            const by = order.updated_by_user_code ?? order.updated_by_user_name
+            return (
+              <Descriptions.Item label="最后改动">
+                <div>{d.format('YYYY-MM-DD')}</div>
+                <div style={{ color: '#888' }}>
+                  {d.format('HH:mm')}{by ? `（${by}）` : ''}
+                </div>
+              </Descriptions.Item>
+            )
+          })()}
+          {/* 备注：始终独占最后一行（span=2 跨两列）；备注文字靠左，不随其他格居中 */}
+          <Descriptions.Item
+            label="备注"
+            span={2}
+            contentStyle={{ padding: '4px 4px', textAlign: 'left' }}
+          >
+            {order.note ?? ''}
           </Descriptions.Item>
         </Descriptions>
 
-        <Divider orientation="left">订单项目（价格快照，不可修改）</Divider>
+        <Divider orientation="center">订单项目</Divider>
         <Table
           rowKey="id"
           size="small"
           pagination={false}
+          tableLayout="fixed"
           dataSource={order.items}
           columns={[
             {
               title: '项目',
+              align: 'center',
+              onHeaderCell: centerHeader,
+              onCell: compactCell,
               render: (_, item) => {
                 const name = item.equipment_spec_name ?? item.sale_item_name ?? '—'
                 return (
@@ -294,17 +400,26 @@ export default function OrderDetail() {
                 )
               },
             },
-            { title: '数量', dataIndex: 'quantity', width: 90, align: 'right' },
+            {
+              title: '数量',
+              dataIndex: 'quantity',
+              width: 56,
+              align: 'center',
+              onHeaderCell: centerHeader,
+              onCell: nowrapCell,
+            },
             {
               title: '单价',
-              width: 110,
-              align: 'right',
+              align: 'center',
+              onHeaderCell: centerHeader,
+              onCell: nowrapCell,
               render: (_, item) => `¥${fenToYuan(item.unit_price)}`,
             },
             {
               title: '小计',
-              width: 110,
-              align: 'right',
+              align: 'center',
+              onHeaderCell: centerHeader,
+              onCell: nowrapCell,
               render: (_, item) => `¥${fenToYuan(item.line_amount)}`,
             },
           ]}
@@ -339,38 +454,77 @@ export default function OrderDetail() {
               </Descriptions.Item>
             </Descriptions>
 
-            <Divider orientation="left">调整项（Other，可正可负）</Divider>
+            {/* "调整项"标题行 + 右侧加号按钮（与编辑订单页"添加项目"同款图标） */}
+            <div style={{ display: 'flex', alignItems: 'center', margin: '8px 0' }}>
+              <div style={{ flex: 1, height: 1, background: '#f0f0f0' }} />
+              <span style={{ padding: '0 12px', fontWeight: 500 }}>调整项</span>
+              <Button
+                type="dashed"
+                size="small"
+                icon={<PlusOutlined />}
+                title="添加调整项"
+                style={{ width: 28, height: 24, padding: 0 }}
+                onClick={() => {
+                  adjustForm.resetFields()
+                  setAdjustQty(1)
+                  setAdjustTab('charge')
+                  setAdjustOpen(true)
+                }}
+              />
+              <div style={{ flex: 1, height: 1, background: '#f0f0f0' }} />
+            </div>
             <Table
               rowKey="id"
               size="small"
               pagination={false}
               dataSource={payment.adjustments}
               columns={[
-                { title: '说明', dataIndex: 'note' },
+                {
+                  title: '说明',
+                  dataIndex: 'note',
+                  onHeaderCell: centerHeader,
+                  onCell: compactCell,
+                },
                 {
                   title: '金额',
-                  width: 140,
+                  width: 96,
                   align: 'right',
+                  onHeaderCell: centerHeader,
+                  onCell: nowrapCell,
                   render: (_, item) => (
                     <span style={{ color: item.amount > 0 ? '#cf1322' : '#3f8600' }}>
                       {item.amount > 0 ? '+' : ''}¥{fenToYuan(item.amount)}
                     </span>
                   ),
                 },
-                { title: '时间', dataIndex: 'created_at', width: 180, render: (v) => formatDateTime(v) },
+                {
+                  title: '时间',
+                  width: 162,
+                  onHeaderCell: centerHeader,
+                  onCell: compactCell,
+                  render: (_, item) => {
+                    const d = dayjs(item.created_at)
+                    const main = `${d.format('YYYY-MM-DD')} ${d.format('HH:mm')}`
+                    const by = (item.created_by_user_code ?? item.created_by_user_name)?.trim()
+                    return (
+                      <div style={{ fontSize: 12, lineHeight: 1.5 }}>
+                        {by && by.length >= 3 ? (
+                          <>
+                            <div style={{ whiteSpace: 'nowrap' }}>{main}</div>
+                            <div style={{ whiteSpace: 'nowrap' }}>（{by}）</div>
+                          </>
+                        ) : (
+                          <div style={{ whiteSpace: 'nowrap' }}>
+                            {main}
+                            {by ? `（${by}）` : ''}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  },
+                },
               ]}
             />
-            <Button
-              style={{ marginTop: 12 }}
-              onClick={() => {
-                adjustForm.resetFields()
-                setAdjustQty(1)
-                setAdjustTab('charge')
-                setAdjustOpen(true)
-              }}
-            >
-              添加调整项
-            </Button>
           </>
         ) : (
           <span style={{ color: '#999' }}>支付记录加载失败</span>
@@ -382,6 +536,7 @@ export default function OrderDetail() {
         open={adjustOpen}
         onCancel={() => setAdjustOpen(false)}
         onOk={submitAdjustment}
+        confirmLoading={adjustSubmitting}
         destroyOnClose
       >
         <Tabs

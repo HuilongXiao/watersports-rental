@@ -18,6 +18,7 @@ export interface User {
   permissions: UserPermissions
   group_id: string | null
   group_name: string | null
+  operator_code?: string | null
 }
 
 export interface UserAccount {
@@ -35,6 +36,7 @@ export interface UserAccount {
   perm_view_revenue: boolean
   perm_manage_payment_methods: boolean
   created_at: string
+  operator_code?: string | null
 }
 
 export interface Group {
@@ -55,6 +57,8 @@ export interface Customer {
   is_system?: boolean
   note?: string | null
   remind?: boolean
+  total_orders?: number
+  total_spending_fen?: number
   created_at?: string
   updated_at?: string
 }
@@ -179,17 +183,21 @@ export interface Order {
   returned: boolean
   check_in_at: string | null
   check_in_by_user_name?: string | null
+  check_in_by_user_code?: string | null
   auto_return_after_minutes: number | null
   auto_return_due_at: string | null
   auto_return_at: string | null
   auto_return_occurred: boolean
   return_at: string | null
   return_by_user_name?: string | null
+  return_by_user_code?: string | null
   return_by_system: boolean
   daily_forced_return_occurred: boolean
   created_by_user_name?: string | null
+  created_by_user_code?: string | null
   created_at: string
   updated_by_user_name?: string | null
+  updated_by_user_code?: string | null
   updated_at: string
   inventory_warnings?: InventoryWarning[]
 }
@@ -201,6 +209,8 @@ export interface PaymentAdjustment {
   amount: number
   note: string
   created_at: string
+  created_by_user_name?: string | null
+  created_by_user_code?: string | null
 }
 
 export interface PaymentView {
@@ -214,6 +224,7 @@ export interface PaymentView {
 }
 
 export interface PaymentMethod {
+  id: number
   code: string
   name: string
   is_default: boolean
@@ -253,6 +264,7 @@ export interface DailySummary {
   equipment_usage: Array<{ name: string; quantity: number; amount_fen: number }>
   sale_item_usage: Array<{ name: string; quantity: number; amount_fen: number }>
   others: Array<{ note: string; quantity: number; amount_fen: number }>
+  payment_method_totals: Array<{ code: string; name: string; amount_fen: number }>
 }
 
 export interface OrderSegment {

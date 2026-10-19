@@ -133,6 +133,19 @@ def _ensure_group(user: User, active_group_id: str | None = None) -> str | None:
     return user.group_id
 
 
+def _check_group_ownership(user: User, row_group_id: str | None, row_label: str) -> None:
+    """403 if a non-superuser attempts to touch a row outside their Group.
+
+    Superuser is always allowed (can switch via active_group_id elsewhere).
+    None means the row belongs to the global pool — only superuser can edit
+    those too (non-superuser never sees them in list_catalog anyway).
+    """
+    if user.role == "superuser":
+        return
+    if row_group_id is None or row_group_id != user.group_id:
+        raise HTTPException(status_code=403, detail=f"无权修改其他 Group 的{row_label}")
+
+
 def create_equipment_type(
     db: Session, user: User, name: str, color: str, active_group_id: str | None = None
 ) -> EquipmentType:
@@ -164,6 +177,7 @@ def update_equipment_type(
     item = db.get(EquipmentType, type_id)
     if not item:
         raise HTTPException(status_code=404, detail="设备大类不存在")
+    _check_group_ownership(user, item.group_id, "设备大类")
     name = name.strip()
     _validate_color(color)
     clash_stmt = select(EquipmentType).where(
@@ -194,6 +208,7 @@ def create_equipment_spec(
     type_row = db.get(EquipmentType, equipment_type_id)
     if not type_row:
         raise HTTPException(status_code=404, detail="设备大类不存在")
+    _check_group_ownership(user, type_row.group_id, "设备大类")
     name = name.strip()
     clash_stmt = select(EquipmentSpec).where(
         EquipmentSpec.equipment_type_id == equipment_type_id,
@@ -237,11 +252,20 @@ def update_equipment_spec(
     item = db.get(EquipmentSpec, spec_id)
     if not item:
         raise HTTPException(status_code=404, detail="设备规格不存在")
+    _check_group_ownership(user, item.group_id, "设备规格")
 
     new_type_id = equipment_type_id or item.equipment_type_id
-    new_type_row = db.get(EquipmentType, new_type_id) if equipment_type_id else None
-    if equipment_type_id and not new_type_row:
-        raise HTTPException(status_code=404, detail="设备大类不存在")
+    if equipment_type_id:
+        new_type_row = db.get(EquipmentType, new_type_id)
+        if not new_type_row:
+            raise HTTPException(status_code=404, detail="设备大类不存在")
+        # 切换 equipment_type 时，新 type 必须属于同一 group（或都在全局池）
+        # 否则就相当于越权引用别的 group 的分类
+        if (
+            new_type_row.group_id != item.group_id
+        ):
+            raise HTTPException(status_code=403, detail="新设备大类与当前规格不在同一 Group")
+    new_type_row = None
 
     new_name = name.strip() if name is not None else item.name
     if new_name != item.name or new_type_id != item.equipment_type_id:
@@ -344,6 +368,7 @@ def update_sale_item(
     item = db.get(SaleItem, item_id)
     if not item:
         raise HTTPException(status_code=404, detail="售卖项目不存在")
+    _check_group_ownership(user, item.group_id, "售卖项目")
     if name is not None:
         new_name = name.strip()
         clash_stmt = select(SaleItem).where(

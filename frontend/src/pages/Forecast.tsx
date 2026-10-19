@@ -34,7 +34,7 @@ export default function Forecast() {
         onClick={() => navigate('/dashboard')}
         style={{ marginBottom: 16, paddingLeft: 0 }}
       >
-        ← 返回工作台
+        ← 返回概览
       </Button>
       <Card title="船只用量" style={{ marginBottom: 16 }}>
         <Space style={{ marginBottom: 12 }}>
@@ -195,10 +195,8 @@ function ForecastChart({ eq, slots }: { eq: ForecastEquipment; slots: string[] }
   const hex = typeColorHex(eq.type_color) ?? FALLBACK_COLOR
   const lightHex = lightenHex(hex)
   const total = eq.total_quantity
-  // 占用条封顶：库存总量对应行宽的 90%，右侧 10% 显示可用/超出数量
-  const BAR_RATIO = 0.9
-  // 每单位占用对应的行宽百分比（占满 90% 时 = 总量）
-  const unitPct = total > 0 ? (BAR_RATIO / total) * 100 : 0
+  // 占用条封顶：库存总量对应行宽的 94%，右侧 6% 显示可用/超出数量
+  const BAR_RATIO = 0.94
 
   return (
     <div
@@ -216,7 +214,10 @@ function ForecastChart({ eq, slots }: { eq: ForecastEquipment; slots: string[] }
           const reserved = eq.occupied_active[i]
           const occupied = used + reserved
           const avail = total - occupied
-          // 两段宽度按总量归一化到 90%；占用超量时条形被容器裁剪封顶 90%
+          // 超售时（occupied > total）：按实际占用总量归一化，让两段按比例填满 bar 90%
+          // 未超售时：按库存总量归一化，维持原有比例
+          const unitPctBase = occupied > total ? occupied : total
+          const unitPct = unitPctBase > 0 ? (BAR_RATIO / unitPctBase) * 100 : 0
           const usedW = used * unitPct
           const reservedW = reserved * unitPct
           // 右侧数值：可用剩余（灰）、0（灰）、超出数量（红）
@@ -245,7 +246,7 @@ function ForecastChart({ eq, slots }: { eq: ForecastEquipment; slots: string[] }
               </span>
               <div
                 style={{
-                  flex: 9,
+                  flex: 94,
                   display: 'flex',
                   height: BAR_HEIGHT,
                   background: '#fafafa',
@@ -289,11 +290,11 @@ function ForecastChart({ eq, slots }: { eq: ForecastEquipment; slots: string[] }
                   </div>
                 )}
               </div>
-              {/* 右侧数值区（10%）：与条形区共用 #fafafa 背景；
+              {/* 右侧数值区（6%）：与条形区共用 #fafafa 背景；
                   显示可用剩余数量（灰）、0（灰）或超出数量（红） */}
               <div
                 style={{
-                  flex: 1,
+                  flex: 6,
                   height: BAR_HEIGHT,
                   display: 'flex',
                   alignItems: 'center',
