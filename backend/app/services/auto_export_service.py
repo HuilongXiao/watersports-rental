@@ -27,6 +27,7 @@ from app.models.customer import Customer
 from app.models.equipment import EquipmentSpec, SaleItem
 from app.models.order import Order, OrderItem
 from app.models.payment import Payment, PaymentItem
+from app.models.payment_method import PaymentMethod
 
 EXPORT_NAME_RE = re.compile(r"^auto_(orders|customers)_\d{8}\.csv$")
 
@@ -104,10 +105,15 @@ def _orders_csv(db: Session, start_utc: datetime, end_utc: datetime) -> str:
             "数量",
             "单价(元)",
             "类目总额(元)",
+            "付款方式",
         ]
     )
 
+    # 付款方式 code→名称全局映射（code 全局唯一）；已删除的方式留空，不显示 code
+    payment_names = dict(db.execute(select(PaymentMethod.code, PaymentMethod.name)).all())
+
     for order in orders:
+        pay_name = payment_names.get(order.payment_method_code, "") if order.payment_method_code else ""
         items = list(
             db.scalars(
                 select(OrderItem)
@@ -167,6 +173,7 @@ def _orders_csv(db: Session, start_utc: datetime, end_utc: datetime) -> str:
                     str(qty),
                     f"{unit_price / 100:.2f}",
                     f"{unit_price * qty / 100:.2f}",
+                    pay_name,
                 ]
             )
             seq += 1
@@ -181,6 +188,7 @@ def _orders_csv(db: Session, start_utc: datetime, end_utc: datetime) -> str:
                     str(adj.quantity),
                     f"{adj.unit_amount / 100:.2f}",
                     f"{adj.amount / 100:.2f}",
+                    pay_name,
                 ]
             )
             seq += 1

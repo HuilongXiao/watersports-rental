@@ -56,13 +56,51 @@ body {
   margin-bottom: 12px;
 }
 
-/* On narrow screens let table cells wrap instead of overflowing the page. */
-@media (max-width: 768px) {
-  .ant-table-cell {
-    white-space: normal !important;
-    word-break: break-word;
-  }
-  .ant-descriptions-item-content {
-    word-break: break-word;
-  }
+/* 订单页「预订」tab 的半小时间隔行：去掉表格默认的上下两条分隔线，
+   只保留分隔行自身那条带时间标签的线（分隔行与它上面那一行都去底边线）。 */
+.orders-table .ant-table-tbody > tr.orders-no-row-border > td {
+  border-bottom: none !important;
+}
+
+/* 订单页两个状态 tab（预订 / 进行中）平分整行宽度 */
+.orders-tabs .ant-tabs-nav {
+  width: 100%;
+  margin-bottom: 0;
+}
+.orders-tabs .ant-tabs-nav-list {
+  width: 100%;
+}
+.orders-tabs .ant-tabs-tab {
+  flex: 1;
+  justify-content: center;
+}
+.orders-tabs .ant-tabs-tab + .ant-tabs-tab {
+  margin-left: 0;
+}
+
+/* 船只调配页两个 tab（出发 / 返还）平分整行宽度 */
+.boats-tabs .ant-tabs-nav {
+  width: 100%;
+  margin-bottom: 12px;
+}
+.boats-tabs .ant-tabs-nav-list {
+  width: 100%;
+}
+.boats-tabs .ant-tabs-tab {
+  flex: 1;
+  justify-content: center;
+}
+.boats-tabs .ant-tabs-tab + .ant-tabs-tab {
+  margin-left: 0;
+}
+
+/* On narrow screens let table cells wrap instead of overflowing the page.
+   Scoped to the body class applied by LayoutModeProvider so the manual
+   mobile/desktop override is honored regardless of the viewport width. */
+.layout-mobile .ant-table-cell {
+  white-space: normal !important;
+  word-break: break-word;
+}
+.layout-mobile .ant-descriptions-item-content {
+  word-break: break-word;
 }

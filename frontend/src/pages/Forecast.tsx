@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { App, Button, Card, DatePicker, Grid, Space, Spin } from 'antd'
+import { App, Button, Card, DatePicker, Space, Spin } from 'antd'
 import { LeftOutlined, RightOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import { api } from '../api'
 import { typeColorHex } from '../utils'
+import { useLayoutMode } from '../layoutMode'
 import type { ForecastEquipment, InventoryForecast } from '../types'
 
 const FALLBACK_COLOR = '#0e7a8c'
@@ -34,7 +35,7 @@ export default function Forecast() {
         onClick={() => navigate('/dashboard')}
         style={{ marginBottom: 16, paddingLeft: 0 }}
       >
-        ← 返回工作台
+        ← 返回概览
       </Button>
       <Card title="船只用量" style={{ marginBottom: 16 }}>
         <Space style={{ marginBottom: 12 }}>
@@ -59,7 +60,7 @@ export function ForecastPanel({ dateStr }: { dateStr: string }) {
   const [loading, setLoading] = useState(false)
   // 左右两列各自独立选中的船型 spec_id；null 表示尚未选择（初始化为第一种船型）
   const [selectedIds, setSelectedIds] = useState<[string | null, string | null]>([null, null])
-  const screens = Grid.useBreakpoint()
+  const { isMobile } = useLayoutMode()
   const { message } = App.useApp()
 
   useEffect(() => {
@@ -91,9 +92,6 @@ export function ForecastPanel({ dateStr }: { dateStr: string }) {
     [data, selectedIds],
   )
 
-  // 手机版单列、电脑版双列（两列各自独立选择船型）
-  const isMobile = !screens.md
-
   const renderColumn = (index: 0 | 1) => (
     <SpecSelector
       equipment={data!.equipment}
@@ -116,7 +114,7 @@ export function ForecastPanel({ dateStr }: { dateStr: string }) {
         // 手机版：单列布局，选择器在上、图表在下
         <div>
           {renderColumn(0)}
-          {selected[0] && <ForecastChart eq={selected[0]} slots={data.slots} />}
+          {selected[0] && <ForecastChart eq={selected[0]} slots={data.slots} dateStr={data.date} />}
         </div>
       ) : (
         // 电脑版：左右两列布局，两列独立选择、独立展示
@@ -124,7 +122,9 @@ export function ForecastPanel({ dateStr }: { dateStr: string }) {
           {[0, 1].map((i) => (
             <div key={i}>
               {renderColumn(i as 0 | 1)}
-              {selected[i] && <ForecastChart eq={selected[i]!} slots={data.slots} />}
+              {selected[i] && (
+                <ForecastChart eq={selected[i]!} slots={data.slots} dateStr={data.date} />
+              )}
             </div>
           ))}
         </div>
@@ -191,14 +191,20 @@ function SpecSelector({
   )
 }
 
-function ForecastChart({ eq, slots }: { eq: ForecastEquipment; slots: string[] }) {
+function ForecastChart({
+  eq,
+  slots,
+  dateStr,
+}: {
+  eq: ForecastEquipment
+  slots: string[]
+  dateStr: string
+}) {
   const hex = typeColorHex(eq.type_color) ?? FALLBACK_COLOR
   const lightHex = lightenHex(hex)
   const total = eq.total_quantity
-  // 占用条封顶：库存总量对应行宽的 90%，右侧 10% 显示可用/超出数量
-  const BAR_RATIO = 0.9
-  // 每单位占用对应的行宽百分比（占满 90% 时 = 总量）
-  const unitPct = total > 0 ? (BAR_RATIO / total) * 100 : 0
+  // 占用条封顶：库存总量对应行宽的 94%，右侧 6% 显示可用/超出数量
+  const BAR_RATIO = 0.94
 
   return (
     <div
@@ -215,8 +221,18 @@ function ForecastChart({ eq, slots }: { eq: ForecastEquipment; slots: string[] }
           const used = eq.occupied_used[i]
           const reserved = eq.occupied_active[i]
           const occupied = used + reserved
-          const avail = total - occupied
-          // 两段宽度按总量归一化到 90%；占用超量时条形被容器裁剪封顶 90%
+          // 当前及过去时段右侧「可用」取该时段最后一刻（槽结束时刻）的真实可用
+          // 船只数：例如 15:00-15:30 峰值占用 2 条，但 15:30 时只剩 1 条在用，
+          // 可用即 3；未来时段仍按「总量 - 已用 - 预订」算，保留预订占位。
+          const slotStart = dayjs(dateStr).hour(+slot.slice(0, 2)).minute(+slot.slice(3, 5))
+          const isPastOrCurrent = !slotStart.isAfter(dayjs())
+          const avail = isPastOrCurrent
+            ? (eq.available_end?.[i] ?? total - occupied)
+            : total - occupied
+          // 超售时（occupied > total）：按实际占用总量归一化，让两段按比例填满 bar 90%
+          // 未超售时：按库存总量归一化，维持原有比例
+          const unitPctBase = occupied > total ? occupied : total
+          const unitPct = unitPctBase > 0 ? (BAR_RATIO / unitPctBase) * 100 : 0
           const usedW = used * unitPct
           const reservedW = reserved * unitPct
           // 右侧数值：可用剩余（灰）、0（灰）、超出数量（红）
@@ -245,7 +261,7 @@ function ForecastChart({ eq, slots }: { eq: ForecastEquipment; slots: string[] }
               </span>
               <div
                 style={{
-                  flex: 9,
+                  flex: 94,
                   display: 'flex',
                   height: BAR_HEIGHT,
                   background: '#fafafa',
@@ -289,11 +305,11 @@ function ForecastChart({ eq, slots }: { eq: ForecastEquipment; slots: string[] }
                   </div>
                 )}
               </div>
-              {/* 右侧数值区（10%）：与条形区共用 #fafafa 背景；
+              {/* 右侧数值区（6%）：与条形区共用 #fafafa 背景；
                   显示可用剩余数量（灰）、0（灰）或超出数量（红） */}
               <div
                 style={{
-                  flex: 1,
+                  flex: 6,
                   height: BAR_HEIGHT,
                   display: 'flex',
                   alignItems: 'center',

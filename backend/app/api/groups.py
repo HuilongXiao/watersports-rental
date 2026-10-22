@@ -12,10 +12,11 @@ from app.core.security import hash_password
 from app.db.session import get_db
 from app.models.customer import Customer
 from app.models.group import Group
+from app.models.payment_method import PaymentMethod
 from app.models.settings import DEFAULT_AUTO_RETURN_MINUTES, Setting
 from app.models.user import User
 from app.serializers import user_dict
-from app.services.user_service import normalize_username, username_exists
+from app.services.user_service import next_operator_code, normalize_username, username_exists
 
 router = APIRouter(prefix="/api/groups", tags=["groups"])
 
@@ -105,6 +106,17 @@ def create_group(
             updated_by_user_id=actor_id,
         )
     )
+    # 为新 group seed 默认支付方式「现金」，保证该 group 下单时可立即选用。
+    # 支付方式已按 group 隔离，必须随 group 创建一并初始化。
+    db.add(
+        PaymentMethod(
+            group_id=group.id,
+            code="CASH",
+            name="现金",
+            is_default=True,
+            active=True,
+        )
+    )
     db.commit()
     db.refresh(group)
     return _group_dict(group, 0)
@@ -167,6 +179,9 @@ def create_manager(
         raise HTTPException(status_code=409, detail="Group已停用")
     if username_exists(db, payload.username):
         raise HTTPException(status_code=409, detail="用户名已存在")
+    operator_code = next_operator_code(db, group_id)
+    if operator_code is None:
+        raise HTTPException(status_code=422, detail="该 Group 的操作员编号已达上限（Z9）")
     manager = User(
         id=str(uuid4()),
         username=payload.username,
@@ -176,6 +191,7 @@ def create_manager(
         is_system=False,
         role="admin",
         group_id=group_id,
+        operator_code=operator_code,
     )
     db.add(manager)
     db.commit()

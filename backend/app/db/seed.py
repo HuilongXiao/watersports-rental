@@ -27,7 +27,7 @@ from app.models.group import Group
 from app.models.payment_method import PaymentMethod
 from app.models.settings import DEFAULT_AUTO_RETURN_MINUTES, SETTINGS_SINGLETON_ID, Setting
 from app.models.user import User
-from app.services.user_service import find_by_username
+from app.services.user_service import backfill_operator_codes, find_by_username
 
 
 def _get_or_create_system_user(db: Session) -> User:
@@ -51,8 +51,7 @@ def seed_system_data() -> None:
     try:
         system = _get_or_create_system_user(db)
 
-        # 初始支付方式：CASH/现金（全局唯一默认，幂等；与 ENABLE_PAYMENT_METHOD
-        # 开关无关，保证开启功能时数据已就绪）
+        # 初始支付方式：CASH/现金（全局唯一默认，幂等）
         if db.scalar(select(PaymentMethod).where(PaymentMethod.code == "CASH")) is None:
             db.add(PaymentMethod(code="CASH", name="现金", is_default=True, active=True))
 
@@ -77,6 +76,13 @@ def seed_system_data() -> None:
         reset_password = os.getenv("SUPERUSER_PASSWORD_RESET", "").strip()
         if reset_password and admin is not None:
             admin.password_hash = hash_password(reset_password)
+
+        # 先 flush，确保刚创建的初始管理员对回填查询可见（Session 配置了 autoflush=False）
+        db.flush()
+        # 操作员编号回填：存量用户（含刚创建的初始管理员）按 group+创建顺序补编号，
+        # 超级管理员固定为 SU。幂等：已有编号的用户不动（仅 SU 规则上线前 A0→SU 的
+        # 一次性迁移例外）；由后续统一 commit 落库
+        backfill_operator_codes(db)
 
         # Default group / customer / settings — skip on fresh installs.
         seed_default = os.getenv("SEED_DEFAULT_DATA", "true").lower() == "true"

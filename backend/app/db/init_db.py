@@ -16,6 +16,9 @@ _ADDITIVE_COLUMNS = [
     ("users", "perm_export_report", "BOOLEAN NOT NULL DEFAULT 0"),
     ("users", "perm_manage_users", "BOOLEAN NOT NULL DEFAULT 0"),
     ("equipment_types", "color", "VARCHAR(16) NOT NULL DEFAULT 'blue'"),
+    ("equipment_types", "is_active", "BOOLEAN NOT NULL DEFAULT 1"),
+    ("equipment_specs", "boat_numbering_required", "BOOLEAN NOT NULL DEFAULT 1"),
+    ("equipment_specs", "show_in_usage", "BOOLEAN NOT NULL DEFAULT 1"),
     ("settings", "auto_export_orders_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
     ("settings", "auto_export_customers_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
     ("customers", "note", "TEXT"),
@@ -30,11 +33,14 @@ _ADDITIVE_COLUMNS = [
     ("settings", "group_id", "VARCHAR(36)"),
     ("users", "perm_view_revenue", "BOOLEAN NOT NULL DEFAULT 0"),
     ("settings", "fast_customer_mode", "BOOLEAN NOT NULL DEFAULT 0"),
+    ("settings", "boat_numbering_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
     ("equipment_specs", "sort_order", "INTEGER NOT NULL DEFAULT 0"),
     ("orders", "is_walk_in", "BOOLEAN NOT NULL DEFAULT 0"),
     ("orders", "note_popup", "BOOLEAN NOT NULL DEFAULT 0"),
     ("orders", "payment_method_code", "VARCHAR(32)"),
     ("users", "perm_manage_payment_methods", "BOOLEAN NOT NULL DEFAULT 0"),
+    ("users", "perm_boat_dispatch", "BOOLEAN NOT NULL DEFAULT 0"),
+    ("users", "operator_code", "VARCHAR(2)"),
 ]
 
 
@@ -160,6 +166,32 @@ def _migrate_customers_unique_scope() -> None:
             bind.exec_driver_sql(
                 "CREATE UNIQUE INDEX uq_customers_group_wechat ON customers (group_id, wechat_id)"
             )
+        # 微信昵称唯一性约束：同 group 内昵称（非空）必须唯一，防止手动
+        # 创建客户时出现重复。SQLite 的 UNIQUE 对 NULL 值视为不冲突，
+        # 所以 wechat_nickname 为 NULL 的客户不会互相冲突。
+        #
+        # 建索引前先检查是否有脏数据：如果同 group + 同昵称有多于一条，
+        # 这里不会偷偷合并（避免破坏真实业务记录），而是把重复组打印出来
+        # 让运维人员先处理。迁移是幂等的——索引已经存在时直接跳过。
+        if "uq_customers_group_nickname" not in indexes:
+            dup_rows = bind.exec_driver_sql(
+                "SELECT group_id, wechat_nickname, COUNT(*) as n "
+                "FROM customers WHERE wechat_nickname IS NOT NULL AND wechat_nickname != '' "
+                "GROUP BY group_id, wechat_nickname HAVING n > 1"
+            ).fetchall()
+            if dup_rows:
+                import logging
+                log = logging.getLogger("app.db")
+                log.warning(
+                    "跳过 customers 的昵称唯一索引：检测到 %d 组同昵称客户。"
+                    "请先手动合并重复数据后再部署。重复组（group_id / nickname / count）：%s",
+                    len(dup_rows), [(r[0], r[1], r[2]) for r in dup_rows],
+                )
+            else:
+                bind.exec_driver_sql(
+                    "CREATE UNIQUE INDEX uq_customers_group_nickname "
+                    "ON customers (group_id, wechat_nickname)"
+                )
 
 
 def _migrate_customers_identity_constraint() -> None:
@@ -200,6 +232,10 @@ def initialize_database() -> None:
     _migrate_customers_identity_constraint()
     _migrate_customers_unique_scope()
     _migrate_orders_status_constraint()
+    _migrate_catalog_unique_group_scope()
+    _migrate_settings_legacy_auto_export_column()
+    _migrate_payment_methods_group_scope()
+    _migrate_boat_numbers_unique_scope()
 
 
 def _migrate_orders_status_constraint() -> None:
@@ -248,6 +284,271 @@ def _migrate_orders_status_constraint() -> None:
         bind.exec_driver_sql(
             "UPDATE orders SET status = 'in_progress' "
             "WHERE status = 'active' AND check_in_at IS NOT NULL AND return_at IS NULL"
+        )
+
+
+def _migrate_catalog_unique_group_scope() -> None:
+    """Add group-scoped unique indexes for catalog tables.
+
+    Motivation: prior to this fix the uniqueness scope spanned all groups
+    globally — so group A's "皮划艇" type could block group B from creating
+    a type with the same name. Each group owns its own catalog; duplicates
+    across groups are perfectly legitimate.
+
+    Three indexes are added:
+      - uq_equipment_types_group_name  on (group_id, name)
+      - uq_sale_items_group_name        on (group_id, name)
+      - uq_equipment_specs_group_type_name on (group_id, equipment_type_id, name)
+
+    The old uq_equipment_specs_type_name (scope: equipment_type_id, name only)
+    is dropped because it's now subsumed by the new, wider index.
+
+    SQLite treats NULL as "not equal to anything" in UNIQUE, so group_id=NULL
+    global rows never collide with one another — a fresh install that seeds
+    both NULL-group rows will still be fine.
+
+    Safety: if any duplicate is found within a group, the index creation is
+    skipped and a WARNING is logged. The container still boots; ops get a
+    concrete list of which rows to merge first.
+    """
+    import logging
+
+    log = logging.getLogger("app.db")
+
+    checks = [
+        (
+            "equipment_types",
+            "uq_equipment_types_group_name",
+            "SELECT group_id, name, COUNT(*) FROM equipment_types "
+            "WHERE name IS NOT NULL AND name != '' "
+            "GROUP BY group_id, name HAVING COUNT(*) > 1",
+            None,  # no pre-existing index to drop
+        ),
+        (
+            "sale_items",
+            "uq_sale_items_group_name",
+            "SELECT group_id, name, COUNT(*) FROM sale_items "
+            "WHERE name IS NOT NULL AND name != '' "
+            "GROUP BY group_id, name HAVING COUNT(*) > 1",
+            None,
+        ),
+        (
+            "equipment_specs",
+            "uq_equipment_specs_group_type_name",
+            "SELECT group_id, equipment_type_id, name, COUNT(*) FROM equipment_specs "
+            "WHERE name IS NOT NULL AND name != '' "
+            "GROUP BY group_id, equipment_type_id, name HAVING COUNT(*) > 1",
+            "uq_equipment_specs_type_name",  # old constraint to drop
+        ),
+    ]
+
+    with engine.begin() as bind:
+        indexes = {
+            row[0]
+            for row in bind.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            ).fetchall()
+        }
+
+        for table, idx_name, dup_sql, old_idx_name in checks:
+            if idx_name in indexes:
+                continue
+
+            if old_idx_name and old_idx_name in indexes:
+                bind.exec_driver_sql(f"DROP INDEX {old_idx_name}")
+
+            dup_rows = bind.exec_driver_sql(dup_sql).fetchall()
+            if dup_rows:
+                log.warning(
+                    "跳过 %s 的唯一索引 %s：检测到 %d 组重复数据。"
+                    "请先手动合并后再部署。重复组：%s",
+                    table, idx_name, len(dup_rows),
+                    [tuple(r) for r in dup_rows],
+                )
+                continue
+
+            if table == "equipment_types":
+                bind.exec_driver_sql(
+                    "CREATE UNIQUE INDEX uq_equipment_types_group_name "
+                    "ON equipment_types (group_id, name)"
+                )
+            elif table == "sale_items":
+                bind.exec_driver_sql(
+                    "CREATE UNIQUE INDEX uq_sale_items_group_name "
+                    "ON sale_items (group_id, name)"
+                )
+            elif table == "equipment_specs":
+                bind.exec_driver_sql(
+                    "CREATE UNIQUE INDEX uq_equipment_specs_group_type_name "
+                    "ON equipment_specs (group_id, equipment_type_id, name)"
+                )
+
+
+def _migrate_settings_legacy_auto_export_column() -> None:
+    """Drop settings.auto_export_enabled 遗留列。
+
+    v1.1.9 把 `auto_export_enabled` 拆成了 `auto_export_orders_enabled`
+    + `auto_export_customers_enabled`，模型里已经删掉旧列，但数据库里
+    列还在且是 NOT NULL 没有默认值。新 group 创建时 insert Setting
+    会因为这个"幽灵列"而 NOT NULL constraint failed。
+
+    直接 DROP COLUMN 一劳永逸。SQLite 3.35+ 支持。
+    """
+    with engine.begin() as bind:
+        cols = {row[1] for row in bind.exec_driver_sql("PRAGMA table_info(settings)").fetchall()}
+        if "auto_export_enabled" not in cols:
+            return
+        # 先把历史行补齐（防御）
+        bind.exec_driver_sql(
+            "UPDATE settings SET auto_export_enabled = 0"
+        )
+        # 彻底删除这个旧列
+        bind.exec_driver_sql(
+            "ALTER TABLE settings DROP COLUMN auto_export_enabled"
+        )
+
+
+def _migrate_payment_methods_group_scope() -> None:
+    """给 payment_methods 加 group_id + 唯一索引 + 为空 Group seed 默认项。
+
+    背景：v1.2.0 前 payment_methods 是全局字典表，所有 Group 共享 CASH/SQB。
+    改为 Group 隔离后，需要：
+      1. ALTER 加 group_id 列
+      2. 现有全局行分配给"第一个 Group"（历史唯一活跃 Group）
+      3. 删除旧的 code 全局唯一索引（uq_payment_methods_code）
+      4. 建立 (group_id, code) 联合唯一索引
+      5. 为没有任何支付方式的 Group 自动 seed 一条 CASH 默认项
+
+    全幂等，safe to run on every startup。
+    """
+    import logging
+
+    log = logging.getLogger("app.db")
+
+    with engine.begin() as bind:
+        cols = {
+            row[1]
+            for row in bind.exec_driver_sql(
+                "PRAGMA table_info(payment_methods)"
+            ).fetchall()
+        }
+        indexes = {
+            row[0]
+            for row in bind.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            ).fetchall()
+        }
+
+        # ---- 1. 加 group_id 列 ----
+        if "group_id" not in cols:
+            bind.exec_driver_sql(
+                "ALTER TABLE payment_methods ADD COLUMN group_id VARCHAR(36) REFERENCES groups(id)"
+            )
+
+        # ---- 2. 给现有行分配 group_id ----
+        # 所有 group_id IS NULL 的行 → 第一个存在的 Group
+        null_groups = bind.exec_driver_sql(
+            "SELECT COUNT(*) FROM payment_methods WHERE group_id IS NULL"
+        ).scalar()
+        if null_groups > 0:
+            first_group = bind.exec_driver_sql(
+                "SELECT id FROM groups ORDER BY created_at LIMIT 1"
+            ).scalar()
+            if first_group:
+                bind.exec_driver_sql(
+                    "UPDATE payment_methods SET group_id = ? WHERE group_id IS NULL",
+                    (first_group,),
+                )
+                log.info(
+                    "payment_methods: %d 条全局行已分配给 Group %s",
+                    null_groups, first_group[:8],
+                )
+
+        # ---- 3. 删旧的全局唯一索引 ----
+        # SQLite 自动命名约束索引为 tablename_columnname_uindex 或类似；
+        # 也可能是 migration 建的自定义名。
+        old_idx_candidates = [
+            "uq_payment_methods_code",  # 可能的自定义名
+            "ix_payment_methods_code",   # SQLAlchemy 默认建的 index（不是 unique）
+        ]
+        for idx in old_idx_candidates:
+            if idx in indexes:
+                bind.exec_driver_sql(f"DROP INDEX {idx}")
+                log.info("payment_methods: 已删除旧索引 %s", idx)
+
+        # ---- 4. 建新的 group 作用域唯一索引 ----
+        new_idx = "uq_payment_methods_group_code"
+        if new_idx not in indexes:
+            bind.exec_driver_sql(
+                "CREATE UNIQUE INDEX uq_payment_methods_group_code "
+                "ON payment_methods (group_id, code)"
+            )
+            log.info("payment_methods: 已创建 group 作用域唯一索引")
+
+        # ---- 5. 为没有支付方式的 Group seed CASH ----
+        from app.core.time_utils import utc_now
+
+        now = utc_now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        all_groups = bind.exec_driver_sql("SELECT id FROM groups").fetchall()
+        for (gid,) in all_groups:
+            existing = bind.exec_driver_sql(
+                "SELECT COUNT(*) FROM payment_methods WHERE group_id = ?",
+                (gid,),
+            ).scalar()
+            if existing == 0:
+                bind.exec_driver_sql(
+                    "INSERT INTO payment_methods "
+                    "(group_id, code, name, is_default, active, created_at, updated_at) "
+                    "VALUES (?, 'CASH', '现金', 1, 1, ?, ?)",
+                    (gid, now, now),
+                )
+                log.info(
+                    "payment_methods: 为 Group %s 自动 seed CASH 默认项", gid[:8]
+                )
+
+
+def _migrate_boat_numbers_unique_scope() -> None:
+    """船只编号全局唯一：同一 Group 内任何器材的编号都不能相同。
+
+    旧库的唯一约束是 (equipment_spec_id, number)，只限制单个器材内部不重复，
+    不同器材之间可以使用相同编号。这里补建 (group_id, number) 唯一索引。
+    新库由模型约束自带自动索引，检测到已存在覆盖这两列的唯一索引时跳过。
+
+    存在跨器材重复编号的存量数据时仅输出警告并跳过建索引，不让容器启动失败。
+    """
+    import logging
+
+    log = logging.getLogger("app.db")
+
+    with engine.begin() as bind:
+        duplicates = bind.exec_driver_sql(
+            "SELECT group_id, number, COUNT(*) FROM boat_numbers "
+            "GROUP BY group_id, number HAVING COUNT(*) > 1"
+        ).fetchall()
+        if duplicates:
+            log.warning(
+                "跳过 boat_numbers 的全局唯一索引：检测到 %d 组重复编号。"
+                "请先手动修改重复编号后再部署。重复组（group_id / number / count）：%s",
+                len(duplicates), [tuple(r) for r in duplicates],
+            )
+            return
+
+        unique_indexes = [
+            row[1]
+            for row in bind.exec_driver_sql("PRAGMA index_list(boat_numbers)").fetchall()
+            if row[2]
+        ]
+        for name in unique_indexes:
+            cols = [
+                row[2]
+                for row in bind.exec_driver_sql(f"PRAGMA index_info('{name}')").fetchall()
+            ]
+            if cols == ["group_id", "number"]:
+                return
+
+        bind.exec_driver_sql(
+            "CREATE UNIQUE INDEX uq_boat_numbers_group_number "
+            "ON boat_numbers (group_id, number)"
         )
 
 

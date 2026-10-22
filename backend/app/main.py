@@ -4,13 +4,16 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.auth import router as auth_router
 from app.api.auto_exports import router as auto_exports_router
 from app.api.backups import router as backups_router
+from app.api.boats import router as boats_router
 from app.api.catalog import router as catalog_router
 from app.api.customers import router as customers_router
 from app.api.dashboard import router as dashboard_router
@@ -47,9 +50,49 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="Rental App API", version="0.1.0", lifespan=lifespan)
 
+
+class StaticCacheMiddleware:
+    """静态资源缓存策略（纯 ASGI 中间件）。
+
+    前端的 JS/CSS 单包较大，且每次访问都要重新下载；这里区分两类资源：
+
+    - `/assets/**`：Vite 构建产物，文件名自带内容哈希，更新即换名，
+      可以长期强缓存（一年），避免重复下载与重新解析。
+    - 其余（index.html、manifest.json、图标等）一律 `no-cache`：
+      每次带 ETag 校验，未变更返回 304（几十字节），发版后立刻生效。
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        cache_control = (
+            "public, max-age=31536000, immutable"
+            if scope["path"].startswith("/assets/")
+            else "no-cache"
+        )
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                MutableHeaders(scope=message)["Cache-Control"] = cache_control
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
 # 请求耗时统计：X-Server-Timing 头 + JSON 轮转日志（REQUEST_TIMING 控制开关）
 setup_db_timing()
 app.middleware("http")(timing_middleware)
+
+# 静态资源缓存头：给 JS/CSS 加长缓存、给 index.html 加 no-cache
+app.add_middleware(StaticCacheMiddleware)
+# gzip 压缩：JS/CSS 等文本资源压缩后传输量约降到 1/4；图片、字体等本身就是
+# 压缩格式的响应会被内置的排除列表自动跳过。
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 app.add_middleware(
     CORSMiddleware,
@@ -64,6 +107,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(customers_router)
 app.include_router(catalog_router)
+app.include_router(boats_router)
 app.include_router(inventory_router)
 app.include_router(orders_router)
 app.include_router(payments_router)

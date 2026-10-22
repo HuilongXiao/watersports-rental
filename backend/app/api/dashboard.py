@@ -1,7 +1,7 @@
 """Basic dashboard figures for daily operations."""
 
 import math
-from datetime import date as date_type, datetime, timedelta
+from datetime import date as date_type, datetime, time, timedelta, timezone
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
@@ -28,44 +28,75 @@ def dashboard(
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     today = business_date(utc_now())
-    order_stmt = select(Order)
+    day_start = datetime.combine(today, time.min).replace(tzinfo=BUSINESS_TZ).astimezone(timezone.utc)
+    day_end = day_start + timedelta(days=1)
+    group_filter = [Order.group_id == active_group_id] if active_group_id is not None else []
     config_stmt = select(InventoryConfiguration)
     if active_group_id is not None:
-        order_stmt = order_stmt.where(Order.group_id == active_group_id)
         config_stmt = config_stmt.where(InventoryConfiguration.group_id == active_group_id)
-    orders = list(db.scalars(order_stmt).all())
-    today_orders = [o for o in orders if business_date(o.start_at) == today]
 
+    # 今日各状态订单数：SQL 聚合（原先把整个 group 的订单读进内存再过滤）
     counts = {"active": 0, "in_progress": 0, "cancelled": 0, "no_show": 0, "completed": 0}
-    # 每种状态对应的订单金额（项目金额 + 支付调整，含退款负金额）
-    status_amounts_fen: dict[str, int] = {k: 0 for k in counts}
-    today_amount_fen = 0
-    checked_in_now = 0
-    for order in orders:
-        if order.status == "in_progress":
-            checked_in_now += 1
-    # 今日已完成订单金额 = 已完成订单的项目金额 + 支付调整（含退款负金额）
-    for order in today_orders:
-        counts[order.status] = counts.get(order.status, 0) + 1
-        items_total = db.scalar(
-            select(func.coalesce(func.sum(OrderItem.quantity * OrderItem.unit_price), 0)).where(
-                OrderItem.order_id == order.id
-            )
-        ) or 0
-        adj_total = db.scalar(
-            select(func.coalesce(func.sum(PaymentItem.amount), 0))
-            .join(Payment, Payment.id == PaymentItem.payment_id)
-            .where(Payment.order_id == order.id)
-        ) or 0
-        order_total = int(items_total) + int(adj_total)
-        status_amounts_fen[order.status] = status_amounts_fen.get(order.status, 0) + order_total
-        if order.status == "completed":
-            today_amount_fen += order_total
+    for st, n in db.execute(
+        select(Order.status, func.count())
+        .select_from(Order)
+        .where(*group_filter, Order.start_at >= day_start, Order.start_at < day_end)
+        .group_by(Order.status)
+    ).all():
+        counts[st] = counts.get(st, 0) + int(n)
+    today_orders = sum(counts.values())
 
-    configs = db.scalars(config_stmt).all()
+    # 当前进行中（未归还）订单数：跨业务日统计，保持原口径
+    checked_in_now = int(
+        db.scalar(
+            select(func.count())
+            .select_from(Order)
+            .where(*group_filter, Order.status == "in_progress")
+        )
+        or 0
+    )
+
+    # 每种状态对应的订单金额（项目金额 + 支付调整，含退款负金额）：两次聚合替代逐单查询
+    status_amounts_fen: dict[str, int] = {k: 0 for k in counts}
+    for st, total in db.execute(
+        select(
+            Order.status,
+            func.coalesce(func.sum(OrderItem.quantity * OrderItem.unit_price), 0),
+        )
+        .select_from(Order)
+        .join(OrderItem, OrderItem.order_id == Order.id)
+        .where(*group_filter, Order.start_at >= day_start, Order.start_at < day_end)
+        .group_by(Order.status)
+    ).all():
+        status_amounts_fen[st] = status_amounts_fen.get(st, 0) + int(total)
+    for st, total in db.execute(
+        select(Order.status, func.coalesce(func.sum(PaymentItem.amount), 0))
+        .select_from(PaymentItem)
+        .join(Payment, Payment.id == PaymentItem.payment_id)
+        .join(Order, Order.id == Payment.order_id)
+        .where(*group_filter, Order.start_at >= day_start, Order.start_at < day_end)
+        .group_by(Order.status)
+    ).all():
+        status_amounts_fen[st] = status_amounts_fen.get(st, 0) + int(total)
+    # 今日已完成订单金额 = 已完成订单的项目金额 + 支付调整（含退款负金额）
+    today_amount_fen = status_amounts_fen.get("completed", 0)
+
+    # 低库存：一次聚合当前占用（已签到未归还）数量，替代逐规格查询
+    occupied_by_spec = {
+        sid: int(v)
+        for sid, v in db.execute(
+            select(OrderItem.equipment_spec_id, func.coalesce(func.sum(OrderItem.quantity), 0))
+            .select_from(OrderItem)
+            .join(Order, Order.id == OrderItem.order_id)
+            .where(Order.check_in_at.is_not(None), Order.return_at.is_(None))
+            .group_by(OrderItem.equipment_spec_id)
+        ).all()
+        if sid
+    }
+
     low_inventory = []
-    for config in configs:
-        occupied = occupied_quantity(db, config.equipment_spec_id)
+    for config in db.scalars(config_stmt).all():
+        occupied = occupied_by_spec.get(config.equipment_spec_id, 0)
         available = config.total_quantity - occupied
         if available <= 0:
             low_inventory.append(
@@ -79,7 +110,7 @@ def dashboard(
 
     return {
         "today": today.isoformat(),
-        "today_orders": len(today_orders),
+        "today_orders": today_orders,
         "status_counts": counts,
         "status_amounts_fen": status_amounts_fen,
         "checked_in_now": checked_in_now,
@@ -201,11 +232,21 @@ def inventory_forecast(
         target = date_type(y, m, d)
 
     type_stmt = select(EquipmentType)
-    # 预测页只展示启用中的器材规格（停用的船型不显示）
-    spec_stmt = select(EquipmentSpec).where(EquipmentSpec.is_active.is_(True))
+    # 预测页只展示启用中、且规格设置了「显示用量」的器材（停用/隐藏的不显示）
+    spec_stmt = select(EquipmentSpec).where(
+        EquipmentSpec.is_active.is_(True),
+        EquipmentSpec.show_in_usage.is_(True),
+    )
     config_stmt = select(InventoryConfiguration)
-    # 已完成订单与进行中订单一样按签到时间计入“已使用”桶（原色展示）
-    order_stmt = select(Order).where(Order.status.in_(["active", "in_progress", "completed"]))
+    # 已完成订单与进行中订单一样按签到时间计入“已使用”桶（原色展示）。
+    # 业务日过滤下推到 SQL，避免把全部历史订单读进内存再逐条过滤。
+    day_start = datetime.combine(target, time.min).replace(tzinfo=BUSINESS_TZ).astimezone(timezone.utc)
+    day_end = day_start + timedelta(days=1)
+    order_stmt = select(Order).where(
+        Order.status.in_(["active", "in_progress", "completed"]),
+        Order.start_at >= day_start,
+        Order.start_at < day_end,
+    )
     if active_group_id is not None:
         type_stmt = type_stmt.where(EquipmentType.group_id == active_group_id)
         spec_stmt = spec_stmt.where(EquipmentSpec.group_id == active_group_id)
@@ -216,7 +257,7 @@ def inventory_forecast(
     specs = list(db.scalars(spec_stmt).all())
     totals = {c.equipment_spec_id: c.total_quantity for c in db.scalars(config_stmt).all()}
 
-    orders = [o for o in db.scalars(order_stmt).all() if business_date(o.start_at) == target]
+    orders = list(db.scalars(order_stmt).all())
     order_ids = [o.id for o in orders]
     all_items = (
         list(db.scalars(select(OrderItem).where(OrderItem.order_id.in_(order_ids))).all())
@@ -231,15 +272,8 @@ def inventory_forecast(
     #   最早槽位 = 当日订单（含已完成）最早开始时间向下取整到 00/30 分；
     #   最晚槽位 = 当日订单（含已完成）最晚结束时间向前取整到 00/30 分；
     # 无订单时默认 08:00–20:00 共 25 格。上限 48 格（到当日 24:00）。
-    range_stmt = select(Order).where(
-        Order.status.in_(["active", "in_progress", "completed"])
-    )
-    if active_group_id is not None:
-        range_stmt = range_stmt.where(Order.group_id == active_group_id)
-    range_orders = [
-        o for o in db.scalars(range_stmt).all()
-        if business_date(o.start_at) == target
-    ]
+    # 与上面 order_stmt 的筛选条件完全相同，直接复用当日订单集合（原先重复查询了一次）
+    range_orders = orders
     if not range_orders:
         grid_origin = datetime(
             target.year, target.month, target.day,
@@ -286,6 +320,9 @@ def inventory_forecast(
         occupied_u = occupied_used[spec.id]
         occupied = [a + b for a, b in zip(occupied_a, occupied_u)]
         total = totals.get(spec.id, 0)
+        # 每个时段「最后一刻」的真实占用：过去/当前时段的可用 = 总量 - 该数量
+        # （时段内峰值占用可能是 2，但结束那一刻只剩 1 条在用，可用即 3）。
+        occupied_end = occupancy[spec.id]["end_occupied"]
         equipment.append(
             {
                 "spec_id": spec.id,
@@ -297,6 +334,7 @@ def inventory_forecast(
                 "occupied_active": occupied_a,
                 "occupied_used": occupied_u,
                 "available": [total - c for c in occupied],
+                "available_end": [total - c for c in occupied_end],
             }
         )
 
@@ -312,7 +350,7 @@ def daily_summary(
 ):
     """Daily summary: order count, completed/estimated amount, item usage, others.
 
-    已完成订单（过去/今日）统计：船型使用数量与金额、销售项目数量与金额、
+    已完成/进行中订单（过去/今日）统计：船型使用数量与金额、销售项目数量与金额、
     以及支付调整项（其他）的备注与金额。
     未来日期只统计预订（active）订单的项目数据（无调整项）。
     """
@@ -333,9 +371,13 @@ def daily_summary(
     day_orders = [o for o in all_orders if business_date(o.start_at) == target]
     order_count = len(day_orders)
 
-    # 未来日期：统计预订（active）订单的项目数据；过去/今日：统计已完成订单
+    # 未来日期：统计预订（active）订单的项目数据；
+    # 过去/今日：统计已完成（completed）与进行中（in_progress）订单
     summary_status = "active" if is_future else "completed"
-    summary_orders = [o for o in day_orders if o.status == summary_status]
+    if is_future:
+        summary_orders = [o for o in day_orders if o.status == "active"]
+    else:
+        summary_orders = [o for o in day_orders if o.status in ("completed", "in_progress")]
 
     order_ids = [o.id for o in summary_orders]
     items = (
@@ -384,7 +426,7 @@ def daily_summary(
     ]
     sale_item_usage.sort(key=lambda x: x["quantity"], reverse=True)
 
-    # 金额合计 & 其他调整项（仅已完成订单有调整项）
+    # 金额合计 & 其他调整项（已完成/进行中订单有调整项）
     completed_amount_fen = 0
     others: list[dict] = []
     if not is_future:
@@ -412,6 +454,40 @@ def daily_summary(
                     }
                 )
 
+    # 收款方式统计（已完成/进行中订单）
+    payment_method_totals: list[dict] = []
+    if not is_future and summary_orders:
+        from app.models.payment_method import PaymentMethod as PMModel
+        pm_map = {pm.code: pm.name for pm in db.scalars(select(PMModel)).all()}
+        buckets: dict[str, int] = {}
+        # 已完成订单的收款总额 = items 金额 + 调整项合计
+        for order in summary_orders:
+            code = (order.payment_method_code or "").strip()
+            if not code:
+                continue
+            items_total = db.scalar(
+                select(func.coalesce(func.sum(OrderItem.quantity * OrderItem.unit_price), 0)).where(
+                    OrderItem.order_id == order.id
+                )
+            ) or 0
+            adj_total = sum(
+                int(p.amount)
+                for p in db.scalars(
+                    select(PaymentItem)
+                    .join(Payment, Payment.id == PaymentItem.payment_id)
+                    .where(Payment.order_id == order.id)
+                ).all()
+            )
+            buckets[code] = buckets.get(code, 0) + int(items_total) + adj_total
+        payment_method_totals = [
+            {
+                "code": code,
+                "name": pm_map.get(code, code),
+                "amount_fen": amount,
+            }
+            for code, amount in sorted(buckets.items(), key=lambda x: -x[1])
+        ]
+
     return {
         "date": target.isoformat(),
         "is_future": is_future,
@@ -425,4 +501,5 @@ def daily_summary(
         "equipment_usage": equipment_usage,
         "sale_item_usage": sale_item_usage,
         "others": others,
+        "payment_method_totals": payment_method_totals,
     }

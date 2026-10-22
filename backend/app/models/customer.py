@@ -38,4 +38,11 @@ class Customer(Base):
         ),
         UniqueConstraint("group_id", "phone", name="uq_customers_group_phone"),
         UniqueConstraint("group_id", "wechat_id", name="uq_customers_group_wechat"),
+        # 同一业务组内，微信昵称（非空）也必须唯一，避免手动创建客户时出现
+        # 同一个人被拆成多行的情况；订单创建时的 _resolve_or_create_customer
+        # 已经按昵称查重，这里是给客户管理页面加同等约束。
+        # 注意 SQLite 的 UNIQUE 对 NULL 值视为「都不相等」，所以 wechat_nickname
+        # 为 NULL 的行不会冲突；空串会被视为合法昵称进入约束，需要应用层先把
+        # 空串转 NULL（见 customer_service._clean）。
+        UniqueConstraint("group_id", "wechat_nickname", name="uq_customers_group_nickname"),
     )

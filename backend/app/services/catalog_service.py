@@ -8,10 +8,11 @@ from datetime import timedelta
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.core.time_utils import utc_now
+from app.models.boat import BoatDispatch, BoatNumber
 from app.models.equipment import (
     DEFAULT_EQUIPMENT_TYPE_COLOR,
     EQUIPMENT_TYPE_COLORS,
@@ -79,7 +80,10 @@ def list_catalog(db: Session, user: User, active_group_id: str | None = None) ->
     )
 
     return {
-        "equipment_types": [{"id": t.id, "name": t.name, "color": t.color} for t in types],
+        "equipment_types": [
+            {"id": t.id, "name": t.name, "color": t.color, "is_active": t.is_active}
+            for t in types
+        ],
         "equipment": [
             {
                 "id": s.id,
@@ -90,11 +94,17 @@ def list_catalog(db: Session, user: User, active_group_id: str | None = None) ->
                 "equipment_type_color": type_meta.get(s.equipment_type_id).color
                 if s.equipment_type_id in type_meta
                 else DEFAULT_EQUIPMENT_TYPE_COLOR,
+                # 类型停用后其下规格在新订单中不可选；规格自身 is_active 保持独立
+                "equipment_type_active": type_meta.get(s.equipment_type_id).is_active
+                if s.equipment_type_id in type_meta
+                else True,
                 "name": s.name,
                 "price": s.price,
                 "capacity": s.capacity,
                 "sort_order": s.sort_order,
                 "is_active": s.is_active,
+                "boat_numbering_required": s.boat_numbering_required,
+                "show_in_usage": s.show_in_usage,
                 "sold_quantity_7d": int(eq_sales.get(s.id, 0)),
             }
             for s in specs
@@ -133,8 +143,22 @@ def _ensure_group(user: User, active_group_id: str | None = None) -> str | None:
     return user.group_id
 
 
+def _check_group_ownership(user: User, row_group_id: str | None, row_label: str) -> None:
+    """403 if a non-superuser attempts to touch a row outside their Group.
+
+    Superuser is always allowed (can switch via active_group_id elsewhere).
+    None means the row belongs to the global pool — only superuser can edit
+    those too (non-superuser never sees them in list_catalog anyway).
+    """
+    if user.role == "superuser":
+        return
+    if row_group_id is None or row_group_id != user.group_id:
+        raise HTTPException(status_code=403, detail=f"无权修改其他 Group 的{row_label}")
+
+
 def create_equipment_type(
-    db: Session, user: User, name: str, color: str, active_group_id: str | None = None
+    db: Session, user: User, name: str, color: str,
+    is_active: bool = True, active_group_id: str | None = None,
 ) -> EquipmentType:
     name = name.strip()
     _validate_color(color)
@@ -149,6 +173,7 @@ def create_equipment_type(
         group_id=group_id,
         name=name,
         color=color,
+        is_active=is_active,
         created_by_user_id=user.id,
         updated_by_user_id=user.id,
     )
@@ -159,11 +184,13 @@ def create_equipment_type(
 
 
 def update_equipment_type(
-    db: Session, user: User, type_id: str, name: str, color: str
+    db: Session, user: User, type_id: str, name: str, color: str,
+    is_active: bool = True,
 ) -> EquipmentType:
     item = db.get(EquipmentType, type_id)
     if not item:
         raise HTTPException(status_code=404, detail="设备大类不存在")
+    _check_group_ownership(user, item.group_id, "设备大类")
     name = name.strip()
     _validate_color(color)
     clash_stmt = select(EquipmentType).where(
@@ -175,6 +202,7 @@ def update_equipment_type(
         raise HTTPException(status_code=409, detail="设备大类名称已存在")
     item.name = name
     item.color = color
+    item.is_active = is_active
     item.updated_by_user_id = user.id
     db.commit()
     db.refresh(item)
@@ -188,12 +216,15 @@ def _validate_price(price: int) -> None:
 
 def create_equipment_spec(
     db: Session, user: User, equipment_type_id: str, name: str,
-    price: int, capacity: int | None, is_active: bool,
+    price: int, capacity: int | None, is_active: bool, quantity: int = 0,
+    boat_numbering_required: bool = True,
+    show_in_usage: bool = True,
 ) -> EquipmentSpec:
     _validate_price(price)
     type_row = db.get(EquipmentType, equipment_type_id)
     if not type_row:
         raise HTTPException(status_code=404, detail="设备大类不存在")
+    _check_group_ownership(user, type_row.group_id, "设备大类")
     name = name.strip()
     clash_stmt = select(EquipmentSpec).where(
         EquipmentSpec.equipment_type_id == equipment_type_id,
@@ -217,12 +248,17 @@ def create_equipment_spec(
         capacity=capacity,
         sort_order=next_order,
         is_active=is_active,
+        boat_numbering_required=boat_numbering_required,
+        show_in_usage=show_in_usage,
         created_by_user_id=user.id,
         updated_by_user_id=user.id,
     )
     db.add(item)
     db.flush()
-    ensure_configuration(db, item.id, user.id, group_id=item.group_id)
+    config = ensure_configuration(db, item.id, user.id, group_id=item.group_id)
+    # 新建规格时直接写入库存总量（新规格占用必然为 0，无需二次校验）
+    config.total_quantity = quantity
+    config.updated_by_user_id = user.id
     db.commit()
     db.refresh(item)
     return item
@@ -233,15 +269,26 @@ def update_equipment_spec(
     name: str | None = None, price: int | None = None,
     capacity=_UNSET, is_active: bool | None = None,
     equipment_type_id: str | None = None,
+    boat_numbering_required: bool | None = None,
+    show_in_usage: bool | None = None,
 ) -> EquipmentSpec:
     item = db.get(EquipmentSpec, spec_id)
     if not item:
         raise HTTPException(status_code=404, detail="设备规格不存在")
+    _check_group_ownership(user, item.group_id, "设备规格")
 
     new_type_id = equipment_type_id or item.equipment_type_id
-    new_type_row = db.get(EquipmentType, new_type_id) if equipment_type_id else None
-    if equipment_type_id and not new_type_row:
-        raise HTTPException(status_code=404, detail="设备大类不存在")
+    if equipment_type_id:
+        new_type_row = db.get(EquipmentType, new_type_id)
+        if not new_type_row:
+            raise HTTPException(status_code=404, detail="设备大类不存在")
+        # 切换 equipment_type 时，新 type 必须属于同一 group（或都在全局池）
+        # 否则就相当于越权引用别的 group 的分类
+        if (
+            new_type_row.group_id != item.group_id
+        ):
+            raise HTTPException(status_code=403, detail="新设备大类与当前规格不在同一 Group")
+    new_type_row = None
 
     new_name = name.strip() if name is not None else item.name
     if new_name != item.name or new_type_id != item.equipment_type_id:
@@ -267,6 +314,31 @@ def update_equipment_spec(
         item.capacity = capacity
     if is_active is not None:
         item.is_active = is_active
+    # 关闭编号前需确认该器材没有正在使用的船只，并清空已编好的编号（编号全局唯一，可被复用）
+    if (
+        boat_numbering_required is not None
+        and boat_numbering_required != item.boat_numbering_required
+    ):
+        if not boat_numbering_required:
+            in_use = db.scalar(
+                select(BoatDispatch.id)
+                .where(
+                    BoatDispatch.equipment_spec_id == item.id,
+                    BoatDispatch.departed.is_(True),
+                    BoatDispatch.returned.is_(False),
+                )
+                .limit(1)
+            )
+            if in_use:
+                raise HTTPException(
+                    status_code=409, detail="该器材还有已出发的船只，请全部返还后再关闭编号"
+                )
+            db.execute(
+                delete(BoatNumber).where(BoatNumber.equipment_spec_id == item.id)
+            )
+        item.boat_numbering_required = boat_numbering_required
+    if show_in_usage is not None:
+        item.show_in_usage = show_in_usage
     item.updated_by_user_id = user.id
     db.commit()
     db.refresh(item)
@@ -344,6 +416,7 @@ def update_sale_item(
     item = db.get(SaleItem, item_id)
     if not item:
         raise HTTPException(status_code=404, detail="售卖项目不存在")
+    _check_group_ownership(user, item.group_id, "售卖项目")
     if name is not None:
         new_name = name.strip()
         clash_stmt = select(SaleItem).where(

@@ -9,7 +9,6 @@ import {
   Descriptions,
   Divider,
   Form,
-  Grid,
   Input,
   InputNumber,
   List,
@@ -30,6 +29,8 @@ import type { Dayjs } from 'dayjs'
 import { api } from '../api'
 import { useAuth } from '../auth'
 import { useSettings } from '../contexts/SettingsContext'
+import { useLayoutMode } from '../layoutMode'
+import LayoutModeSwitch from '../components/LayoutModeSwitch'
 import { fenToYuan, typeColorHex, TYPE_COLOR_OPTIONS, yuanToFen } from '../utils'
 import type {
   AppSettings,
@@ -45,7 +46,7 @@ import Groups from './Groups'
 
 interface SettingsTabDef {
   key: string
-  label: string
+  label: ReactNode
   children: ReactNode
 }
 
@@ -56,7 +57,7 @@ function formatSpecPrice(fen: number): string {
 
 export default function CatalogSettings() {
   const { user } = useAuth()
-  const screens = Grid.useBreakpoint()
+  const { isMobile } = useLayoutMode()
   // 手机版“进入子页面”的当前选中项（电脑版不使用）
   const [mobileActive, setMobileActive] = useState<string | null>(null)
   const canManageUsers = Boolean(
@@ -68,6 +69,20 @@ export default function CatalogSettings() {
   )
   const isSuperuser = Boolean(user && user.role === 'superuser')
 
+  // 器材编号是否全部完成：未完成时在「器材编号」tab 上显示红色感叹号
+  const [numberingAllComplete, setNumberingAllComplete] = useState(true)
+  const refreshNumbering = useCallback(async () => {
+    try {
+      const data = await api.get<{ all_complete: boolean }>('/api/boats/numbering')
+      setNumberingAllComplete(data.all_complete)
+    } catch {
+      // 降级：接口失败时不显示提醒，不阻塞页面
+    }
+  }, [])
+  useEffect(() => {
+    refreshNumbering()
+  }, [refreshNumbering])
+
   const tabs: SettingsTabDef[] = [
     {
       key: 'sale',
@@ -75,7 +90,24 @@ export default function CatalogSettings() {
       children: (
         <Tabs
           items={[
-            { key: 'catalog', label: '器材目录', children: <EquipmentTab /> },
+            {
+              key: 'catalog',
+              label: '器材目录',
+              children: <EquipmentTab onNumberingChanged={refreshNumbering} />,
+            },
+            { key: 'types', label: '类型管理', children: <TypeTab /> },
+            {
+              key: 'numbering',
+              label: (
+                <span>
+                  器材编号
+                  {!numberingAllComplete && (
+                    <span style={{ color: '#ff4d4f', marginLeft: 4 }}>❗</span>
+                  )}
+                </span>
+              ),
+              children: <NumberingTab onChanged={refreshNumbering} />,
+            },
             { key: 'items', label: '售卖项目', children: <SaleTab /> },
           ]}
         />
@@ -91,7 +123,7 @@ export default function CatalogSettings() {
   ]
 
   // 手机版：竖排菜单，点击后进入独立页面编辑
-  if (!screens.md) {
+  if (isMobile) {
     const current = tabs.find((t) => t.key === mobileActive)
     if (current) {
       return (
@@ -163,23 +195,26 @@ function ColorSwatchPicker({
   )
 }
 
-function EquipmentTab() {
+function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void }) {
+  const { isMobile } = useLayoutMode()
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const { message } = App.useApp()
-  const [typeModal, setTypeModal] = useState(false)
   const [specModal, setSpecModal] = useState(false)
-  const [editingType, setEditingType] = useState<EquipmentType | null>(null)
   const [editingSpec, setEditingSpec] = useState<EquipmentSpec | null>(null)
-  const [typeForm] = Form.useForm<{ name: string; color: string }>()
-  const typeColor = Form.useWatch('color', typeForm) ?? 'blue'
+  // 「器材编号」弹窗当前编辑的规格
+  const [numberingSpecId, setNumberingSpecId] = useState<string | null>(null)
   const [specForm] = Form.useForm<{
     equipment_type_id: string
     name: string
     price: number
     capacity: number | null
-    is_active: boolean
     quantity: number
   }>()
+  // 启用状态与器材编号开关都用独立 state 控制，避免与表单绑定冲突
+  const [specActive, setSpecActive] = useState(true)
+  const [numberingRequired, setNumberingRequired] = useState(true)
+  // 是否在概览「船只用量」中展示该器材
+  const [showInUsage, setShowInUsage] = useState(true)
   // 编辑规格时的库存现状（来自 /api/inventory；未配置过的规格视为 0）
   const [editingOccupied, setEditingOccupied] = useState(0)
   const [editingTotal, setEditingTotal] = useState(0)
@@ -202,22 +237,6 @@ function EquipmentTab() {
     load()
   }, [load])
 
-  const submitType = async () => {
-    const values = await typeForm.validateFields()
-    try {
-      if (editingType) {
-        await api.put(`/api/catalog/equipment-types/${editingType.id}`, values)
-      } else {
-        await api.post('/api/catalog/equipment-types', values)
-      }
-      message.success('已保存')
-      setTypeModal(false)
-      load()
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '保存失败')
-    }
-  }
-
   const openSpec = (spec: EquipmentSpec | null) => {
     setEditingSpec(spec)
     if (spec) {
@@ -230,35 +249,44 @@ function EquipmentTab() {
         name: spec.name,
         price: spec.price / 100,
         capacity: spec.capacity,
-        is_active: spec.is_active,
         quantity: total,
       })
+      setSpecActive(spec.is_active)
+      setNumberingRequired(spec.boat_numbering_required ?? true)
+      setShowInUsage(spec.show_in_usage ?? true)
     } else {
       specForm.resetFields()
+      specForm.setFieldsValue({ quantity: 0 })
+      setSpecActive(true)
+      setNumberingRequired(true)
+      setShowInUsage(true)
     }
     setSpecModal(true)
   }
 
   const submitSpec = async () => {
     const values = await specForm.validateFields()
+    const quantity = values.quantity ?? 0
     const body = {
       equipment_type_id: values.equipment_type_id,
       name: values.name,
       price: yuanToFen(values.price),
       capacity: values.capacity === undefined ? null : values.capacity,
-      ...(editingSpec ? { is_active: values.is_active ?? true } : {}),
     }
     try {
       if (editingSpec) {
-        await api.put(`/api/catalog/equipment-specs/${editingSpec.id}`, body)
+        await api.put(`/api/catalog/equipment-specs/${editingSpec.id}`, {
+          ...body,
+          is_active: specActive,
+          boat_numbering_required: numberingRequired,
+          show_in_usage: showInUsage,
+        })
         // 数量有变化时同步更新库存配置（后端校验不能低于当前占用）
-        if ((values.quantity ?? 0) !== editingTotal) {
-          await api.put(`/api/inventory/${editingSpec.id}`, {
-            total_quantity: values.quantity ?? 0,
-          })
+        if (quantity !== editingTotal) {
+          await api.put(`/api/inventory/${editingSpec.id}`, { total_quantity: quantity })
         }
       } else {
-        await api.post('/api/catalog/equipment-specs', body)
+        await api.post('/api/catalog/equipment-specs', { ...body, quantity })
       }
       message.success('已保存')
       setSpecModal(false)
@@ -272,97 +300,101 @@ function EquipmentTab() {
     {
       title: '名称',
       dataIndex: 'name',
+      align: 'center',
+      // 手机版：收窄各列并让名称单行省略，保证每列内容尽量一行展示
+      width: isMobile ? 104 : undefined,
+      ellipsis: isMobile,
       render: (value: string, record) => (
-        <span style={{ color: typeColorHex(record.equipment_type_color), fontWeight: 600 }}>
+        <span
+          style={{
+            color: typeColorHex(record.equipment_type_color),
+            fontWeight: 600,
+            whiteSpace: 'nowrap',
+          }}
+        >
           {value}
         </span>
       ),
     },
-    { title: '价格', dataIndex: 'price', align: 'right', render: (v: number) => formatSpecPrice(v) },
     {
-      title: '座位数',
+      title: '价格',
+      dataIndex: 'price',
+      align: 'center',
+      width: isMobile ? 80 : undefined,
+      render: (v: number, record) => (
+        <span
+          style={{
+            display: 'inline-block',
+            padding: '0 6px',
+            border: `1px solid ${record.is_active ? '#52c41a' : '#bfbfbf'}`,
+            borderRadius: 4,
+            whiteSpace: 'nowrap',
+            // 已停用的器材金额（符号与数字）一并置灰
+            color: record.is_active ? undefined : '#8c8c8c',
+          }}
+        >
+          {formatSpecPrice(v)}
+        </span>
+      ),
+    },
+    {
+      title: <span style={{ whiteSpace: 'nowrap' }}>座位数</span>,
       dataIndex: 'capacity',
-      width: 90,
-      render: (v: number | null) => (v == null ? '不限（桨板）' : `${v} 座`),
+      align: 'center',
+      width: isMobile ? 64 : 90,
+      render: (v: number | null) => (
+        <span style={{ whiteSpace: 'nowrap' }}>{v == null ? '不限' : `${v} 座`}</span>
+      ),
     },
     {
       title: '数量',
-      width: 110,
-      align: 'right',
+      width: isMobile ? 62 : 110,
+      align: 'center',
       render: (_, record) => {
         const row = inventoryRows.find((r) => r.equipment_spec_id === record.id)
-        return `${row?.total_quantity ?? 0}`
+        // 实线框 = 已开启器材编号；虚线框 = 未开启编号
+        const dotted = record.boat_numbering_required === false
+        return (
+          <span
+            style={{
+              display: 'inline-block',
+              padding: '0 6px',
+              border: `1px ${dotted ? 'dashed' : 'solid'} #000`,
+              borderRadius: 4,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {row?.total_quantity ?? 0}
+          </span>
+        )
       },
-    },
-    {
-      title: '状态',
-      dataIndex: 'is_active',
-      width: 90,
-      render: (v: boolean) => (v ? <Tag color="green">启用</Tag> : <Tag>已停用</Tag>),
-    },
-    {
-      key: 'action',
-      title: '操作',
-      width: 80,
-      render: (_, record) => (
-        <Button type="link" onClick={() => openSpec(record)}>
-          编辑
-        </Button>
-      ),
     },
   ]
 
-  const tableData = catalog?.equipment ?? []
+  // 已停用的器材默认排在列表最后，其余保持目录原有顺序
+  const tableData = [...(catalog?.equipment ?? [])].sort(
+    (a, b) => Number(b.is_active) - Number(a.is_active),
+  )
 
   return (
     <Card
-      title="器材类型与规格"
+      title="器材目录"
       extra={
-        <Space>
-          <Button
-            onClick={() => {
-              setEditingType(null)
-              typeForm.resetFields()
-              setTypeModal(true)
-            }}
-          >
-            新建类型
-          </Button>
-          <Button type="primary" onClick={() => openSpec(null)}>
-            新建规格
-          </Button>
-        </Space>
+        <Button type="primary" onClick={() => openSpec(null)}>
+          新建规格
+        </Button>
       }
     >
-      <Table rowKey="id" columns={specColumns} dataSource={tableData} pagination={false} />
-
-      <Modal
-        title={editingType ? '编辑类型' : '新建类型'}
-        open={typeModal}
-        onCancel={() => setTypeModal(false)}
-        onOk={submitType}
-        destroyOnClose
-      >
-        <Form
-          form={typeForm}
-          layout="vertical"
-          initialValues={{ name: editingType?.name, color: editingType?.color ?? 'blue' }}
-        >
-          <Form.Item
-            label="类型名称"
-            name="name"
-            rules={[{ required: true, message: '请输入类型名称，如：皮划艇 / 桨板' }]}
-          >
-            <Input />
-          </Form.Item>
-          <Form.Item label="颜色" name="color" rules={[{ required: true }]}>
-            <ColorSwatchPicker
-              value={typeColor}
-              onChange={(value) => typeForm.setFieldValue('color', value)}
-            />
-          </Form.Item>
-        </Form>
-      </Modal>
+      <Table
+        rowKey="id"
+        columns={specColumns}
+        dataSource={tableData}
+        pagination={false}
+        onRow={(record) => ({
+          onClick: () => openSpec(record),
+          style: { cursor: 'pointer' },
+        })}
+      />
 
       <Modal
         title={editingSpec ? '编辑规格' : '新建规格'}
@@ -379,7 +411,10 @@ function EquipmentTab() {
           >
             <Select
               placeholder="选择器材类型"
-              options={(catalog?.equipment_types ?? []).map((t) => ({ value: t.id, label: t.name }))}
+              options={(catalog?.equipment_types ?? [])
+                // 已停用的类型不可再用于新建规格；编辑时保留当前类型用于回显
+                .filter((t) => t.is_active || t.id === editingSpec?.equipment_type_id)
+                .map((t) => ({ value: t.id, label: t.name }))}
             />
           </Form.Item>
           <Form.Item label="规格名称" name="name" rules={[{ required: true, message: '如：竞速皮划艇（3 座）' }]}>
@@ -392,39 +427,534 @@ function EquipmentTab() {
                 name="price"
                 rules={[{ required: true, message: '请输入价格' }]}
               >
-                <InputNumber min={0} precision={2} style={{ width: '100%' }} />
+                <InputNumber
+                  min={0}
+                  precision={2}
+                  inputMode="tel"
+                  style={{ width: '100%' }}
+                />
               </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item label="座位数（桨板留空表示不限）" name="capacity">
-                <InputNumber min={1} style={{ width: '100%' }} placeholder="不限" />
+              <Form.Item
+                label="座位数（人数）"
+                name="capacity"
+                rules={[{ required: true, message: '请输入座位数' }]}
+              >
+                <InputNumber
+                  min={1}
+                  inputMode="tel"
+                  style={{ width: '100%' }}
+                  placeholder="如：2"
+                />
               </Form.Item>
             </Col>
           </Row>
-          {editingSpec && (
-            <Form.Item
-              label="启用状态"
-              name="is_active"
-              valuePropName="checked"
-              extra="停用后新订单将无法选择该规格；已停用的规格可在此重新启用，历史订单不受影响。"
-            >
-              <Switch checkedChildren="启用" unCheckedChildren="停用" />
-            </Form.Item>
-          )}
-          {editingSpec && (
-            <Form.Item
-              label="数量"
-              name="quantity"
-              rules={[{ required: true, message: '请输入数量' }]}
-              extra={
-                editingOccupied > 0
+          <Form.Item
+            label="数量"
+            name="quantity"
+            rules={[{ required: true, message: '请输入数量' }]}
+            extra={
+              !editingSpec
+                ? '该规格可投入使用的总数量，可先填 0，之后在编辑页调整。'
+                : editingOccupied > 0
                   ? `该规格可投入使用的总数量；当前已占用 ${editingOccupied}（已签到未归还），不能低于该值。`
                   : '该规格可投入使用的总数量。'
+            }
+          >
+            <InputNumber
+              min={editingSpec ? editingOccupied : 0}
+              precision={0}
+              inputMode="tel"
+              style={{ width: '100%' }}
+              addonAfter="件"
+            />
+          </Form.Item>
+          {editingSpec && (
+            <Form.Item
+              label={
+                <Space size={8}>
+                  <span>显示用量</span>
+                  <Switch size="small" checked={showInUsage} onChange={setShowInUsage} />
+                </Space>
               }
+              extra="开启后该器材会出现在概览的「船只用量」区域；关闭后不展示（仅影响概览，不影响下单与调配）。"
             >
-              <InputNumber min={editingOccupied} precision={0} style={{ width: '100%' }} addonAfter="件" />
+              <span />
             </Form.Item>
           )}
+          {editingSpec && (
+            <Form.Item
+              label={
+                <Space size={8}>
+                  <span>器材编号</span>
+                  <Switch
+                    size="small"
+                    checked={numberingRequired}
+                    onChange={setNumberingRequired}
+                  />
+                </Space>
+              }
+              extra="关闭后该器材无需编号，也不会出现在「船只」页面的出发/返还调配中；关闭保存时会清空已编好的编号。"
+            >
+              <Button
+                disabled={!numberingRequired}
+                onClick={() => setNumberingSpecId(editingSpec.id)}
+              >
+                器材编号
+              </Button>
+            </Form.Item>
+          )}
+          {editingSpec && (
+            <Form.Item
+              label={
+                <Space size={8}>
+                  <span>启用状态</span>
+                  <Switch
+                    checkedChildren="启用"
+                    unCheckedChildren="停用"
+                    checked={specActive}
+                    onChange={setSpecActive}
+                  />
+                </Space>
+              }
+              extra="停用后新订单将无法选择该规格；已停用的规格可在此重新启用，历史订单不受影响。"
+            >
+              <span />
+            </Form.Item>
+          )}
+        </Form>
+      </Modal>
+
+      <NumberingModal
+        specId={numberingSpecId}
+        open={Boolean(numberingSpecId)}
+        onClose={() => setNumberingSpecId(null)}
+        onSaved={() => {
+          setNumberingSpecId(null)
+          onNumberingChanged?.()
+        }}
+      />
+    </Card>
+  )
+}
+
+/* ---------------- Boat numbering ---------------- */
+
+interface SpecNumbersView {
+  spec_id: string
+  spec_name: string
+  type_name: string
+  target_quantity: number
+  numbers: { id: string; number: string; in_use: boolean; order_number: string | null }[]
+}
+
+interface NumberingRow {
+  spec_id: string
+  spec_name: string
+  type_name: string
+  type_color: string
+  is_active: boolean
+  boat_numbering_required: boolean
+  target_quantity: number
+  numbered_quantity: number
+  complete: boolean
+  in_use: number
+}
+
+// 给单个规格的所有器材编号：顺延生成或逐条手动填写，必须填满且不重复。
+function NumberingModal({
+  specId,
+  open,
+  onClose,
+  onSaved,
+}: {
+  specId: string | null
+  open: boolean
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const { message } = App.useApp()
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [view, setView] = useState<SpecNumbersView | null>(null)
+  const [mode, setMode] = useState<'sequence' | 'manual'>('sequence')
+  const [numbers, setNumbers] = useState<string[]>([])
+  const [firstNumber, setFirstNumber] = useState<number>(1)
+  const [step, setStep] = useState<number>(1)
+
+  useEffect(() => {
+    if (!open || !specId) return
+    setLoading(true)
+    api
+      .get<SpecNumbersView>(`/api/boats/numbering/${specId}`)
+      .then((data) => {
+        setView(data)
+        setNumbers(
+          Array.from({ length: data.target_quantity }, (_, i) => data.numbers[i]?.number ?? ''),
+        )
+        // 已有编号时直接进入手动模式并回填，便于修改
+        setMode(data.numbers.length > 0 ? 'manual' : 'sequence')
+        setFirstNumber(1)
+        setStep(1)
+      })
+      .catch((error) => message.error(error instanceof Error ? error.message : '加载失败'))
+      .finally(() => setLoading(false))
+  }, [open, specId, message])
+
+  const target = view?.target_quantity ?? 0
+
+  const generate = () => {
+    if (step < 1) {
+      message.warning('数字跳跃间隔至少为 1')
+      return
+    }
+    setNumbers(Array.from({ length: target }, (_, i) => String(firstNumber + i * step)))
+  }
+
+  const save = async () => {
+    if (!specId) return
+    const cleaned = numbers.map((n) => n.trim())
+    if (cleaned.length !== target) {
+      message.error(`必须为全部 ${target} 件器材填写编号`)
+      return
+    }
+    if (cleaned.some((n) => !n)) {
+      message.error('所有器材都必须填写编号')
+      return
+    }
+    if (new Set(cleaned).size !== cleaned.length) {
+      message.error('编号不能重复')
+      return
+    }
+    setSaving(true)
+    try {
+      await api.put(`/api/boats/numbering/${specId}`, { numbers: cleaned })
+      message.success('编号已保存')
+      onSaved()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal
+      title={`器材编号 · ${view?.spec_name ?? ''}`}
+      open={open}
+      onCancel={onClose}
+      onOk={save}
+      okText="保存编号"
+      cancelText="取消"
+      confirmLoading={saving}
+      width={520}
+      destroyOnClose
+    >
+      {loading ? (
+        <div style={{ padding: 24, textAlign: 'center' }}>加载中…</div>
+      ) : (
+        <>
+          <p style={{ color: '#666', marginBottom: 12 }}>
+            该器材共 <b>{target}</b> 件，必须全部填写编号后才能保存；所有器材之间的编号不能相同。
+          </p>
+          <Radio.Group
+            value={mode}
+            onChange={(e) => setMode(e.target.value)}
+            style={{ marginBottom: 12 }}
+          >
+            <Radio.Button value="sequence">顺延编号</Radio.Button>
+            <Radio.Button value="manual">手动编号</Radio.Button>
+          </Radio.Group>
+
+          {mode === 'sequence' && (
+            <div style={{ marginBottom: 12 }}>
+              <Space wrap>
+                <span>
+                  第一个编号数字{' '}
+                  <InputNumber
+                    min={0}
+                    precision={0}
+                    value={firstNumber}
+                    onChange={(v) => setFirstNumber(v ?? 0)}
+                    style={{ width: 90 }}
+                  />
+                </span>
+                <span>
+                  数字跳跃间隔{' '}
+                  <InputNumber
+                    min={1}
+                    precision={0}
+                    value={step}
+                    onChange={(v) => setStep(v ?? 1)}
+                    style={{ width: 90 }}
+                  />
+                </span>
+                <Button onClick={generate}>生成编号</Button>
+              </Space>
+              <div style={{ color: '#888', fontSize: 12, marginTop: 8 }}>
+                示例：首号 {firstNumber}、间隔 {step} → {firstNumber}、
+                {firstNumber + step}、{firstNumber + step * 2}…
+              </div>
+            </div>
+          )}
+
+          <div style={{ maxHeight: '48vh', overflowY: 'auto', paddingRight: 4 }}>
+            {numbers.map((value, index) => (
+              <div
+                key={index}
+                style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}
+              >
+                <span style={{ width: 56, color: '#888', flexShrink: 0 }}>{index + 1} 号</span>
+                <Input
+                  type="tel"
+                  inputMode="numeric"
+                  value={value}
+                  onChange={(e) => {
+                    const next = [...numbers]
+                    next[index] = e.target.value
+                    setNumbers(next)
+                  }}
+                  placeholder="输入编号"
+                />
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </Modal>
+  )
+}
+
+function NumberingTab({ onChanged }: { onChanged: () => void }) {
+  const { message } = App.useApp()
+  const [rows, setRows] = useState<NumberingRow[]>([])
+  const [loading, setLoading] = useState(false)
+  const [editing, setEditing] = useState<NumberingRow | null>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const data = await api.get<{ rows: NumberingRow[] }>('/api/boats/numbering')
+      setRows(data.rows)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '加载失败')
+    } finally {
+      setLoading(false)
+    }
+  }, [message])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  const columns: ColumnsType<NumberingRow> = [
+    {
+      title: '类型',
+      dataIndex: 'type_name',
+      width: 90,
+      render: (value: string, record) => (
+        <span style={{ color: typeColorHex(record.type_color as any) }}>{value}</span>
+      ),
+    },
+    { title: '器材名称', dataIndex: 'spec_name' },
+    { title: '数量', dataIndex: 'target_quantity', width: 70, align: 'center' },
+    { title: '已编号', dataIndex: 'numbered_quantity', width: 80, align: 'center' },
+    {
+      title: '状态',
+      dataIndex: 'complete',
+      width: 100,
+      render: (_: boolean, record) =>
+        record.boat_numbering_required === false ? (
+          <Tag>无需编号</Tag>
+        ) : record.complete ? (
+          <Tag color="green">已完成</Tag>
+        ) : (
+          <Tag color="red">未完成</Tag>
+        ),
+    },
+  ]
+
+  return (
+    <Card
+      title="器材编号"
+      extra={
+        <Button onClick={load} loading={loading}>
+          刷新
+        </Button>
+      }
+    >
+      <p style={{ color: '#888', marginBottom: 12 }}>
+        点击任意一行可查看并修改该器材下所有船只的编号。数量与编号不一致的器材会显示为「未完成」；已关闭编号的器材显示「无需编号」。
+      </p>
+      <Table
+        rowKey="spec_id"
+        columns={columns}
+        dataSource={rows}
+        loading={loading}
+        pagination={false}
+        onRow={(record) => ({
+          onClick: () => {
+            if (record.boat_numbering_required === false) {
+              message.info('该器材已关闭编号，无需编号')
+              return
+            }
+            setEditing(record)
+          },
+          style: { cursor: 'pointer' },
+        })}
+      />
+      <NumberingModal
+        specId={editing?.spec_id ?? null}
+        open={Boolean(editing)}
+        onClose={() => setEditing(null)}
+        onSaved={() => {
+          setEditing(null)
+          load()
+          onChanged()
+        }}
+      />
+    </Card>
+  )
+}
+
+/* ---------------- Equipment types ---------------- */
+
+function TypeTab() {
+  const [catalog, setCatalog] = useState<Catalog | null>(null)
+  const { message } = App.useApp()
+  const [modalOpen, setModalOpen] = useState(false)
+  const [editingType, setEditingType] = useState<EquipmentType | null>(null)
+  const [form] = Form.useForm<{ name: string; color: string; is_active: boolean }>()
+  const color = Form.useWatch('color', form) ?? 'blue'
+
+  const load = useCallback(async () => {
+    try {
+      setCatalog(await api.get<Catalog>('/api/catalog'))
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '加载失败')
+    }
+  }, [message])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  const open = (type: EquipmentType | null) => {
+    setEditingType(type)
+    if (type) {
+      form.setFieldsValue({ name: type.name, color: type.color, is_active: type.is_active })
+    } else {
+      form.resetFields()
+      form.setFieldsValue({ color: 'blue', is_active: true })
+    }
+    setModalOpen(true)
+  }
+
+  const submit = async () => {
+    const values = await form.validateFields()
+    try {
+      if (editingType) {
+        await api.put(`/api/catalog/equipment-types/${editingType.id}`, values)
+      } else {
+        await api.post('/api/catalog/equipment-types', values)
+      }
+      message.success('已保存')
+      setModalOpen(false)
+      load()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '保存失败')
+    }
+  }
+
+  const columns: ColumnsType<EquipmentType> = [
+    {
+      title: '类型名称',
+      dataIndex: 'name',
+      render: (value: string, record) => (
+        <span style={{ color: typeColorHex(record.color), fontWeight: 600 }}>{value}</span>
+      ),
+    },
+    {
+      title: '颜色',
+      dataIndex: 'color',
+      width: 90,
+      align: 'center',
+      render: (value: string) => (
+        <span
+          style={{
+            display: 'inline-block',
+            width: 18,
+            height: 18,
+            borderRadius: '50%',
+            backgroundColor: typeColorHex(value),
+          }}
+        />
+      ),
+    },
+    {
+      title: '状态',
+      dataIndex: 'is_active',
+      width: 110,
+      render: (v: boolean) =>
+        v ? <Tag color="green">启用</Tag> : <Tag>已停用</Tag>,
+    },
+  ]
+
+  // 已停用的类型默认排在最后
+  const data = [...(catalog?.equipment_types ?? [])].sort(
+    (a, b) => Number(b.is_active) - Number(a.is_active),
+  )
+
+  return (
+    <Card
+      title="类型管理"
+      extra={
+        <Button type="primary" onClick={() => open(null)}>
+          新建类型
+        </Button>
+      }
+    >
+      <Table
+        rowKey="id"
+        columns={columns}
+        dataSource={data}
+        pagination={false}
+        onRow={(record) => ({
+          onClick: () => open(record),
+          style: { cursor: 'pointer' },
+        })}
+      />
+
+      <Modal
+        title={editingType ? '编辑类型' : '新建类型'}
+        open={modalOpen}
+        onCancel={() => setModalOpen(false)}
+        onOk={submit}
+        destroyOnClose
+      >
+        <Form form={form} layout="vertical">
+          <Form.Item
+            label="类型名称"
+            name="name"
+            rules={[{ required: true, message: '请输入类型名称，如：皮划艇 / 桨板' }]}
+          >
+            <Input />
+          </Form.Item>
+          <Form.Item label="颜色" name="color" rules={[{ required: true }]}>
+            <ColorSwatchPicker
+              value={color}
+              onChange={(value) => form.setFieldValue('color', value)}
+            />
+          </Form.Item>
+          <Form.Item
+            label="启用状态"
+            name="is_active"
+            valuePropName="checked"
+            extra="停用后，该类型下的所有器材在新订单中将不可选；历史订单不受影响，可随时重新启用。"
+          >
+            <Switch checkedChildren="启用" unCheckedChildren="停用" />
+          </Form.Item>
         </Form>
       </Modal>
     </Card>
@@ -536,10 +1066,8 @@ function SaleTab() {
 
 /* ---------------- System settings ---------------- */
 
-// 支付方式管理区（付款区域）：仅 ENABLE_PAYMENT_METHOD=1（settings.payment_methods
-// 非空）时渲染；新增/编辑/删除/设默认需要 manage_payment_methods 权限（或
-// superuser/admin），无权限时只读展示。
-// 回滚：删除本组件与 SystemTab 中的 <Divider /> + <PaymentSection /> 即可。
+// 支付方式管理区（付款方式区域）：新增/编辑/删除/设默认需要
+// manage_payment_methods 权限（或 superuser/admin），无权限时只读展示。
 function PaymentSection() {
   const { user } = useAuth()
   const { message } = App.useApp()
@@ -594,10 +1122,10 @@ function PaymentSection() {
     }
   }
 
-  const setDefault = async (code: string) => {
+  const setDefault = async (id: number) => {
     setBusy(true)
     try {
-      await api.put(`/api/payment-methods/${code}`, { is_default: true })
+      await api.put(`/api/payment-methods/${id}`, { is_default: true })
       message.success('默认支付方式已更新')
       await afterChange()
     } catch (error) {
@@ -624,7 +1152,7 @@ function PaymentSection() {
       onOk: async () => {
         if (!name.trim() || name.trim() === method.name) return
         try {
-          await api.put(`/api/payment-methods/${method.code}`, { name: name.trim() })
+          await api.put(`/api/payment-methods/${method.id}`, { name: name.trim() })
           message.success('已更新')
           await afterChange()
         } catch (error) {
@@ -634,9 +1162,9 @@ function PaymentSection() {
     })
   }
 
-  const removeMethod = async (code: string) => {
+  const removeMethod = async (id: number) => {
     try {
-      await api.del(`/api/payment-methods/${code}`)
+      await api.del(`/api/payment-methods/${id}`)
       message.success('支付方式已停用')
       await afterChange()
     } catch (error) {
@@ -649,10 +1177,10 @@ function PaymentSection() {
       <Divider />
       <div style={{ maxWidth: 420 }}>
         <Space style={{ justifyContent: 'space-between', width: '100%', marginBottom: 8 }}>
-          <strong>付款</strong>
+          <strong>付款方式</strong>
           {canManage && (
-            <Button size="small" onClick={() => setAddOpen(true)}>
-              新增支付方式
+            <Button type="primary" size="small" onClick={() => setAddOpen(true)}>
+              + 新增支付方式
             </Button>
           )}
         </Space>
@@ -669,7 +1197,7 @@ function PaymentSection() {
                       ...(m.is_default
                         ? []
                         : [
-                            <Button key="default" size="small" type="link" disabled={busy} onClick={() => setDefault(m.code)}>
+                            <Button key="default" size="small" type="link" disabled={busy} onClick={() => setDefault(m.id)}>
                               设为默认
                             </Button>,
                             <Button key="edit" size="small" type="link" onClick={() => renameMethod(m)}>
@@ -679,7 +1207,7 @@ function PaymentSection() {
                               key="del"
                               title="停用该支付方式？"
                               description="停用为软删除，历史订单仍保留该方式。"
-                              onConfirm={() => removeMethod(m.code)}
+                              onConfirm={() => removeMethod(m.id)}
                             >
                               <Button size="small" type="link" danger>
                                 停用
@@ -691,7 +1219,7 @@ function PaymentSection() {
               }
             >
               <Space>
-                <Radio checked={m.is_default} disabled={!canManage || m.is_default} onClick={() => canManage && !m.is_default && setDefault(m.code)} />
+                <Radio checked={m.is_default} disabled={!canManage || m.is_default} onClick={() => canManage && !m.is_default && setDefault(m.id)} />
                 <span>{m.name}</span>
                 <Tag>{m.code}</Tag>
                 {m.is_default && <Tag color="blue">默认</Tag>}
@@ -726,10 +1254,22 @@ function SystemTab() {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [minutes, setMinutes] = useState(120)
   const [fastMode, setFastMode] = useState(false)
+  const [boatNumbering, setBoatNumbering] = useState(false)
   const [saving, setSaving] = useState(false)
+  // 调试上报开关：写入当前浏览器（含 PWA 独立存储）的 localStorage，仅本机生效。
+  const [tracingOn, setTracingOn] = useState<boolean>(
+    () => localStorage.getItem('enable_tracing') === '1',
+  )
   const { message } = App.useApp()
   // 保存成功后刷新全局 SettingsContext（更新缓存，OrderForm 等页面立即生效）
   const { refresh: refreshGlobalSettings } = useSettings()
+
+  const toggleTracing = (on: boolean) => {
+    setTracingOn(on)
+    if (on) localStorage.setItem('enable_tracing', '1')
+    else localStorage.removeItem('enable_tracing')
+    message.success(on ? '调试上报已开启' : '调试上报已关闭')
+  }
 
   useEffect(() => {
     api
@@ -738,6 +1278,7 @@ function SystemTab() {
         setSettings(data)
         setMinutes(data.auto_return_after_minutes)
         setFastMode(data.fast_customer_mode)
+        setBoatNumbering(data.boat_numbering_enabled)
       })
       .catch((error) => message.error(error.message))
   }, [message])
@@ -748,8 +1289,19 @@ function SystemTab() {
       const result = await api.put<AppSettings>('/api/settings', {
         auto_return_after_minutes: minutes,
         fast_customer_mode: fastMode,
+        boat_numbering_enabled: boatNumbering,
       })
-      setSettings(result)
+      // PUT 只返回基础设置，不包含 payment_methods；合并保留原付款方式，避免保存后付款区域消失
+      setSettings((prev) =>
+        prev
+          ? {
+              ...prev,
+              ...result,
+              payment_methods: prev.payment_methods,
+              default_payment_method: prev.default_payment_method,
+            }
+          : result,
+      )
       refreshGlobalSettings()
       message.success('设置已保存')
     } catch (error) {
@@ -784,21 +1336,52 @@ function SystemTab() {
             unCheckedChildren="关"
           />
         </Form.Item>
-        <Button type="primary" loading={saving} onClick={save}>
-          保存设置
-        </Button>
-        {settings && (
-          <p style={{ color: '#999', marginTop: 16 }}>
-            最近更新：{new Date(settings.updated_at).toLocaleString('zh-CN')}
-          </p>
-        )}
+        <Form.Item
+          label="船只编号"
+          extra="开启后可在「器材编号」中为每条船只编号，并在手机版「船只」页面调配出发/返还。开启前必须先给所有器材编号完整。"
+        >
+          <Switch
+            checked={boatNumbering}
+            onChange={setBoatNumbering}
+            checkedChildren="开"
+            unCheckedChildren="关"
+          />
+        </Form.Item>
       </Form>
+      {/* 调试上报开关：写入当前浏览器（含 PWA 独立存储）的 localStorage，
+          开启后所有网络请求会附带一条摘要上报到后端 POST /api/_trace，
+          NAS 上 ./data/logs/frontend-trace-YYYY-MM-DD.log 按天生成。 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16, marginBottom: 12, padding: '10px 12px', background: '#fafafa', borderRadius: 6 }}>
+        <Switch checked={tracingOn} onChange={toggleTracing} />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 500 }}>调试上报</div>
+          <div style={{ color: '#888', fontSize: 12 }}>
+            开启后，本机所有网络请求会将耗时摘要上报到服务器的 trace 日志，便于定位卡顿。
+            仅对当前设备/浏览器生效（PWA 与 Safari 存储隔离，需在各自环境内分别开启）。
+          </div>
+        </div>
+      </div>
+      {/* 手动切换布局模式（手机版 / 桌面版）：仅本次会话生效，刷新后按屏幕宽度重新推导 */}
+      <div style={{ marginTop: 16 }}>
+        <LayoutModeSwitch block />
+      </div>
       {/* 付款区域：功能启用（payment_methods 非空）时显示，以横线与上方隔开 */}
       {(settings?.payment_methods?.length ?? 0) > 0 && <PaymentSection />}
       <Divider />
       <Descriptions size="small" column={1}>
-        <Descriptions.Item label="系统版本">v1.1.8</Descriptions.Item>
+        <Descriptions.Item label="系统版本">v1.1.15</Descriptions.Item>
       </Descriptions>
+      {/* 保存按钮固定放在所有设置内容之后 */}
+      <div style={{ marginTop: 16 }}>
+        <Button type="primary" loading={saving} onClick={save}>
+          保存设置
+        </Button>
+        {settings && (
+          <p style={{ color: '#999', marginTop: 12 }}>
+            最近更新：{new Date(settings.updated_at).toLocaleString('zh-CN')}
+          </p>
+        )}
+      </div>
     </Card>
   )
 }

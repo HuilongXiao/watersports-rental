@@ -35,8 +35,7 @@ class Order(Base):
     is_walk_in: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # 备注弹窗标记：勾选后打开订单详情时弹窗展示备注内容，列表中客户名显示为红色
     note_popup: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    # 支付方式 code（对应 payment_methods.code，可为空=未选择）；
-    # 仅在 ENABLE_PAYMENT_METHOD=1 时写入，功能回滚后该列闲置不影响旧数据
+    # 支付方式 code（对应 payment_methods.code，可为空=未选择）
     payment_method_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     check_in_at: Mapped[object | None] = mapped_column(UtcDateTime(), nullable=True)

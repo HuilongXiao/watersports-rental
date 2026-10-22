@@ -13,7 +13,11 @@ from app.db.session import get_db
 from app.models.group import Group
 from app.models.user import User
 from app.serializers import user_dict
-from app.services.user_service import normalize_username, username_exists
+from app.services.user_service import (
+    allocate_operator_code,
+    normalize_username,
+    username_exists,
+)
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -32,6 +36,7 @@ class UserCreateInput(BaseModel):
     perm_manage_users: bool = False
     perm_view_revenue: bool = False
     perm_manage_payment_methods: bool = False
+    perm_boat_dispatch: bool = False
 
     @field_validator("username")
     @classmethod
@@ -52,6 +57,7 @@ class UserUpdateInput(BaseModel):
     perm_manage_users: bool | None = None
     perm_view_revenue: bool | None = None
     perm_manage_payment_methods: bool | None = None
+    perm_boat_dispatch: bool | None = None
     is_active: bool | None = None
 
 
@@ -116,6 +122,12 @@ def create_user(
     if username_exists(db, payload.username):
         raise HTTPException(status.HTTP_409_CONFLICT, "用户名已存在")
 
+    operator_code = allocate_operator_code(db, target_group_id, payload.role)
+    if operator_code is None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "该 Group 的操作员编号已达上限（Z9）"
+        )
+
     new_user = User(
         id=str(uuid4()),
         group_id=target_group_id,
@@ -125,12 +137,14 @@ def create_user(
         is_active=True,
         is_system=False,
         role=payload.role,
+        operator_code=operator_code,
         perm_create_order=payload.perm_create_order,
         perm_edit_order=payload.perm_edit_order,
         perm_export_report=payload.perm_export_report,
         perm_manage_users=payload.perm_manage_users,
         perm_view_revenue=payload.perm_view_revenue,
         perm_manage_payment_methods=payload.perm_manage_payment_methods,
+        perm_boat_dispatch=payload.perm_boat_dispatch,
     )
     db.add(new_user)
     db.commit()
@@ -194,6 +208,7 @@ def update_user(
         "perm_manage_users",
         "perm_view_revenue",
         "perm_manage_payment_methods",
+        "perm_boat_dispatch",
         "is_active",
     ):
         if field in data:

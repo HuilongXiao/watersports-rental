@@ -13,7 +13,6 @@ from fastapi import HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.core.config import ENABLE_PAYMENT_METHOD
 from app.core.time_utils import (
     ORDER_DURATION_HOURS,
     business_date,
@@ -21,7 +20,9 @@ from app.core.time_utils import (
     utc_now,
 )
 from app.models.customer import Customer
-from app.models.equipment import EquipmentSpec, SaleItem
+from app.models.boat import BoatDispatch
+from app.models.equipment import EquipmentSpec, EquipmentType, SaleItem
+from app.models.group import Group
 from app.models.inventory import InventoryConfiguration
 from app.models.order import Order, OrderItem
 from app.models.settings import DEFAULT_AUTO_RETURN_MINUTES, Setting
@@ -116,6 +117,12 @@ def _resolve_items(db: Session, payload_items: list) -> list[tuple[str | None, s
     return resolved
 
 
+def _sole_group_id(db: Session) -> str | None:
+    """Return the id of the only existing Group, or None when 0 or 2+ groups exist."""
+    groups = db.scalars(select(Group)).all()
+    return groups[0].id if len(groups) == 1 else None
+
+
 def _resolve_fast_customer(
     db: Session, user: User, payload, active_group_id: str | None
 ) -> Customer:
@@ -128,10 +135,60 @@ def _resolve_fast_customer(
 
     ``customer_name`` is kept as a fallback for older clients that still send
     the legacy name-based fast-mode payload.
+
+    超级管理员未选择 Group（active_group_id=None 且 user.group_id=None）时，
+    按 Group 作用域查找必然落空，会创建 group_id=None 的“无归属”客户，
+    随后支付方式校验回退到该客户的 None Group 而误报 422。因此该场景改为：
+    全局查找该昵称/姓名的客户（优先有归属的）；若只存在无归属的历史脏数据
+    则归入唯一 Group 修复之；完全不存在且系统恰只有一个 Group 时直接落到该
+    Group；有多个 Group 无法判定归属时明确要求先选择 Group。
     """
     group_id = active_group_id or user.group_id
     nickname = (payload.customer_wechat_nickname or "").strip() or None
     name = (payload.customer_name or "").strip() or None
+
+    if group_id is None and (nickname or name):
+        value = nickname or name
+        column = Customer.wechat_nickname if nickname else Customer.name
+        existing = db.scalar(
+            select(Customer)
+            .where(column == value, Customer.group_id.is_not(None))
+            .order_by(Customer.updated_at.desc())
+        )
+        if existing:
+            return existing
+        groupless = db.scalar(
+            select(Customer)
+            .where(column == value, Customer.group_id.is_(None))
+            .order_by(Customer.updated_at.desc())
+        )
+        fallback_group_id = _sole_group_id(db)
+        if fallback_group_id is None:
+            raise HTTPException(
+                status_code=422,
+                detail="超级管理员未选择 Group，无法确定客户归属，请先在右上角切换 Group",
+            )
+        if groupless:
+            # 历史脏数据修复：把无归属的同名客户并入唯一 Group，避免重复客户。
+            groupless.group_id = fallback_group_id
+            db.flush()
+            return groupless
+        system = db.scalar(select(User).where(User.is_system.is_(True)))
+        customer = Customer(
+            id=str(uuid4()),
+            name=None if nickname else name,
+            gender=None,
+            wechat_nickname=nickname,
+            wechat_id=None,
+            phone=None,
+            is_system=False,
+            group_id=fallback_group_id,
+            created_by_user_id=system.id if system else user.id,
+            updated_by_user_id=system.id if system else user.id,
+        )
+        db.add(customer)
+        db.flush()
+        return customer
 
     if nickname:
         existing = db.scalar(
@@ -186,19 +243,24 @@ def _resolve_fast_customer(
     raise HTTPException(status_code=422, detail="请提供客户微信昵称")
 
 
-def _resolve_payment_method_code(db: Session, payload) -> str | None:
-    """功能开启时校验并返回要持久化的支付方式 code；未开启时忽略（返回 None）。
+def _resolve_payment_method_code(
+    db: Session, payload, user_group_id: str | None = None
+) -> str | None:
+    """校验并返回要持久化的支付方式 code。
 
-    空字符串视为清除；非法 code（不存在或已停用）返回 422。
+    空字符串视为清除；非法 code（不存在或已停用、或不属于当前 Group）返回 422。
     """
-    if not ENABLE_PAYMENT_METHOD:
-        return None
     raw = getattr(payload, "payment_method_code", None)
     if raw is None or not raw.strip():
         return None
     code = raw.strip()
-    if not payment_method_service.validate_active_code(db, code):
-        raise HTTPException(status_code=422, detail=f"支付方式 '{code}' 不存在或已停用")
+    if not payment_method_service.validate_active_code(
+        db, code, user_group_id=user_group_id
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=f"支付方式 '{code}' 不存在、已停用或不属于当前 Group",
+        )
     return code
 
 
@@ -225,6 +287,13 @@ def create_order(db: Session, user: User, payload, active_group_id: str | None =
         raise HTTPException(status_code=422, detail="人数不能为负")
 
     resolved = _resolve_items(db, payload.items)
+    # 仅新建订单时校验所属类型是否启用；编辑已有订单不做该校验，
+    # 以免类型停用后历史订单无法保存（原有项目仍可保留）。
+    for _, _, _, ref in resolved:
+        if isinstance(ref, EquipmentSpec):
+            type_row = db.get(EquipmentType, ref.equipment_type_id)
+            if not type_row or not type_row.is_active:
+                raise HTTPException(status_code=422, detail="该器材所属类型已停用，无法新建订单")
     spec_quantities = [(ref, qty) for _, _, qty, ref in resolved if isinstance(ref, EquipmentSpec)]
     validate_people_capacity(spec_quantities, payload.adult_count, payload.child_count)
 
@@ -242,7 +311,12 @@ def create_order(db: Session, user: User, payload, active_group_id: str | None =
         note=(payload.note.strip() if payload.note and payload.note.strip() else None),
         is_walk_in=bool(getattr(payload, "is_walk_in", False)),
         note_popup=bool(getattr(payload, "note_popup", False)),
-        payment_method_code=_resolve_payment_method_code(db, payload),
+        # 支付方式按订单最终归属的 Group 校验：superuser 未选 Group
+        # （active_group_id=None）时回退到客户所属 Group，否则会因所有
+        # 支付方式都归属具体 Group 而把正常下单误判为 422。
+        payment_method_code=_resolve_payment_method_code(
+            db, payload, user_group_id=(active_group_id or customer.group_id)
+        ),
         created_by_user_id=user.id,
         updated_by_user_id=user.id,
     )
@@ -469,15 +543,15 @@ def update_order(
     order.note = payload.note.strip() if payload.note and payload.note.strip() else None
     order.is_walk_in = bool(getattr(payload, "is_walk_in", False))
     order.note_popup = bool(getattr(payload, "note_popup", False))
-    # 功能关闭时完全忽略该字段（保留历史值），开启时才校验并更新
-    if ENABLE_PAYMENT_METHOD:
-        new_pm = _resolve_payment_method_code(db, payload)
-        if new_pm != order.payment_method_code:
-            logger.info(
-                "order payment_method changed operator=%s order_id=%s old=%s new=%s",
-                user.id, order.id, order.payment_method_code, new_pm,
-            )
-        order.payment_method_code = new_pm
+    new_pm = _resolve_payment_method_code(
+        db, payload, user_group_id=(active_group_id or order.group_id)
+    )
+    if new_pm != order.payment_method_code:
+        logger.info(
+            "order payment_method changed operator=%s order_id=%s old=%s new=%s",
+            user.id, order.id, order.payment_method_code, new_pm,
+        )
+    order.payment_method_code = new_pm
     order.updated_by_user_id = user.id
 
     for old in list_items(db, order.id):
@@ -680,6 +754,20 @@ def return_order(
             if now < order.start_at + timedelta(minutes=1):
                 raise HTTPException(status_code=409, detail="直接归还时间至少为开始时间后 1 分钟")
 
+    # 订单完成时，仍未操作返还的出发船只一并标记返还（释放库存并记录返还时间）
+    outstanding = list(
+        db.scalars(
+            select(BoatDispatch).where(
+                BoatDispatch.order_id == order.id,
+                BoatDispatch.returned.is_(False),
+            )
+        ).all()
+    )
+    for dispatch in outstanding:
+        dispatch.returned = True
+        dispatch.returned_at = now
+        dispatch.returned_by_user_id = user.id
+
     order.return_at = now
     order.return_by_user_id = user.id
     order.status = "completed"
@@ -732,7 +820,13 @@ def auto_return_overdue_orders(db: Session) -> list[Order]:
         .where(Order.auto_return_after_minutes.is_not(None))
     )
     returned: list[Order] = []
+    # 已经操作过船只出发的订单由「船只调配」流程负责完成，不做超时自动完成
+    dispatched_order_ids = set(
+        db.scalars(select(BoatDispatch.order_id).distinct()).all()
+    )
     for order in db.scalars(stmt).all():
+        if order.id in dispatched_order_ids:
+            continue
         deadline = order.check_in_at + timedelta(minutes=order.auto_return_after_minutes)
         if now < deadline:
             continue

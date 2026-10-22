@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, lazy, Suspense } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   App,
   Button,
@@ -8,7 +8,6 @@ import {
   Checkbox,
   Divider,
   Form,
-  Grid,
   InputNumber,
   Input,
   Modal,
@@ -24,6 +23,7 @@ import { api } from '../api'
 import { useAuth } from '../auth'
 import { useSettings } from '../contexts/SettingsContext'
 import { fenToYuan } from '../utils'
+import { useLayoutMode } from '../layoutMode'
 import { GenderCheckboxes } from './Customers'
 import type { Catalog, Customer, InventoryConflict, Order } from '../types'
 
@@ -43,20 +43,27 @@ export default function OrderForm() {
   const { id } = useParams()
   const editing = Boolean(id)
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const { message } = App.useApp()
   const { user } = useAuth()
   const canSubmit = editing
     ? Boolean(user?.permissions.edit_order)
     : Boolean(user?.permissions.create_order)
-  const screens = Grid.useBreakpoint()
+  const { isMobile, isDesktop } = useLayoutMode()
 
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const [existingOrder, setExistingOrder] = useState<Order | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  // submit 防重入锁：React state 是异步更新的，同一个事件循环里
+  // 第二次点击进来时 state 还没来得及变，所以用 ref 做同步挡
+  const submitLock = useRef(false)
   // 极速客户模式改从全局 SettingsContext 读取（缓存优先，避免挂载后等网络造成闪烁）
   const { settings } = useSettings()
   const fastMode = settings.fast_customer_mode
   const [customerWechatNickname, setCustomerWechatNickname] = useState('')
+  // 从客户详细页「创建订单」进入：客户信息取自该客户 profile，只读展示；
+  // 提交时按 customer_id 关联该客户（而非把展示文本当昵称去匹配/新建），保证订单归属原客户。
+  const [fromCustomerProfile, setFromCustomerProfile] = useState(false)
 
   // Customer selection (search → confirm)
   const [customerOptions, setCustomerOptions] = useState<Customer[]>([])
@@ -170,17 +177,47 @@ export default function OrderForm() {
         })
         .catch((error) => message.error(error.message))
     } else {
-      // Default: 游客 system customer.
-      api
-        .get<Customer[]>('/api/customers?q=游客')
-        .then((rows) => {
-          const guest = rows.find((row) => row.is_system) ?? rows[0]
-          if (guest) {
-            setCustomerId(guest.id)
-            setCustomerOptions([guest])
-          }
-        })
-        .catch(() => undefined)
+      // 新建订单：若 URL 带 ?customerId=xxx 则预填该客户（来自客户详情页"创建订单"按钮）；
+      // 否则默认选游客 system customer
+      const prefillCustomerId = searchParams.get('customerId')
+      if (prefillCustomerId) {
+        api
+          .get<Customer>(`/api/customers/${prefillCustomerId}`)
+          .then((c) => {
+            setCustomerId(c.id)
+            setCustomerOptions([c])
+            setWalkIn(false)
+            setFromCustomerProfile(true)
+            // 客户有微信昵称则填昵称；否则填「姓名+性别称谓」（如 张三 + 女士 = 张三女士）
+            setCustomerWechatNickname(
+              c.wechat_nickname?.trim() || `${c.name ?? ''}${c.gender ?? ''}`,
+            )
+          })
+          .catch(() => {
+            // 预填失败时回退到游客
+            api
+              .get<Customer[]>('/api/customers?q=游客')
+              .then((rows) => {
+                const guest = rows.find((row) => row.is_system) ?? rows[0]
+                if (guest) {
+                  setCustomerId(guest.id)
+                  setCustomerOptions([guest])
+                }
+              })
+              .catch(() => undefined)
+          })
+      } else {
+        api
+          .get<Customer[]>('/api/customers?q=游客')
+          .then((rows) => {
+            const guest = rows.find((row) => row.is_system) ?? rows[0]
+            if (guest) {
+              setCustomerId(guest.id)
+              setCustomerOptions([guest])
+            }
+          })
+          .catch(() => undefined)
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
@@ -222,10 +259,18 @@ export default function OrderForm() {
     ])
   }
 
-  // 列表第一项：进行中订单取第一个销售项目；否则启用的器材优先，其次售卖项目
+  // 启用中的销售项目：按近 7 天累计销量由多到少排序（同销量按名称升序兜底）
+  const sortedActiveSaleItems = () =>
+    (catalog?.sale_items ?? [])
+      .filter((s) => s.is_active)
+      .sort(
+        (a, b) => b.sold_quantity_7d - a.sold_quantity_7d || a.name.localeCompare(b.name),
+      )
+
+  // 列表第一项：进行中订单取近 7 天销量最高的销售项目；否则启用的器材优先，其次售卖项目
   const firstActiveItem = (): { item_id: string | null; kind: 'equipment' | 'sale' } => {
     if (isInProgress) {
-      const sale = catalog?.sale_items.find((s) => s.is_active)
+      const sale = sortedActiveSaleItems()[0]
       if (sale) return { item_id: sale.id, kind: 'sale' }
       return { item_id: null, kind: 'sale' }
     }
@@ -303,7 +348,13 @@ export default function OrderForm() {
   // 校验并组装订单提交体；不通过时给出提示并返回 null
   const buildOrderBody = (): Record<string, unknown> | null => {
     if (fastMode) {
-      if (!customerWechatNickname.trim()) {
+      if (fromCustomerProfile) {
+        // 客户由 profile 带入，无需昵称校验；仅在客户 ID 缺失时提示
+        if (!customerId) {
+          message.warning('客户信息缺失，请返回客户页重新创建')
+          return null
+        }
+      } else if (!customerWechatNickname.trim()) {
         message.warning('请填写客户微信昵称')
         return null
       }
@@ -324,7 +375,7 @@ export default function OrderForm() {
       return null
     }
     return {
-      ...(fastMode
+      ...(fastMode && !fromCustomerProfile
         ? { customer_wechat_nickname: customerWechatNickname.trim() }
         : { customer_id: customerId }),
       start_at: startAt.second(0).millisecond(0).toISOString(),
@@ -344,6 +395,32 @@ export default function OrderForm() {
     }
   }
 
+  // 人数容量预检：规则必须与后端 order_service.validate_people_capacity 完全一致
+  // （总人数 ≤ 总座位；每单位器材最多 2 名成人；capacity 为 NULL 的桨板类不限制）。
+  // 在发起重复单/库存预检之前即时提示，避免用户走完「库存超售」确认弹窗后，
+  // 才在真正保存时被后端 422 拦下，体感上像“超售也不能下单”。
+  const peopleCapacityError = (): string | null => {
+    const adults = adultCount
+    const children = childCount
+    if (adults + children < 1) return null // 已由 buildOrderBody 的“至少 1 人”提示覆盖
+    const seated: { cap: number; qty: number }[] = []
+    for (const it of items) {
+      if (it.kind !== 'equipment' || !it.item_id) continue
+      const cap = priceMap.get(it.item_id)?.capacity
+      if (cap == null) continue // 桨板类 capacity=NULL，不施加人数规则
+      seated.push({ cap, qty: it.quantity })
+    }
+    if (seated.length === 0) return null
+    const totalSeats = seated.reduce((sum, x) => sum + x.cap * x.qty, 0)
+    const maxAdults = seated.reduce((sum, x) => sum + Math.min(2, x.cap) * x.qty, 0)
+    if (adults + children > totalSeats) {
+      return `总人数不能超过设备承载人数 ${totalSeats} 人`
+    }
+    if (adults < 1) return '至少需要 1 名成人'
+    if (adults > maxAdults) return `当前器材组合最多 ${maxAdults} 名成人（可增加器材数量或减少成人）`
+    return null
+  }
+
   const saveOrder = async (body: Record<string, unknown>) => {
     setSubmitting(true)
     try {
@@ -360,8 +437,27 @@ export default function OrderForm() {
   }
 
   const submit = async (force = false) => {
-    const body = buildOrderBody()
-    if (!body) return
+    // 防重入：ref 是同步的，同一次事件循环里第二次点击进来时立刻挡住；
+    // 同时把 submitting 状态前移到最开头，让按钮在 dup-check / conflicts / 保存
+    // 三个阶段都处于 loading，彻底杜绝"点一次发三次"。
+    if (submitLock.current) return
+    submitLock.current = true
+    setSubmitting(true)
+    try {
+      const body = buildOrderBody()
+      if (!body) return
+
+      // 人数容量前置校验：与后端同一规则，先于重复单/库存超售预警拦截，
+      // 给出明确原因并阻止提交（硬性安全规则，不允许强制保存）。
+      const capacityErr = peopleCapacityError()
+      if (capacityErr) {
+        Modal.warning({
+          title: '人数与所选器材不匹配',
+          content: capacityErr,
+          okText: '知道了',
+        })
+        return
+      }
 
     // 重复订单检查：仅新建订单（编辑不检查），同一客户+同一业务日期+船型有交集时预警
     if (!force && !editing) {
@@ -460,6 +556,14 @@ export default function OrderForm() {
     }
 
     await saveOrder(body)
+    } finally {
+      submitLock.current = false
+      // 必须在外层 finally 复位 submitting：冲突预警弹窗、类似订单提醒点
+      // “返回”都是提前 return 的路径，若不复位，submitting 会残留 true，
+      // 导致弹窗里的「保存」按钮一直处于 loading（antd Button loading 时
+      // 会禁用点击），submit(true) 永远无法触发，表现为超售后无法下单。
+      setSubmitting(false)
+    }
   }
 
   // 点击“贴”：先清空客户微信昵称，再把系统剪贴板内容填入。
@@ -512,7 +616,9 @@ export default function OrderForm() {
     }
   }
 
-  const activeSpecs = catalog?.equipment.filter((s) => s.is_active) ?? []
+  // 规格自身启用且所属类型也启用，才会出现在新订单的可选项目里
+  const activeSpecs =
+    catalog?.equipment.filter((s) => s.is_active && s.equipment_type_active !== false) ?? []
   const activeSaleItems = catalog?.sale_items.filter((s) => s.is_active) ?? []
 
   // 船型与销售项目混合，按近 7 日销售数量降序排列（销量高的靠前）；
@@ -552,7 +658,6 @@ export default function OrderForm() {
     return saleItems
   }
 
-  const isMobile = !screens.md
   const itemColumns = [
     {
       // 表头“项目”右侧的加号即“添加项目”按钮，沿用原虚线按钮样式并放大点击区域
@@ -742,14 +847,17 @@ export default function OrderForm() {
           }}
         >
           {fastMode ? (
-            <Form.Item label="客户微信昵称" required style={{ flex: 1 }}>
+            <Form.Item label="客户信息" required style={{ flex: 1 }}>
               <Input
                 placeholder="输入客户微信昵称"
                 value={customerWechatNickname}
                 onChange={(e) => setCustomerWechatNickname(e.target.value)}
-                style={{ maxWidth: 300, caretColor: isEdit ? 'transparent' : undefined }}
-                readOnly={isEdit}
-                tabIndex={isEdit ? -1 : undefined}
+                style={{
+                  maxWidth: 300,
+                  caretColor: isEdit || fromCustomerProfile ? 'transparent' : undefined,
+                }}
+                readOnly={isEdit || fromCustomerProfile}
+                tabIndex={isEdit || fromCustomerProfile ? -1 : undefined}
               />
             </Form.Item>
           ) : (
@@ -788,9 +896,10 @@ export default function OrderForm() {
               <Button
                 icon={<SnippetsOutlined />}
                 onClick={() => {
-                  if (isEdit) return
+                  if (isEdit || fromCustomerProfile) return
                   pasteWechatNickname()
                 }}
+                disabled={fromCustomerProfile}
                 title="粘贴剪贴板内容"
                 tabIndex={isEdit ? -1 : undefined}
               />
@@ -800,6 +909,7 @@ export default function OrderForm() {
           <Form.Item label=" " style={{ flex: 'none' }}>
             <Checkbox
               checked={walkIn}
+              disabled={isInProgress}
               tabIndex={isEdit ? -1 : undefined}
               onChange={(e) => setWalkIn(e.target.checked)}
             >
@@ -1110,7 +1220,7 @@ export default function OrderForm() {
     <div
       style={{
         position: 'fixed',
-        bottom: screens.md ? 24 : 'calc(72px + env(safe-area-inset-bottom, 0px))',
+        bottom: isDesktop ? 24 : 'calc(72px + env(safe-area-inset-bottom, 0px))',
         right: 16,
         zIndex: 100,
       }}

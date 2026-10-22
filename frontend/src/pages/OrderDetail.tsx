@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState, lazy, Suspense } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import dayjs from 'dayjs'
 import {
   Alert,
   App,
@@ -8,24 +9,23 @@ import {
   Descriptions,
   Divider,
   Form,
-  Grid,
   Input,
   InputNumber,
   Modal,
   Popconfirm,
+  Popover,
   Space,
   Table,
   Tabs,
   Tag,
 } from 'antd'
+import { LeftOutlined, PlusOutlined } from '@ant-design/icons'
 import { api } from '../api'
 import { useAuth } from '../auth'
 import { useSettings } from '../contexts/SettingsContext'
-import { fenToYuan, formatDateTime, formatDurationBetween, typeColorHex } from '../utils'
-import type { Order, OrderStatus, PaymentView } from '../types'
-
-// 支付方式选择器：懒加载，仅在点击编辑时才加载组件 JS
-const PaymentMethodSelector = lazy(() => import('../components/PaymentMethodSelector'))
+import { fenToYuan, formatDateTime, formatDurationBetween, typeColorHex, readLatestOrdersSnapshot } from '../utils'
+import { useLayoutMode } from '../layoutMode'
+import type { BoatUsage, Order, OrderStatus, PaymentView } from '../types'
 
 const STATUS_META: Record<OrderStatus, { label: string; color: string }> = {
   active: { label: '预订', color: 'green' },
@@ -35,6 +35,85 @@ const STATUS_META: Record<OrderStatus, { label: string; color: string }> = {
   no_show: { label: '爽约', color: 'red' },
 }
 
+// 紧凑表格：缩小单元格内边距（手机端保证表头不换行）
+const compactCell = () => ({ style: { padding: '4px 6px' } })
+const centerHeader = () => ({
+  style: { padding: '4px 6px', textAlign: 'center' as const, whiteSpace: 'nowrap' as const },
+})
+const nowrapCell = () => ({ style: { padding: '4px 6px', whiteSpace: 'nowrap' as const } })
+// 船只调配区域：内容需要显式居中（onCell 的 style 会覆盖列上的 align）
+const centeredCell = () => ({
+  style: { padding: '4px 6px', textAlign: 'center' as const },
+})
+const centeredNowrapCell = () => ({
+  style: { padding: '4px 6px', textAlign: 'center' as const, whiteSpace: 'nowrap' as const },
+})
+
+// 订单详情「船只调配」区域的一行（每条船一行，未调配也占一行）
+interface BoatDispatchRow {
+  key: string
+  specName: string
+  color: string | null | undefined
+  number: string | null
+  departedAt: string | null
+  returnedAt: string | null
+}
+
+// 订单包含多条船时，展示逐条船只的出发 / 返还明细
+function BoatUsageDetail({ usage }: { usage: BoatUsage[] }) {
+  const content = (
+    <div style={{ maxWidth: 300 }}>
+      {usage.map((u, index) => {
+        const color = typeColorHex(u.equipment_type_color ?? undefined)
+        const departedAt = u.departed_at ? dayjs(u.departed_at) : null
+        const returnedAt = u.returned_at ? dayjs(u.returned_at) : null
+        const departedBy = u.departed_by_user_code ?? u.departed_by_user_name
+        const returnedBy = u.returned_by_user_code ?? u.returned_by_user_name
+        return (
+          <div
+            key={`${u.number}-${index}`}
+            style={{
+              padding: '6px 0',
+              borderTop: index > 0 ? '1px solid #f0f0f0' : undefined,
+              fontSize: 12,
+            }}
+          >
+            <div style={{ marginBottom: 2, fontSize: 13 }}>
+              <span style={{ color, fontWeight: 600 }}>{u.equipment_spec_name ?? '—'}</span>
+              <span style={{ color: '#666' }}> </span>
+              <span style={{ color, fontWeight: 600 }}>{u.number}</span>
+              <span style={{ color: '#000' }}>号</span>
+            </div>
+            <div style={{ color: '#666' }}>
+              出发：
+              {departedAt
+                ? `${departedAt.format('HH:mm')}${departedBy ? `（${departedBy}）` : ''}`
+                : '—'}
+            </div>
+            <div style={{ color: '#666' }}>
+              返还：
+              {returnedAt
+                ? `${returnedAt.format('HH:mm')}${returnedBy ? `（${returnedBy}）` : ''}`
+                : '—'}
+            </div>
+            <div style={{ color: '#666' }}>
+              使用时长：
+              {u.departed_at && u.returned_at
+                ? formatDurationBetween(u.departed_at, u.returned_at)
+                : '—'}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+  return (
+    <Popover content={content} trigger="click" title="船只使用明细" placement="bottom">
+      <a style={{ fontSize: 12 }}>详情</a>
+    </Popover>
+  )
+}
+
 export default function OrderDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -42,7 +121,7 @@ export default function OrderDetail() {
   const { user } = useAuth()
   const canEditOrder = Boolean(user?.permissions.edit_order)
   const isSuperuser = user?.role === 'superuser'
-  const screens = Grid.useBreakpoint()
+  const { isMobile, isDesktop } = useLayoutMode()
 
   const [order, setOrder] = useState<Order | null>(null)
   const [payment, setPayment] = useState<PaymentView | null>(null)
@@ -50,39 +129,70 @@ export default function OrderDetail() {
   const [adjustForm] = Form.useForm()
   const [adjustQty, setAdjustQty] = useState(1)
   const [adjustTab, setAdjustTab] = useState<'charge' | 'refund'>('charge')
-  // 支付方式编辑（懒加载弹窗）
-  const { settings } = useSettings()
-  const [payEditOpen, setPayEditOpen] = useState(false)
-  const [payDraft, setPayDraft] = useState<string | null>(null)
-  const [paySaving, setPaySaving] = useState(false)
+  const [adjustSubmitting, setAdjustSubmitting] = useState(false)
+  // 提交锁：防止快速连点或「成功后 load() 失败误导读用户重试」产生重复调整项
+  const adjustSubmittingRef = useRef(false)
+  // 完成订单时仍有船只未返还：弹窗确认并一并返还
+  const [completeOpen, setCompleteOpen] = useState(false)
+  const [completeSubmitting, setCompleteSubmitting] = useState(false)
+  // 已出发但还未返还的船只明细
+  const outstandingBoats = (order?.boat_usage ?? []).filter(
+    (u) => u.departed_at && !u.returned_at,
+  )
 
-  // PUT 需要完整订单入参：从已加载订单重建 body，仅替换 payment_method_code
-  const savePaymentMethod = async () => {
-    if (!order) return
-    setPaySaving(true)
-    try {
-      const updated = await api.put<Order>(`/api/orders/${order.id}`, {
-        customer_id: order.customer_id,
-        start_at: order.start_at,
-        adult_count: order.adult_count,
-        child_count: order.child_count,
-        note: order.note,
-        is_walk_in: order.is_walk_in,
-        note_popup: order.note_popup,
-        payment_method_code: payDraft,
-        items: order.items.map((i) => ({
-          equipment_spec_id: i.equipment_spec_id,
-          sale_item_id: i.sale_item_id,
-          quantity: i.quantity,
-        })),
+  // 「船只调配」区域：每条船一行。排序：已调配 → 未调配（该规格开启了编号）
+  // → 未开启船只编号的规格。未调配的船也按数量逐条展开。
+  const boatDispatchRows: BoatDispatchRow[] = []
+  if (order) {
+    const usageByItem = new Map<string, BoatUsage[]>()
+    for (const u of order.boat_usage ?? []) {
+      const list = usageByItem.get(u.order_item_id) ?? []
+      list.push(u)
+      usageByItem.set(u.order_item_id, list)
+    }
+    const pendingRows: BoatDispatchRow[] = []
+    const noNumberingRows: BoatDispatchRow[] = []
+    order.items.forEach((item, itemIndex) => {
+      // 售卖项不涉及船只调配
+      if (!item.equipment_spec_id) return
+      const dispatched = usageByItem.get(item.id) ?? []
+      dispatched.forEach((u, boatIndex) => {
+        boatDispatchRows.push({
+          key: `d-${item.id}-${boatIndex}`,
+          specName: item.equipment_spec_name ?? '—',
+          color: item.equipment_type_color,
+          number: u.number,
+          departedAt: u.departed_at,
+          returnedAt: u.returned_at,
+        })
       })
-      setOrder(updated)
-      setPayEditOpen(false)
-      message.success('支付方式已更新')
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '保存失败')
-    } finally {
-      setPaySaving(false)
+      const missing = Math.max(0, item.quantity - dispatched.length)
+      for (let i = 0; i < missing; i += 1) {
+        const row: BoatDispatchRow = {
+          key: `e-${itemIndex}-${i}`,
+          specName: item.equipment_spec_name ?? '—',
+          color: item.equipment_type_color,
+          number: null,
+          departedAt: null,
+          returnedAt: null,
+        }
+        if (item.requires_numbering) pendingRows.push(row)
+        else noNumberingRows.push(row)
+      }
+    })
+    boatDispatchRows.push(...pendingRows, ...noNumberingRows)
+  }
+  // 支付方式只读展示所需：从全局设置读取 code→name 映射
+  const { settings } = useSettings()
+
+  // 返回订单列表：有历史可退则等价浏览器后退（配合列表快照恢复筛选与滚动）；
+  // 无历史可退（如直接分享链接打开详情）则跳到列表页并带上快照记录的筛选参数。
+  const goBack = () => {
+    if (window.history.length > 1) {
+      navigate(-1)
+    } else {
+      const snap = readLatestOrdersSnapshot()
+      navigate(`/orders${snap ? snap.search : ''}`)
     }
   }
 
@@ -143,31 +253,60 @@ export default function OrderDetail() {
     }
   }
 
-  const submitAdjustment = async () => {
-    const values = await adjustForm.validateFields()
-    const amountFen = yuanToFenSafe(values.amount)
-    if (amountFen <= 0) {
-      message.warning('金额必须大于 0（最小 0.01 元）')
-      return
-    }
-    if (adjustQty === 0) {
-      message.warning('数量不能为 0')
-      return
-    }
+  // 确认返还尚未返还的船只并完成订单（后端在同一事务内一并标记返还）
+  const completeWithBoats = async () => {
+    setCompleteSubmitting(true)
     try {
+      await api.post(`/api/orders/${id}/return`)
+      message.success('已完成')
+      setCompleteOpen(false)
+      await load()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '操作失败')
+    } finally {
+      setCompleteSubmitting(false)
+    }
+  }
+
+  const submitAdjustment = async () => {
+    // 提交锁：请求进行中忽略后续点击，避免重复创建调整项
+    if (adjustSubmittingRef.current) return
+    adjustSubmittingRef.current = true
+    setAdjustSubmitting(true)
+    try {
+      const values = await adjustForm.validateFields()
+      const amountFen = yuanToFenSafe(values.amount)
+      if (amountFen <= 0) {
+        message.warning('金额必须大于 0（最小 0.01 元）')
+        return
+      }
+      if (adjustQty === 0) {
+        message.warning('数量不能为 0')
+        return
+      }
       await api.post(`/api/orders/${id}/payment/adjustments`, {
         quantity: adjustTab === 'refund' ? -adjustQty : adjustQty,
         unit_amount: amountFen,
         note: values.note,
       })
+      // POST 成功即代表调整项已落库：立即关闭弹窗并重置表单，
+      // 避免后续 load() 失败时弹窗仍开着、用户误以为没保存而重试。
       message.success('调整已添加')
       setAdjustOpen(false)
       adjustForm.resetFields()
       setAdjustQty(1)
       setAdjustTab('charge')
-      await load()
+      // load() 仅用于刷新展示；失败不应让用户以为调整没加上，
+      // 所以单独 catch，只给温和提示，不抛出。
+      await load().catch(() => {
+        message.warning('调整已保存，但页面刷新失败，请手动下拉刷新')
+      })
     } catch (error) {
+      // 仅 POST 本身失败才走到这里（后端校验未通过等），提示真实错误
       message.error(error instanceof Error ? error.message : '添加失败')
+    } finally {
+      adjustSubmittingRef.current = false
+      setAdjustSubmitting(false)
     }
   }
 
@@ -199,17 +338,24 @@ export default function OrderDetail() {
       <Card
         title={
           <Space>
+            {/* 移动端左上角返回按钮（与浏览器后退等价，配合列表快照恢复；左滑手势保留） */}
+            {isMobile && (
+              <Button
+                size="small"
+                type="text"
+                icon={<LeftOutlined />}
+                onClick={goBack}
+                aria-label="返回"
+                style={{ marginLeft: -8 }}
+              />
+            )}
             订单 {order.order_number}
             <Tag color={STATUS_META[order.status].color}>{STATUS_META[order.status].label}</Tag>
-            {order.checked_in && <Tag color="processing">已签到</Tag>}
-            {order.returned && <Tag color="success">已归还</Tag>}
-            {order.auto_return_occurred && <Tag color="purple">系统自动归还</Tag>}
-            {order.daily_forced_return_occurred && <Tag color="magenta">每日强制归还</Tag>}
           </Space>
         }
         extra={
           // 返回上一页（订单列表），保留列表 URL 的筛选/分页参数以恢复状态与滚动位置
-          screens.md ? <Button onClick={() => navigate(-1)}>返回列表</Button> : undefined
+          isDesktop ? <Button onClick={goBack}>返回列表</Button> : undefined
         }
       >
         {warnings.length > 0 && (
@@ -228,85 +374,221 @@ export default function OrderDetail() {
           />
         )}
 
-        <Descriptions bordered column={2} size="small">
-          <Descriptions.Item label="订单状态">
-            <Tag color={STATUS_META[order.status].color} style={{ margin: 0 }}>
-              {STATUS_META[order.status].label}
-            </Tag>
-          </Descriptions.Item>
-          <Descriptions.Item label="客户">
-            {order.customer_name || order.customer_wechat_nickname || '游客'}
-          </Descriptions.Item>
-          <Descriptions.Item label="性别">{order.customer_gender || '—'}</Descriptions.Item>
-          <Descriptions.Item label="手机号">{order.customer_phone || '—'}</Descriptions.Item>
-          <Descriptions.Item label="微信">
-            {[order.customer_wechat_nickname, order.customer_wechat_id].filter(Boolean).join(' / ') || '—'}
-          </Descriptions.Item>
-          <Descriptions.Item label="开始时间">{formatDateTime(order.start_at)}</Descriptions.Item>
-          <Descriptions.Item label="人数">
-            {order.adult_count} 位成人{order.child_count > 0 ? `，${order.child_count} 位儿童` : ''}
-          </Descriptions.Item>
-          <Descriptions.Item label="散客">{order.is_walk_in ? '是' : '否'}</Descriptions.Item>
-          {/* 支付方式：feature 开启时展示；编辑按钮受订单编辑权限控制，
-              点击后懒加载选择弹窗（首屏不加载组件 JS）。回滚：删除本 Item 与
-              savePaymentMethod/payEditOpen 相关代码即可。 */}
-          {(settings.payment_methods.length > 0 || order.payment_method_code) && (
-            <Descriptions.Item label="支付方式">
-              {order.payment_method_code
-                ? settings.payment_methods.find((m) => m.code === order.payment_method_code)?.name ??
-                  `未知方式(${order.payment_method_code})`
-                : '—'}
-              {order.editable && canEditOrder && settings.payment_methods.length > 0 && (
+        {/* label 宽度不限，宽度足够时一行显示；不足时浏览器自动折叠换行（偶数字数自然均分）。
+            时间类内容用 <div> 拆成日期/时间两行，确保不出现"日期+时间"/"操作人"被截断的情况。 */}
+        {/* 手机端窄屏：label/content 格子内边距由默认 8px 缩至 4px（缩 50%），
+            腾出宽度给白色内容格；label 允许自然折行（4 字 → 2+2） */}
+        <Descriptions
+          bordered
+          column={2}
+          size="small"
+          labelStyle={{ padding: '4px 4px', textAlign: 'center' }}
+          contentStyle={{ padding: '4px 4px', textAlign: 'center' }}
+        >
+          {/* 姓名：始终保留此栏。有姓名+性别 → "张磊先生"；仅有姓名 → "张磊"；无姓名 → 留空。 */}
+          {(() => {
+            const namePart = order.customer_name?.trim() ?? ''
+            const genderPart = order.customer_gender?.trim() ?? ''
+            const label = namePart ? namePart + (genderPart || '') : ''
+            return order.customer_id && label ? (
+              <Descriptions.Item label="姓名">
                 <Button
-                  size="small"
                   type="link"
-                  onClick={() => {
-                    setPayDraft(order.payment_method_code ?? null)
-                    setPayEditOpen(true)
-                  }}
+                  size="small"
+                  style={{ padding: 0, height: 'auto' }}
+                  onClick={() => navigate(`/customers/${order.customer_id}`)}
                 >
-                  编辑
+                  {label}
                 </Button>
-              )}
-            </Descriptions.Item>
-          )}
+              </Descriptions.Item>
+            ) : (
+              <Descriptions.Item label="姓名">{label}</Descriptions.Item>
+            )
+          })()}
+          <Descriptions.Item label="微信">
+            {order.customer_wechat_nickname && order.customer_id ? (
+              <Button
+                type="link"
+                size="small"
+                style={{ padding: 0, height: 'auto' }}
+                onClick={() => navigate(`/customers/${order.customer_id}`)}
+              >
+                {order.customer_wechat_nickname}
+                {order.customer_wechat_id ? ` / ${order.customer_wechat_id}` : ''}
+              </Button>
+            ) : (
+              [order.customer_wechat_nickname, order.customer_wechat_id].filter(Boolean).join(' / ') || ''
+            )}
+          </Descriptions.Item>
+          <Descriptions.Item label="手机号">{order.customer_phone ?? ''}</Descriptions.Item>
+          <Descriptions.Item label="散客">{order.is_walk_in ? '是' : '否'}</Descriptions.Item>
+          <Descriptions.Item label="人数">
+            {isMobile && order.child_count > 0 ? (
+              <>
+                <div>{order.adult_count} 位成人</div>
+                <div>{order.child_count} 位儿童</div>
+              </>
+            ) : (
+              <>{order.adult_count} 位成人{order.child_count > 0 ? `，${order.child_count} 位儿童` : ''}</>
+            )}
+          </Descriptions.Item>
+          {/* 支付方式：始终保留此栏（保持 Descriptions 布局稳定） */}
+          <Descriptions.Item label="支付方式">
+            {settings.payment_methods.length > 0 && order.payment_method_code
+              ? settings.payment_methods.find((m) => m.code === order.payment_method_code)?.name ?? ''
+              : ''}
+          </Descriptions.Item>
+          {/* 时间类字段：拆成日期一行 + 时间一行，避免窄屏时被拆成"日期+时间"/"（操作人）" */}
+          {(() => {
+            if (!order.start_at) return <Descriptions.Item label="开始时间">{null}</Descriptions.Item>
+            const d = dayjs(order.start_at)
+            return (
+              <Descriptions.Item label="开始时间">
+                <div>{d.format('YYYY-MM-DD')}</div>
+                <div style={{ color: '#888' }}>{d.format('HH:mm')}</div>
+              </Descriptions.Item>
+            )
+          })()}
+          {(() => {
+            if (!order.check_in_at) return <Descriptions.Item label="签到时间">{null}</Descriptions.Item>
+            const d = dayjs(order.check_in_at)
+            const by = order.check_in_by_user_code ?? order.check_in_by_user_name
+            return (
+              <Descriptions.Item label="签到时间">
+                <div>{d.format('YYYY-MM-DD')}</div>
+                <div style={{ color: '#888' }}>
+                  {d.format('HH:mm')}{by ? `（${by}）` : ''}
+                </div>
+              </Descriptions.Item>
+            )
+          })()}
+          {(() => {
+            const hasBoatDetail = (order.boat_usage?.length ?? 0) > 1
+            if (hasBoatDetail) {
+              return (
+                <Descriptions.Item label="出发时间">
+                  <BoatUsageDetail usage={order.boat_usage ?? []} />
+                </Descriptions.Item>
+              )
+            }
+            if (!order.boat_departed_at) return <Descriptions.Item label="出发时间">{null}</Descriptions.Item>
+            const d = dayjs(order.boat_departed_at)
+            return (
+              <Descriptions.Item label="出发时间">
+                <div>{d.format('YYYY-MM-DD')}</div>
+                <div style={{ color: '#888' }}>
+                  {d.format('HH:mm')}
+                  {(() => {
+                    const operator =
+                      order.boat_departed_by_user_code ?? order.boat_departed_by_user_name
+                    return operator ? `（${operator}）` : ''
+                  })()}
+                </div>
+              </Descriptions.Item>
+            )
+          })()}
+          {(() => {
+            const hasBoatDetail = (order.boat_usage?.length ?? 0) > 1
+            if (hasBoatDetail) {
+              return (
+                <Descriptions.Item label="返还时间">
+                  <BoatUsageDetail usage={order.boat_usage ?? []} />
+                </Descriptions.Item>
+              )
+            }
+            if (!order.boat_returned_at) return <Descriptions.Item label="返还时间">{null}</Descriptions.Item>
+            const d = dayjs(order.boat_returned_at)
+            return (
+              <Descriptions.Item label="返还时间">
+                <div>{d.format('YYYY-MM-DD')}</div>
+                <div style={{ color: '#888' }}>
+                  {d.format('HH:mm')}
+                  {(() => {
+                    const operator =
+                      order.boat_returned_by_user_code ?? order.boat_returned_by_user_name
+                    return operator ? `（${operator}）` : ''
+                  })()}
+                </div>
+              </Descriptions.Item>
+            )
+          })()}
+          {(() => {
+            if (!order.return_at) return <Descriptions.Item label="完成时间">{null}</Descriptions.Item>
+            const d = dayjs(order.return_at)
+            const by = order.return_by_system
+              ? '系统'
+              : (order.return_by_user_code ?? order.return_by_user_name ?? '')
+            return (
+              <Descriptions.Item label="完成时间">
+                <div>{d.format('YYYY-MM-DD')}</div>
+                <div style={{ color: '#888' }}>
+                  {d.format('HH:mm')}{by ? `（${by}）` : ''}
+                </div>
+              </Descriptions.Item>
+            )
+          })()}
           <Descriptions.Item label="使用时长">
-            {order.return_at
-              ? order.check_in_at
-                ? formatDurationBetween(order.check_in_at, order.return_at)
-                : '2小时'
-              : '—'}
+            {(order.boat_usage?.length ?? 0) > 1 ? (
+              <BoatUsageDetail usage={order.boat_usage ?? []} />
+            ) : (
+              <span>
+                {order.boat_departed_at && order.boat_returned_at
+                  ? formatDurationBetween(order.boat_departed_at, order.boat_returned_at)
+                  : order.return_at
+                    ? order.check_in_at
+                      ? formatDurationBetween(order.check_in_at, order.return_at)
+                      : '2小时'
+                    : ''}
+              </span>
+            )}
           </Descriptions.Item>
-          <Descriptions.Item label="签到">
-            {order.check_in_at
-              ? `${formatDateTime(order.check_in_at)}（${order.check_in_by_user_name ?? ''}）`
-              : '—'}
-          </Descriptions.Item>
-          <Descriptions.Item label="归还">
-            {order.return_at
-              ? `${formatDateTime(order.return_at)}（${order.return_by_system ? '系统' : (order.return_by_user_name ?? '')}）`
-              : '—'}
-          </Descriptions.Item>
-          <Descriptions.Item label="创建时间">
-            {`${formatDateTime(order.created_at)}（${order.created_by_user_name ?? ''}）`}
-          </Descriptions.Item>
-          <Descriptions.Item label="最后改动">
-            {`${formatDateTime(order.updated_at)}（${order.updated_by_user_name ?? ''}）`}
-          </Descriptions.Item>
-          <Descriptions.Item label="备注" span={2}>
-            {order.note || '—'}
+          {(() => {
+            const d = dayjs(order.created_at)
+            const by = order.created_by_user_code ?? order.created_by_user_name
+            return (
+              <Descriptions.Item label="创建时间">
+                <div>{d.format('YYYY-MM-DD')}</div>
+                <div style={{ color: '#888' }}>
+                  {d.format('HH:mm')}{by ? `（${by}）` : ''}
+                </div>
+              </Descriptions.Item>
+            )
+          })()}
+          {(() => {
+            const d = dayjs(order.updated_at)
+            const by = order.updated_by_user_code ?? order.updated_by_user_name
+            return (
+              <Descriptions.Item label="最后改动">
+                <div>{d.format('YYYY-MM-DD')}</div>
+                <div style={{ color: '#888' }}>
+                  {d.format('HH:mm')}{by ? `（${by}）` : ''}
+                </div>
+              </Descriptions.Item>
+            )
+          })()}
+          {/* 备注：始终独占最后一行（span=2 跨两列）；备注文字靠左，不随其他格居中 */}
+          <Descriptions.Item
+            label="备注"
+            span={2}
+            contentStyle={{ padding: '4px 4px', textAlign: 'left' }}
+          >
+            {order.note ?? ''}
           </Descriptions.Item>
         </Descriptions>
 
-        <Divider orientation="left">订单项目（价格快照，不可修改）</Divider>
+        <Divider orientation="center">订单项目</Divider>
         <Table
           rowKey="id"
           size="small"
           pagination={false}
+          tableLayout="fixed"
           dataSource={order.items}
           columns={[
             {
               title: '项目',
+              align: 'center',
+              onHeaderCell: centerHeader,
+              onCell: compactCell,
               render: (_, item) => {
                 const name = item.equipment_spec_name ?? item.sale_item_name ?? '—'
                 return (
@@ -321,18 +603,93 @@ export default function OrderDetail() {
                 )
               },
             },
-            { title: '数量', dataIndex: 'quantity', width: 90, align: 'right' },
+            {
+              title: '数量',
+              dataIndex: 'quantity',
+              width: 56,
+              align: 'center',
+              onHeaderCell: centerHeader,
+              onCell: nowrapCell,
+            },
             {
               title: '单价',
-              width: 110,
-              align: 'right',
+              align: 'center',
+              onHeaderCell: centerHeader,
+              onCell: nowrapCell,
               render: (_, item) => `¥${fenToYuan(item.unit_price)}`,
             },
             {
               title: '小计',
-              width: 110,
-              align: 'right',
+              align: 'center',
+              onHeaderCell: centerHeader,
+              onCell: nowrapCell,
               render: (_, item) => `¥${fenToYuan(item.line_amount)}`,
+            },
+          ]}
+        />
+
+        <Divider orientation="center">船只调配</Divider>
+        <Table
+          rowKey="key"
+          size="small"
+          pagination={false}
+          tableLayout="fixed"
+          dataSource={boatDispatchRows}
+          columns={[
+            {
+              title: '项目',
+              align: 'center',
+              onHeaderCell: centerHeader,
+              onCell: centeredCell,
+              render: (_, row) => (
+                <span
+                  style={{
+                    color: typeColorHex(row.color),
+                    fontWeight: row.color ? 600 : undefined,
+                  }}
+                >
+                  {row.specName}
+                </span>
+              ),
+            },
+            {
+              title: '编号',
+              align: 'center',
+              width: 96,
+              onHeaderCell: centerHeader,
+              onCell: centeredNowrapCell,
+              render: (_, row) =>
+                row.number ? (
+                  <span>
+                    <span style={{ color: typeColorHex(row.color), fontWeight: 600 }}>
+                      {row.number}
+                    </span>
+                    <span style={{ color: '#000' }}>号</span>
+                  </span>
+                ) : (
+                  <span style={{ color: '#999', fontSize: 12 }}>没有船只调配</span>
+                ),
+            },
+            {
+              title: '出发时间',
+              align: 'center',
+              width: 78,
+              onHeaderCell: centerHeader,
+              onCell: centeredNowrapCell,
+              render: (_, row) => (row.departedAt ? dayjs(row.departedAt).format('HH:mm') : ''),
+            },
+            {
+              title: '使用时长',
+              align: 'center',
+              width: 90,
+              onHeaderCell: centerHeader,
+              onCell: centeredNowrapCell,
+              render: (_, row) => {
+                if (!row.departedAt) return ''
+                return row.returnedAt
+                  ? formatDurationBetween(row.departedAt, row.returnedAt)
+                  : formatDurationBetween(row.departedAt, dayjs().toISOString())
+              },
             },
           ]}
         />
@@ -366,38 +723,77 @@ export default function OrderDetail() {
               </Descriptions.Item>
             </Descriptions>
 
-            <Divider orientation="left">调整项（Other，可正可负）</Divider>
+            {/* "调整项"标题行 + 右侧加号按钮（与编辑订单页"添加项目"同款图标） */}
+            <div style={{ display: 'flex', alignItems: 'center', margin: '8px 0' }}>
+              <div style={{ flex: 1, height: 1, background: '#f0f0f0' }} />
+              <span style={{ padding: '0 12px', fontWeight: 500 }}>调整项</span>
+              <Button
+                type="dashed"
+                size="small"
+                icon={<PlusOutlined />}
+                title="添加调整项"
+                style={{ width: 28, height: 24, padding: 0 }}
+                onClick={() => {
+                  adjustForm.resetFields()
+                  setAdjustQty(1)
+                  setAdjustTab('charge')
+                  setAdjustOpen(true)
+                }}
+              />
+              <div style={{ flex: 1, height: 1, background: '#f0f0f0' }} />
+            </div>
             <Table
               rowKey="id"
               size="small"
               pagination={false}
               dataSource={payment.adjustments}
               columns={[
-                { title: '说明', dataIndex: 'note' },
+                {
+                  title: '说明',
+                  dataIndex: 'note',
+                  onHeaderCell: centerHeader,
+                  onCell: compactCell,
+                },
                 {
                   title: '金额',
-                  width: 140,
+                  width: 96,
                   align: 'right',
+                  onHeaderCell: centerHeader,
+                  onCell: nowrapCell,
                   render: (_, item) => (
                     <span style={{ color: item.amount > 0 ? '#cf1322' : '#3f8600' }}>
                       {item.amount > 0 ? '+' : ''}¥{fenToYuan(item.amount)}
                     </span>
                   ),
                 },
-                { title: '时间', dataIndex: 'created_at', width: 180, render: (v) => formatDateTime(v) },
+                {
+                  title: '时间',
+                  width: 162,
+                  onHeaderCell: centerHeader,
+                  onCell: compactCell,
+                  render: (_, item) => {
+                    const d = dayjs(item.created_at)
+                    const main = `${d.format('YYYY-MM-DD')} ${d.format('HH:mm')}`
+                    const by = (item.created_by_user_code ?? item.created_by_user_name)?.trim()
+                    return (
+                      <div style={{ fontSize: 12, lineHeight: 1.5 }}>
+                        {by && by.length >= 3 ? (
+                          <>
+                            <div style={{ whiteSpace: 'nowrap' }}>{main}</div>
+                            <div style={{ whiteSpace: 'nowrap' }}>（{by}）</div>
+                          </>
+                        ) : (
+                          <div style={{ whiteSpace: 'nowrap' }}>
+                            {main}
+                            {by ? `（${by}）` : ''}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  },
+                },
               ]}
             />
-            <Button
-              style={{ marginTop: 12 }}
-              onClick={() => {
-                adjustForm.resetFields()
-                setAdjustQty(1)
-                setAdjustTab('charge')
-                setAdjustOpen(true)
-              }}
-            >
-              添加调整项
-            </Button>
           </>
         ) : (
           <span style={{ color: '#999' }}>支付记录加载失败</span>
@@ -405,25 +801,11 @@ export default function OrderDetail() {
       </Card>
 
       <Modal
-        title="选择支付方式"
-        open={payEditOpen}
-        onCancel={() => setPayEditOpen(false)}
-        onOk={savePaymentMethod}
-        okText="保存"
-        cancelText="取消"
-        confirmLoading={paySaving}
-        destroyOnClose
-      >
-        <Suspense fallback={<div style={{ padding: 24, textAlign: 'center' }}>加载中…</div>}>
-          <PaymentMethodSelector value={payDraft} onChange={(code) => setPayDraft(code)} />
-        </Suspense>
-      </Modal>
-
-      <Modal
         title="添加调整项"
         open={adjustOpen}
         onCancel={() => setAdjustOpen(false)}
         onOk={submitAdjustment}
+        confirmLoading={adjustSubmitting}
         destroyOnClose
       >
         <Tabs
@@ -453,6 +835,7 @@ export default function OrderDetail() {
               min={0.01}
               step={0.01}
               precision={2}
+              inputMode="tel"
               parser={(value) => (value || '').replace(/[^\d.]/g, '') as unknown as number}
             />
           </Form.Item>
@@ -491,18 +874,64 @@ export default function OrderDetail() {
         </Form>
       </Modal>
 
-      <div style={{ height: screens.md ? 48 : 'calc(72px + env(safe-area-inset-bottom, 0px))' }} />
+      {/* 有船只已出发未返还时，完成订单前明确列出船只并要求确认返还 */}
+      <Modal
+        open={completeOpen}
+        title="确认返还并完成订单？"
+        okText="确认返还并完成"
+        cancelText="取消"
+        confirmLoading={completeSubmitting}
+        onOk={completeWithBoats}
+        onCancel={() => {
+          if (!completeSubmitting) setCompleteOpen(false)
+        }}
+        width={360}
+        maskClosable={!completeSubmitting}
+      >
+        <div style={{ textAlign: 'center', padding: '4px 0 8px' }}>
+          <div
+            style={{
+              display: 'inline-block',
+              textAlign: 'left',
+              color: '#666',
+              lineHeight: 1.9,
+              fontSize: 13,
+            }}
+          >
+            <div style={{ marginBottom: 4 }}>以下船只还未返还：</div>
+            {outstandingBoats.map((u, index) => {
+              const color = typeColorHex(u.equipment_type_color ?? undefined)
+              const minutes = Math.max(0, dayjs().diff(dayjs(u.departed_at), 'minute'))
+              const duration =
+                minutes >= 60
+                  ? `${Math.floor(minutes / 60)}小时${minutes % 60}分钟`
+                  : `${minutes}分钟`
+              return (
+                <div key={`${u.number}-${index}`}>
+                  <span style={{ color }}>{u.equipment_spec_name ?? '—'}</span>
+                  <span> </span>
+                  <span style={{ color, fontWeight: 600 }}>{u.number}</span>
+                  <span style={{ color: '#000' }}>号</span>
+                  <span>，出发时间{dayjs(u.departed_at).format('HH:mm')}，出发时长{duration}</span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      </Modal>
+
+      <div style={{ height: isDesktop ? 48 : 'calc(72px + env(safe-area-inset-bottom, 0px))' }} />
       <div
         style={{
           position: 'fixed',
-          bottom: screens.md ? 16 : 'calc(56px + env(safe-area-inset-bottom, 0px))',
-          left: screens.md ? 'auto' : 0,
-          right: screens.md ? 16 : 0,
+          bottom: isDesktop ? 16 : 'calc(56px + env(safe-area-inset-bottom, 0px))',
+          left: isDesktop ? 'auto' : 0,
+          right: isDesktop ? 16 : 0,
           zIndex: 100,
           background: '#fff',
           padding: '8px 12px',
-          borderTop: screens.md ? 'none' : '1px solid #f0f0f0',
-          borderRadius: screens.md ? 8 : 0,
+          borderTop: isDesktop ? 'none' : '1px solid #f0f0f0',
+          borderRadius: isDesktop ? 8 : 0,
           boxShadow: '0 -2px 8px rgba(0,0,0,0.06)',
           display: 'flex',
           flexWrap: 'wrap',
@@ -538,23 +967,29 @@ export default function OrderDetail() {
         )}
         {(order.status === 'active' || order.status === 'in_progress') && (
           today ? (
-            <Popconfirm
-              title="确认归还？"
-              onConfirm={() => action(`/api/orders/${order.id}/return`, '归还成功')}
-            >
-              <Button type="primary" ghost>归还</Button>
-            </Popconfirm>
+            outstandingBoats.length > 0 ? (
+              <Button type="primary" ghost onClick={() => setCompleteOpen(true)}>
+                完成
+              </Button>
+            ) : (
+              <Popconfirm
+                title="确认完成？"
+                onConfirm={() => action(`/api/orders/${order.id}/return`, '已完成')}
+              >
+                <Button type="primary" ghost>完成</Button>
+              </Popconfirm>
+            )
           ) : (
-            <Button disabled title="仅当天订单可归还">归还</Button>
+            <Button disabled title="仅当天订单可归还">完成</Button>
           )
         )}
         {order.returned && (
           <Popconfirm
-            title="取消归还？"
+            title="取消完成？"
             description="订单将恢复为活动状态。"
-            onConfirm={() => action(`/api/orders/${order.id}/cancel-return`, '已取消归还')}
+            onConfirm={() => action(`/api/orders/${order.id}/cancel-return`, '已取消完成')}
           >
-            <Button>取消归还</Button>
+            <Button>取消完成</Button>
           </Popconfirm>
         )}
         {order.status === 'active' && (

@@ -28,7 +28,16 @@ def list_customers(
     user: User = Depends(get_current_user),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
-    return [customer_dict(c) for c in customer_service.search_customers(db, q, user, active_group_id)]
+    customers = customer_service.search_customers(db, q, user, active_group_id)
+    stats = customer_service.customer_order_stats(db, [c.id for c in customers])
+    result = []
+    for c in customers:
+        item = customer_dict(c)
+        total_orders, total_spending_fen = stats.get(c.id, (0, 0))
+        item["total_orders"] = total_orders
+        item["total_spending_fen"] = total_spending_fen
+        result.append(item)
+    return result
 
 
 @router.get("/{customer_id}")

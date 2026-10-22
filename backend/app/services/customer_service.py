@@ -37,6 +37,54 @@ def search_customers(
     return list(db.scalars(statement).all())
 
 
+def customer_order_stats(db: Session, customer_ids: list[str]) -> dict[str, tuple[int, int]]:
+    """批量返回每个客户的 (订单总数, 已完成订单消费额-分)。
+
+    消费额口径与客户详情 stats 接口一致：已完成订单的订单项目金额合计 +
+    支付调整项金额合计。订单总数统计所有状态的订单。
+    """
+    if not customer_ids:
+        return {}
+
+    from app.models.order import Order, OrderItem
+    from app.models.payment import Payment, PaymentItem
+
+    counts = dict(
+        db.execute(
+            select(Order.customer_id, func.count())
+            .where(Order.customer_id.in_(customer_ids))
+            .group_by(Order.customer_id)
+        ).all()
+    )
+    item_totals = dict(
+        db.execute(
+            select(
+                Order.customer_id,
+                func.coalesce(func.sum(OrderItem.quantity * OrderItem.unit_price), 0),
+            )
+            .join(OrderItem, OrderItem.order_id == Order.id)
+            .where(Order.status == "completed", Order.customer_id.in_(customer_ids))
+            .group_by(Order.customer_id)
+        ).all()
+    )
+    adjustment_totals = dict(
+        db.execute(
+            select(Order.customer_id, func.coalesce(func.sum(PaymentItem.amount), 0))
+            .join(Payment, Payment.order_id == Order.id)
+            .join(PaymentItem, PaymentItem.payment_id == Payment.id)
+            .where(Order.status == "completed", Order.customer_id.in_(customer_ids))
+            .group_by(Order.customer_id)
+        ).all()
+    )
+    return {
+        cid: (
+            int(counts.get(cid, 0)),
+            int(item_totals.get(cid, 0)) + int(adjustment_totals.get(cid, 0)),
+        )
+        for cid in customer_ids
+    }
+
+
 def get_customer(
     db: Session, customer_id: str, user: User | None = None, active_group_id: str | None = None
 ) -> Customer:
@@ -53,14 +101,26 @@ def get_customer(
 
 
 def _ensure_unique(
-    db: Session, phone: str | None, wechat_id: str | None,
-    exclude_id: str | None = None, group_id: str | None = None,
+    db: Session,
+    phone: str | None,
+    wechat_id: str | None,
+    wechat_nickname: str | None = None,
+    exclude_id: str | None = None,
+    group_id: str | None = None,
 ) -> None:
+    """业务组内唯一性检查：手机号、微信ID、微信昵称三者都必须唯一。
+
+    wechat_nickname 也纳入检查是因为客户管理页面没有走订单创建时的
+    _resolve_or_create_customer 查重路径，此前这里只检查 phone/wechat_id
+    会导致同昵称客户被重复创建。
+    """
     predicates = []
     if phone:
         predicates.append(Customer.phone == phone)
     if wechat_id:
         predicates.append(Customer.wechat_id == wechat_id)
+    if wechat_nickname:
+        predicates.append(Customer.wechat_nickname == wechat_nickname)
     if not predicates:
         return
     statement = select(Customer).where(or_(*predicates))
@@ -69,7 +129,7 @@ def _ensure_unique(
     if exclude_id:
         statement = statement.where(Customer.id != exclude_id)
     if db.scalar(statement):
-        raise HTTPException(status_code=409, detail="手机号或微信ID已存在")
+        raise HTTPException(status_code=409, detail="手机号、微信ID或微信昵称已存在")
 
 
 def create_customer(
@@ -91,7 +151,7 @@ def create_customer(
             detail="至少提供姓名或微信昵称",
         )
     group_id = active_group_id if active_group_id is not None else user.group_id
-    _ensure_unique(db, phone, wechat_id, group_id=group_id)
+    _ensure_unique(db, phone, wechat_id, wechat_nickname, group_id=group_id)
 
     customer = Customer(
         id=str(uuid4()),
@@ -162,7 +222,8 @@ def update_customer(
             status_code=422,
             detail="至少保留姓名或微信昵称",
         )
-    _ensure_unique(db, phone, wechat_id, exclude_id=customer_id, group_id=customer.group_id)
+    _ensure_unique(db, phone, wechat_id, wechat_nickname,
+                   exclude_id=customer_id, group_id=customer.group_id)
 
     customer.name = name
     customer.phone = phone

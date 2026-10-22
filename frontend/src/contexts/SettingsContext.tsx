@@ -18,6 +18,7 @@ const CACHE_TTL_MS = 5 * 60 * 1000 // 5 分钟缓存失效
 const DEFAULT_SETTINGS: AppSettings = {
   auto_return_after_minutes: 120,
   fast_customer_mode: false,
+  boat_numbering_enabled: false,
   updated_at: '',
   payment_methods: [],
   default_payment_method: null,

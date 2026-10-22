@@ -15,6 +15,7 @@ from app.models.customer import Customer
 from app.models.equipment import EquipmentSpec, SaleItem
 from app.models.order import Order, OrderItem
 from app.models.payment import Payment, PaymentItem
+from app.models.payment_method import PaymentMethod
 from app.models.user import User
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
@@ -122,10 +123,15 @@ def export_orders(
             "数量",
             "单价(元)",
             "类目总额(元)",
+            "付款方式",
         ]
     )
 
+    # 付款方式 code→名称全局映射（code 全局唯一）；已删除的方式留空，不显示 code
+    payment_names = dict(db.execute(select(PaymentMethod.code, PaymentMethod.name)).all())
+
     for order in orders:
+        pay_name = payment_names.get(order.payment_method_code, "") if order.payment_method_code else ""
         # Order items (equipment / sale items) sorted by creation order.
         items = list(
             db.scalars(
@@ -189,6 +195,7 @@ def export_orders(
                     str(qty),
                     f"{unit_price / 100:.2f}",
                     f"{unit_price * qty / 100:.2f}",
+                    pay_name,
                 ]
             )
             seq += 1
@@ -203,6 +210,7 @@ def export_orders(
                     str(adj.quantity),
                     f"{adj.unit_amount / 100:.2f}",
                     f"{adj.amount / 100:.2f}",
+                    pay_name,
                 ]
             )
             seq += 1
@@ -299,10 +307,14 @@ def export_customer_orders(
         "订单号", "订单状态", "微信昵称", "订单日期", "订单时间", "创建日期", "创建时间",
         "散客",
         "签到时间", "归还时间", "使用时间", "成人", "儿童", "消费总额(元)",
-        "类目排序", "类目名称", "备注", "数量", "单价(元)", "类目总额(元)",
+        "类目排序", "类目名称", "备注", "数量", "单价(元)", "类目总额(元)", "付款方式",
     ])
 
+    # 付款方式 code→名称全局映射；已删除的方式留空，不显示 code
+    payment_names = dict(db.execute(select(PaymentMethod.code, PaymentMethod.name)).all())
+
     for order in orders:
+        pay_name = payment_names.get(order.payment_method_code, "") if order.payment_method_code else ""
         items = list(db.scalars(
             select(OrderItem).where(OrderItem.order_id == order.id).order_by(OrderItem.created_at)
         ).all())
@@ -342,12 +354,14 @@ def export_customer_orders(
             writer.writerow(common + [
                 str(seq), name, "", str(item.quantity),
                 f"{item.unit_price / 100:.2f}", f"{item.unit_price * item.quantity / 100:.2f}",
+                pay_name,
             ])
             seq += 1
         for adj in adjustments:
             writer.writerow(common + [
                 str(seq), "其他", adj.note, str(adj.quantity),
                 f"{adj.unit_amount / 100:.2f}", f"{adj.amount / 100:.2f}",
+                pay_name,
             ])
             seq += 1
 
