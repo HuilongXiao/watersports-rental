@@ -4,6 +4,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.time_utils import to_iso_z
+from app.models.boat import BoatDispatch
 from app.models.customer import Customer
 from app.models.equipment import EquipmentSpec, EquipmentType, SaleItem
 from app.models.order import Order, OrderItem
@@ -44,6 +45,7 @@ def user_dict(user: User) -> dict:
         "perm_manage_users": user.perm_manage_users,
         "perm_view_revenue": user.perm_view_revenue,
         "perm_manage_payment_methods": user.perm_manage_payment_methods,
+        "perm_boat_dispatch": user.perm_boat_dispatch,
         "created_at": to_iso_z(user.created_at),
     }
 
@@ -63,7 +65,7 @@ def _user_name_map(
     )
 
 
-def _catalog_names(db: Session, items: list[OrderItem]) -> tuple[dict, dict, dict]:
+def _catalog_names(db: Session, items: list[OrderItem]) -> tuple[dict, dict, dict, dict]:
     spec_ids = {i.equipment_spec_id for i in items if i.equipment_spec_id}
     sale_ids = {i.sale_item_id for i in items if i.sale_item_id}
     spec_rows = (
@@ -80,21 +82,29 @@ def _catalog_names(db: Session, items: list[OrderItem]) -> tuple[dict, dict, dic
         ).all()
     } if type_ids else {}
     spec_colors = {s.id: type_colors.get(s.equipment_type_id) for s in spec_rows}
+    # 规格是否启用了船只编号（决定订单详情「船只调配」区域是否要求编号）
+    spec_numbering = {s.id: bool(s.boat_numbering_required) for s in spec_rows}
     sale_names = {
         s.id: s.name
         for s in db.scalars(select(SaleItem).where(SaleItem.id.in_(sale_ids))).all()
     } if sale_ids else {}
-    return spec_names, sale_names, spec_colors
+    return spec_names, sale_names, spec_colors, spec_numbering
 
 
 def order_item_dict(
-    item: OrderItem, spec_names: dict, sale_names: dict, spec_colors: dict, locked: bool
+    item: OrderItem,
+    spec_names: dict,
+    sale_names: dict,
+    spec_colors: dict,
+    spec_numbering: dict,
+    locked: bool,
 ) -> dict:
     return {
         "id": item.id,
         "equipment_spec_id": item.equipment_spec_id,
         "equipment_spec_name": spec_names.get(item.equipment_spec_id) if item.equipment_spec_id else None,
         "equipment_type_color": spec_colors.get(item.equipment_spec_id) if item.equipment_spec_id else None,
+        "requires_numbering": spec_numbering.get(item.equipment_spec_id) if item.equipment_spec_id else None,
         "sale_item_id": item.sale_item_id,
         "sale_item_name": sale_names.get(item.sale_item_id) if item.sale_item_id else None,
         "quantity": item.quantity,
@@ -104,18 +114,72 @@ def order_item_dict(
     }
 
 
+def _boat_times(db: Session, order_ids: list[str]) -> dict[str, dict]:
+    """按订单汇总船只调配时间与操作人（单次查询）。
+
+    出发时间取该订单所有船只中最早的一次出发（含操作人）；返还时间仅在该
+    订单的所有船只都已返还时给出（取最后一条返还时间及操作人）。
+    """
+    if not order_ids:
+        return {}
+    grouped: dict[str, list[dict]] = {}
+    for oid, number, spec_id, item_id, departed, departed_by, returned, returned_by in db.execute(
+        select(
+            BoatDispatch.order_id,
+            BoatDispatch.number,
+            BoatDispatch.equipment_spec_id,
+            BoatDispatch.order_item_id,
+            BoatDispatch.departed_at,
+            BoatDispatch.departed_by_user_id,
+            BoatDispatch.returned_at,
+            BoatDispatch.returned_by_user_id,
+        ).where(BoatDispatch.order_id.in_(order_ids))
+    ).all():
+        grouped.setdefault(oid, []).append(
+            {
+                "number": number,
+                "spec_id": spec_id,
+                "order_item_id": item_id,
+                "departed_at": departed,
+                "departed_by": departed_by,
+                "returned_at": returned,
+                "returned_by": returned_by,
+            }
+        )
+
+    result: dict[str, dict] = {}
+    for oid, rows in grouped.items():
+        departures = [r for r in rows if r["departed_at"] is not None]
+        all_returned = bool(rows) and all(r["returned_at"] is not None for r in rows)
+        returns = [r for r in rows if r["returned_at"] is not None]
+        earliest = min(departures, key=lambda r: r["departed_at"]) if departures else None
+        latest = max(returns, key=lambda r: r["returned_at"]) if (all_returned and returns) else None
+        rows.sort(key=lambda r: (r["departed_at"] is None, r["departed_at"]))
+        result[oid] = {
+            "departed_at": earliest["departed_at"] if earliest else None,
+            "departed_by_user_id": earliest["departed_by"] if earliest else None,
+            "returned_at": latest["returned_at"] if latest else None,
+            "returned_by_user_id": latest["returned_by"] if latest else None,
+            # 逐条船只明细（含编号），供订单详情「详细」气泡展示
+            "dispatches": rows,
+        }
+    return result
+
+
 def _order_payload(
     order: Order,
     items: list[OrderItem],
     spec_names: dict,
     sale_names: dict,
     spec_colors: dict,
+    spec_numbering: dict,
     names: dict,
     system_ids: set,
     codes: dict,
     adjustments_total: int,
     refund_total: int,
     check_in_warnings: list[dict] | None = None,
+    boat_times: dict | None = None,
 ) -> dict:
     """由已预取的关联数据组装订单响应体（不做任何 DB 查询）。
 
@@ -149,7 +213,8 @@ def _order_payload(
         "note_popup": order.note_popup,
         "payment_method_code": order.payment_method_code,
         "items": [
-            order_item_dict(i, spec_names, sale_names, spec_colors, locked) for i in items
+            order_item_dict(i, spec_names, sale_names, spec_colors, spec_numbering, locked)
+            for i in items
         ],
         "items_total_fen": items_total,
         "refund_amount_fen": refund_total,
@@ -181,6 +246,38 @@ def _order_payload(
         "updated_by_user_code": codes.get(order.updated_by_user_id),
         "updated_at": to_iso_z(order.updated_at),
         "inventory_warnings": check_in_warnings or [],
+        # 船只调配时间与操作人：最早出发 / 全部船只返还完成的最后返还
+        "boat_departed_at": to_iso_z((boat_times or {}).get("departed_at")),
+        "boat_departed_by_user_name": names.get(
+            (boat_times or {}).get("departed_by_user_id")
+        ),
+        "boat_departed_by_user_code": codes.get(
+            (boat_times or {}).get("departed_by_user_id")
+        ),
+        "boat_returned_at": to_iso_z((boat_times or {}).get("returned_at")),
+        "boat_returned_by_user_name": names.get(
+            (boat_times or {}).get("returned_by_user_id")
+        ),
+        "boat_returned_by_user_code": codes.get(
+            (boat_times or {}).get("returned_by_user_id")
+        ),
+        # 每一条船的出发 / 返还明细（含编号与操作人）
+        "boat_usage": [
+            {
+                "number": d.get("number"),
+                "order_item_id": d.get("order_item_id"),
+                "equipment_spec_id": d.get("spec_id"),
+                "equipment_spec_name": spec_names.get(d.get("spec_id")),
+                "equipment_type_color": spec_colors.get(d.get("spec_id")),
+                "departed_at": to_iso_z(d.get("departed_at")),
+                "departed_by_user_name": names.get(d.get("departed_by")),
+                "departed_by_user_code": codes.get(d.get("departed_by")),
+                "returned_at": to_iso_z(d.get("returned_at")),
+                "returned_by_user_name": names.get(d.get("returned_by")),
+                "returned_by_user_code": codes.get(d.get("returned_by")),
+            }
+            for d in (boat_times or {}).get("dispatches", [])
+        ],
     }
 
 
@@ -192,7 +289,8 @@ def order_dict(db: Session, order: Order, items: list[OrderItem] | None = None,
             select(OrderItem).where(OrderItem.order_id == order.id).order_by(OrderItem.created_at)
         ).all()
     )
-    spec_names, sale_names, spec_colors = _catalog_names(db, items)
+    spec_names, sale_names, spec_colors, spec_numbering = _catalog_names(db, items)
+    boat_times = _boat_times(db, [order.id]).get(order.id, {})
     names, system_ids, codes = _user_name_map(
         db,
         {
@@ -200,6 +298,13 @@ def order_dict(db: Session, order: Order, items: list[OrderItem] | None = None,
             order.updated_by_user_id,
             order.check_in_by_user_id,
             order.return_by_user_id,
+            boat_times.get("departed_by_user_id"),
+            boat_times.get("returned_by_user_id"),
+            *[
+                uid
+                for d in boat_times.get("dispatches", [])
+                for uid in (d.get("departed_by"), d.get("returned_by"))
+            ],
         },
     )
     # 支付调整项总额（含正项“其他”和负项退款）
@@ -221,8 +326,9 @@ def order_dict(db: Session, order: Order, items: list[OrderItem] | None = None,
         or 0
     )
     return _order_payload(
-        order, items, spec_names, sale_names, spec_colors,
+        order, items, spec_names, sale_names, spec_colors, spec_numbering,
         names, system_ids, codes, adjustments_total, refund_total, check_in_warnings,
+        boat_times=boat_times,
     )
 
 
@@ -248,8 +354,10 @@ def orders_dict(db: Session, orders: list[Order]) -> list[dict]:
     for it in all_items:
         items_by_order.setdefault(it.order_id, []).append(it)
     # 2) 目录名称/颜色：全部订单项合并一次查询
-    spec_names, sale_names, spec_colors = _catalog_names(db, all_items)
-    # 3) 操作用户：全部订单涉及的用户合并一次查询
+    spec_names, sale_names, spec_colors, spec_numbering = _catalog_names(db, all_items)
+    # 3) 船只调配时间与操作人：一次查询（操作人参与后续用户批量查询）
+    boat_times = _boat_times(db, order_ids)
+    # 4) 操作用户：全部订单涉及的用户合并一次查询
     user_ids: set[str | None] = set()
     for o in orders:
         user_ids.update(
@@ -260,8 +368,14 @@ def orders_dict(db: Session, orders: list[Order]) -> list[dict]:
                 o.return_by_user_id,
             )
         )
+    for bt in boat_times.values():
+        user_ids.add(bt.get("departed_by_user_id"))
+        user_ids.add(bt.get("returned_by_user_id"))
+        for d in bt.get("dispatches", []):
+            user_ids.add(d.get("departed_by"))
+            user_ids.add(d.get("returned_by"))
     names, system_ids, codes = _user_name_map(db, user_ids)
-    # 4) 调整项合计 / 退款合计：按订单分组聚合，各一次查询
+    # 5) 调整项合计 / 退款合计：按订单分组聚合，各一次查询
     adjustments: dict[str, int] = {}
     refunds: dict[str, int] = {}
     for oid, total in db.execute(
@@ -278,13 +392,15 @@ def orders_dict(db: Session, orders: list[Order]) -> list[dict]:
         .group_by(Payment.order_id)
     ).all():
         refunds[oid] = int(total)
+    # 6) 组装响应
     return [
         _order_payload(
             o,
             items_by_order.get(o.id, []),
-            spec_names, sale_names, spec_colors,
+            spec_names, sale_names, spec_colors, spec_numbering,
             names, system_ids, codes,
             adjustments.get(o.id, 0), refunds.get(o.id, 0),
+            boat_times=boat_times.get(o.id, {}),
         )
         for o in orders
     ]

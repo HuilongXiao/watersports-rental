@@ -12,7 +12,7 @@
 
 services:
   app:
-    image: watersports-rental:1.1.14
+    image: watersports-rental:1.1.15
     container_name: rental-app
     restart: unless-stopped
     ports:
@@ -26,8 +26,8 @@ services:
       # SQLite 数据库 rental_app.db 及日志 data/logs/
       # （backend-requests-日期.log = 后端请求耗时；frontend-trace-日期.log = 前端上报，
       #   两者均按天生成，文件名带当天日期，默认保留 30 天）
-      - ./data:/app/data
+      - /volume1/docker/sportrentalmanager/data:/app/data
       # 数据库手动/自动备份
-      - ./backups:/app/backups
+      - /volume1/docker/sportrentalmanager/backups:/app/backups
       # 每日 00:00 自动导出的订单 CSV
-      - ./exports:/app/exports
+      - /volume1/docker/sportrentalmanager/exports:/app/exports

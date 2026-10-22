@@ -16,6 +16,9 @@ _ADDITIVE_COLUMNS = [
     ("users", "perm_export_report", "BOOLEAN NOT NULL DEFAULT 0"),
     ("users", "perm_manage_users", "BOOLEAN NOT NULL DEFAULT 0"),
     ("equipment_types", "color", "VARCHAR(16) NOT NULL DEFAULT 'blue'"),
+    ("equipment_types", "is_active", "BOOLEAN NOT NULL DEFAULT 1"),
+    ("equipment_specs", "boat_numbering_required", "BOOLEAN NOT NULL DEFAULT 1"),
+    ("equipment_specs", "show_in_usage", "BOOLEAN NOT NULL DEFAULT 1"),
     ("settings", "auto_export_orders_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
     ("settings", "auto_export_customers_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
     ("customers", "note", "TEXT"),
@@ -30,11 +33,13 @@ _ADDITIVE_COLUMNS = [
     ("settings", "group_id", "VARCHAR(36)"),
     ("users", "perm_view_revenue", "BOOLEAN NOT NULL DEFAULT 0"),
     ("settings", "fast_customer_mode", "BOOLEAN NOT NULL DEFAULT 0"),
+    ("settings", "boat_numbering_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
     ("equipment_specs", "sort_order", "INTEGER NOT NULL DEFAULT 0"),
     ("orders", "is_walk_in", "BOOLEAN NOT NULL DEFAULT 0"),
     ("orders", "note_popup", "BOOLEAN NOT NULL DEFAULT 0"),
     ("orders", "payment_method_code", "VARCHAR(32)"),
     ("users", "perm_manage_payment_methods", "BOOLEAN NOT NULL DEFAULT 0"),
+    ("users", "perm_boat_dispatch", "BOOLEAN NOT NULL DEFAULT 0"),
     ("users", "operator_code", "VARCHAR(2)"),
 ]
 
@@ -230,6 +235,7 @@ def initialize_database() -> None:
     _migrate_catalog_unique_group_scope()
     _migrate_settings_legacy_auto_export_column()
     _migrate_payment_methods_group_scope()
+    _migrate_boat_numbers_unique_scope()
 
 
 def _migrate_orders_status_constraint() -> None:
@@ -499,6 +505,51 @@ def _migrate_payment_methods_group_scope() -> None:
                 log.info(
                     "payment_methods: 为 Group %s 自动 seed CASH 默认项", gid[:8]
                 )
+
+
+def _migrate_boat_numbers_unique_scope() -> None:
+    """船只编号全局唯一：同一 Group 内任何器材的编号都不能相同。
+
+    旧库的唯一约束是 (equipment_spec_id, number)，只限制单个器材内部不重复，
+    不同器材之间可以使用相同编号。这里补建 (group_id, number) 唯一索引。
+    新库由模型约束自带自动索引，检测到已存在覆盖这两列的唯一索引时跳过。
+
+    存在跨器材重复编号的存量数据时仅输出警告并跳过建索引，不让容器启动失败。
+    """
+    import logging
+
+    log = logging.getLogger("app.db")
+
+    with engine.begin() as bind:
+        duplicates = bind.exec_driver_sql(
+            "SELECT group_id, number, COUNT(*) FROM boat_numbers "
+            "GROUP BY group_id, number HAVING COUNT(*) > 1"
+        ).fetchall()
+        if duplicates:
+            log.warning(
+                "跳过 boat_numbers 的全局唯一索引：检测到 %d 组重复编号。"
+                "请先手动修改重复编号后再部署。重复组（group_id / number / count）：%s",
+                len(duplicates), [tuple(r) for r in duplicates],
+            )
+            return
+
+        unique_indexes = [
+            row[1]
+            for row in bind.exec_driver_sql("PRAGMA index_list(boat_numbers)").fetchall()
+            if row[2]
+        ]
+        for name in unique_indexes:
+            cols = [
+                row[2]
+                for row in bind.exec_driver_sql(f"PRAGMA index_info('{name}')").fetchall()
+            ]
+            if cols == ["group_id", "number"]:
+                return
+
+        bind.exec_driver_sql(
+            "CREATE UNIQUE INDEX uq_boat_numbers_group_number "
+            "ON boat_numbers (group_id, number)"
+        )
 
 
 def check_database_connection() -> bool:

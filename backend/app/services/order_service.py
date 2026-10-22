@@ -20,7 +20,8 @@ from app.core.time_utils import (
     utc_now,
 )
 from app.models.customer import Customer
-from app.models.equipment import EquipmentSpec, SaleItem
+from app.models.boat import BoatDispatch
+from app.models.equipment import EquipmentSpec, EquipmentType, SaleItem
 from app.models.group import Group
 from app.models.inventory import InventoryConfiguration
 from app.models.order import Order, OrderItem
@@ -286,6 +287,13 @@ def create_order(db: Session, user: User, payload, active_group_id: str | None =
         raise HTTPException(status_code=422, detail="人数不能为负")
 
     resolved = _resolve_items(db, payload.items)
+    # 仅新建订单时校验所属类型是否启用；编辑已有订单不做该校验，
+    # 以免类型停用后历史订单无法保存（原有项目仍可保留）。
+    for _, _, _, ref in resolved:
+        if isinstance(ref, EquipmentSpec):
+            type_row = db.get(EquipmentType, ref.equipment_type_id)
+            if not type_row or not type_row.is_active:
+                raise HTTPException(status_code=422, detail="该器材所属类型已停用，无法新建订单")
     spec_quantities = [(ref, qty) for _, _, qty, ref in resolved if isinstance(ref, EquipmentSpec)]
     validate_people_capacity(spec_quantities, payload.adult_count, payload.child_count)
 
@@ -746,6 +754,20 @@ def return_order(
             if now < order.start_at + timedelta(minutes=1):
                 raise HTTPException(status_code=409, detail="直接归还时间至少为开始时间后 1 分钟")
 
+    # 订单完成时，仍未操作返还的出发船只一并标记返还（释放库存并记录返还时间）
+    outstanding = list(
+        db.scalars(
+            select(BoatDispatch).where(
+                BoatDispatch.order_id == order.id,
+                BoatDispatch.returned.is_(False),
+            )
+        ).all()
+    )
+    for dispatch in outstanding:
+        dispatch.returned = True
+        dispatch.returned_at = now
+        dispatch.returned_by_user_id = user.id
+
     order.return_at = now
     order.return_by_user_id = user.id
     order.status = "completed"
@@ -798,7 +820,13 @@ def auto_return_overdue_orders(db: Session) -> list[Order]:
         .where(Order.auto_return_after_minutes.is_not(None))
     )
     returned: list[Order] = []
+    # 已经操作过船只出发的订单由「船只调配」流程负责完成，不做超时自动完成
+    dispatched_order_ids = set(
+        db.scalars(select(BoatDispatch.order_id).distinct()).all()
+    )
     for order in db.scalars(stmt).all():
+        if order.id in dispatched_order_ids:
+            continue
         deadline = order.check_in_at + timedelta(minutes=order.auto_return_after_minutes)
         if now < deadline:
             continue

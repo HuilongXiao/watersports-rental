@@ -35,6 +35,10 @@ class Setting(Base):
     fast_customer_mode: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
+    # 船只编号 / 船只调配功能总开关
+    boat_numbering_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
     updated_by_user_id: Mapped[str] = mapped_column(String(36), nullable=False)
     updated_at: Mapped[object] = mapped_column(UtcDateTime(), default=utc_now, onupdate=utc_now, nullable=False)
 

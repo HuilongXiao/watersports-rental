@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.time_utils import to_shanghai, utc_now
+from app.models.boat import BoatDispatch
 from app.models.equipment import EquipmentSpec
 from app.models.inventory import InventoryConfiguration
 from app.models.order import Order, OrderItem
@@ -21,16 +22,36 @@ from app.models.user import User
 
 
 def occupied_quantity(db: Session, equipment_spec_id: str) -> int:
-    value = db.scalar(
-        select(func.coalesce(func.sum(OrderItem.quantity), 0))
+    """正在占用库存的数量。
+
+    订单签到后即占用全部订单项数量；其中开启了船只调配的订单项，每返还一只
+    船就立刻释放一只的占用，其余（未出发 / 未开启编号）仍占用到订单完成。
+    """
+    rows = db.execute(
+        select(OrderItem.id, OrderItem.quantity)
         .join(Order, Order.id == OrderItem.order_id)
         .where(
             OrderItem.equipment_spec_id == equipment_spec_id,
             Order.check_in_at.is_not(None),
             Order.return_at.is_(None),
         )
+    ).all()
+    if not rows:
+        return 0
+    item_ids = [row[0] for row in rows]
+    returned_counts = dict(
+        db.execute(
+            select(BoatDispatch.order_item_id, func.count(BoatDispatch.id))
+            .where(
+                BoatDispatch.order_item_id.in_(item_ids),
+                BoatDispatch.returned.is_(True),
+            )
+            .group_by(BoatDispatch.order_item_id)
+        ).all()
     )
-    return int(value or 0)
+    return int(
+        sum(max(0, int(qty) - int(returned_counts.get(item_id, 0))) for item_id, qty in rows)
+    )
 
 
 def inventory_view(db: Session, config: InventoryConfiguration) -> dict:
@@ -135,6 +156,11 @@ def compute_slot_occupancy(
     进行中/已完成订单只产生“使用时间”（签到时间起 4/5 格，或已完成订单的
     实际使用时长）。
 
+    槽内统计规则：每个半小时格取该格内“实际时间区间”的最大同时占用数，
+    而不是把落在同一格的多张订单数量直接相加。同一格内先后使用、时间并不
+    重叠的订单（例如 15:00–15:10 与 15:15–15:30 两张单）只占用 1 个库存，
+    因此该格显示 1；只有时间真正重叠时才累加。
+
     配对去重规则：当某条船的“使用时间”与另一订单的“预留时间”重叠、且
     使用结束时间 ≤ 该订单开始时间（船能及时归还上岸）时，重叠时段只计
     1 条船——同一条物理船先被使用、归还后直接服务下一单。使用结束晚于
@@ -147,7 +173,12 @@ def compute_slot_occupancy(
     spec_set = set(spec_ids)
     used: dict[str, list[int]] = {sid: [0] * slot_count for sid in spec_set}
     booked: dict[str, list[int]] = {sid: [0] * slot_count for sid in spec_set}
-    # usages: (start_idx, end_idx, end_time, qty, kind)；kind: used=进行中/已完成, book=预订使用段
+    # 每个半小时格「最后一刻」（槽结束时刻）仍在占用的数量，用于展示该时段的
+    # 真实可用船只数：例如 15:00-15:30 内峰值占用 2 条，但 15:30 那一刻只剩
+    # 1 条在用，则可用为总量 - 1。
+    end_occupied: dict[str, list[int]] = {sid: [0] * slot_count for sid in spec_set}
+    # usages: (start_time, end_time, start_idx, end_idx, qty, kind)
+    # kind: used=进行中/已完成, book=预订使用段
     usages: dict[str, list[tuple]] = {sid: [] for sid in spec_set}
     # reserves: (start_idx, end_idx, book_start, qty)
     reserves: dict[str, list[tuple]] = {sid: [] for sid in spec_set}
@@ -182,16 +213,19 @@ def compute_slot_occupancy(
             for item in items:
                 sid = item.equipment_spec_id
                 reserves[sid].append((res_span[0], res_span[1], o_start, item.quantity))
-                usages[sid].append((use_span[0], use_span[1], use_end, item.quantity, "book"))
+                usages[sid].append(
+                    (o_start, use_end, use_span[0], use_span[1], item.quantity, "book")
+                )
         elif order.status == "in_progress":
             if not order.check_in_at:
                 continue
             ci = to_shanghai(order.check_in_at).replace(second=0, microsecond=0)
             slot_start = _floor_idx(ci)
             count = 4 if ci.minute % 30 < 15 else 5
+            usage_end = ci + timedelta(hours=2)
             for item in items:
                 usages[item.equipment_spec_id].append(
-                    (slot_start, slot_start + count, ci + timedelta(hours=2), item.quantity, "used")
+                    (ci, usage_end, slot_start, slot_start + count, item.quantity, "used")
                 )
         elif order.status == "completed":
             if not order.check_in_at:
@@ -199,6 +233,7 @@ def compute_slot_occupancy(
                 s = to_shanghai(order.start_at).replace(second=0, microsecond=0)
                 e = to_shanghai(order.end_at).replace(second=0, microsecond=0)
                 span = (_floor_idx(s), max(_floor_idx(s) + 1, _ceil_idx(e)))
+                start_time = s
                 end_time = e
             else:
                 # 有签到：按实际使用时长（归还-签到，向上取整到半小时）
@@ -206,17 +241,18 @@ def compute_slot_occupancy(
                 usage_end = to_shanghai(order.return_at or order.end_at)
                 count = max(1, math.ceil((usage_end - ci).total_seconds() / SLOT_SECONDS))
                 span = (_floor_idx(ci), _floor_idx(ci) + count)
+                start_time = ci
                 end_time = usage_end
             for item in items:
                 usages[item.equipment_spec_id].append(
-                    (span[0], span[1], end_time, item.quantity, "used")
+                    (start_time, end_time, span[0], span[1], item.quantity, "used")
                 )
 
     for sid in spec_set:
         # 展开为单船单元做配对（单条船的使用只能覆盖一单预留）
         u_units = sorted(
             (end_time, s_i, e_i)
-            for (s_i, e_i, end_time, qty, _kind) in usages[sid]
+            for (_start, end_time, s_i, e_i, qty, _kind) in usages[sid]
             for _ in range(qty)
         )
         r_units = sorted(
@@ -241,6 +277,37 @@ def compute_slot_occupancy(
                     pairs.append((eligible.pop(idx), r))
                     break
 
+        def _peak_usage(kind: str, i: int) -> int:
+            """该半小时格内 usage 的最大同时占用数。
+
+            把每条使用记录的真实起止时间裁剪到「本槽」后做扫描线求峰值：同一
+            槽内先后使用、时间不重叠的多张订单只占 1 个库存；只有时间真正重叠
+            时才累加（结束事件先于开始事件处理，半开区间）。
+
+            注意：这里只用真实起止时间判断重叠，不再用按半小时取整得到的格跨度
+            裁剪——否则 28 分钟的订单会被算成 1 格，跨过 15:30 边界的部分就丢失，
+            导致同一时段实际两条船在用却只显示 1。格跨度仅用于预订与使用的配对
+            去重（u_units / reserves）。
+            """
+            win_lo = origin + timedelta(seconds=SLOT_SECONDS * i)
+            win_hi = win_lo + timedelta(seconds=SLOT_SECONDS)
+            events: list[tuple] = []
+            for (st, en, _s_i, _e_i, qty, k) in usages[sid]:
+                if k != kind:
+                    continue
+                lo = max(st, win_lo)
+                hi = min(en, win_hi)
+                if lo < hi:
+                    events.append((lo, qty))
+                    events.append((hi, -qty))
+            events.sort()
+            depth = peak = 0
+            for _t, delta in events:
+                depth += delta
+                if depth > peak:
+                    peak = depth
+            return peak
+
         for i in range(slot_count):
             # 过去时段（槽结束时间 ≤ cutoff）隐藏 buffer：预留与配对去重
             # 都不参与统计，只保留 usage
@@ -248,8 +315,8 @@ def compute_slot_occupancy(
                 buffer_cutoff is None
                 or origin + timedelta(seconds=SLOT_SECONDS * (i + 1)) > buffer_cutoff
             )
-            u_act = sum(qty for (s, e, _t, qty, kind) in usages[sid] if kind == "used" and s <= i < e)
-            u_book = sum(qty for (s, e, _t, qty, kind) in usages[sid] if kind == "book" and s <= i < e)
+            u_act = _peak_usage("used", i)
+            u_book = _peak_usage("book", i)
             used[sid][i] = u_act
             if not buffer_visible:
                 booked[sid][i] = u_book
@@ -259,7 +326,32 @@ def compute_slot_occupancy(
             # 被配对覆盖的预留不再额外计船（同一条船先被使用后服务下一单）
             booked[sid][i] = u_book + r_cnt - matched
 
-    return {sid: {"used": used[sid], "booked": booked[sid]} for sid in spec_set}
+        # 槽结束时刻仍在占用的真实数量（半开区间：start <= t < end）
+        for i in range(slot_count):
+            t = origin + timedelta(seconds=SLOT_SECONDS * (i + 1))
+            n_used = sum(
+                qty for (st, en, _s, _e, qty, k) in usages[sid]
+                if k == "used" and st <= t < en
+            )
+            n_book_use = sum(
+                qty for (st, en, _s, _e, qty, k) in usages[sid]
+                if k == "book" and st <= t < en
+            )
+            n_reserve = sum(
+                qty for (_s, _e, book_start, qty) in reserves[sid]
+                if book_start - buffer_delta <= t < book_start
+            )
+            matched = sum(1 for (u, r) in pairs if u[1] <= i < u[2] and r[1] <= i < r[2])
+            end_occupied[sid][i] = max(0, n_used + n_book_use + n_reserve - matched)
+
+    return {
+        sid: {
+            "used": used[sid],
+            "booked": booked[sid],
+            "end_occupied": end_occupied[sid],
+        }
+        for sid in spec_set
+    }
 
 
 # ---------------------------------------------------------------------------

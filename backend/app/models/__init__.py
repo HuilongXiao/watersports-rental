@@ -1,3 +1,4 @@
+from app.models.boat import BoatDispatch, BoatNumber
 from app.models.customer import Customer
 from app.models.equipment import EquipmentSpec, EquipmentType, SaleItem
 from app.models.group import Group
@@ -10,6 +11,8 @@ from app.models.user import User
 
 __all__ = [
     "User",
+    "BoatNumber",
+    "BoatDispatch",
     "Customer",
     "Group",
     "EquipmentType",

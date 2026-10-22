@@ -232,8 +232,11 @@ def inventory_forecast(
         target = date_type(y, m, d)
 
     type_stmt = select(EquipmentType)
-    # 预测页只展示启用中的器材规格（停用的船型不显示）
-    spec_stmt = select(EquipmentSpec).where(EquipmentSpec.is_active.is_(True))
+    # 预测页只展示启用中、且规格设置了「显示用量」的器材（停用/隐藏的不显示）
+    spec_stmt = select(EquipmentSpec).where(
+        EquipmentSpec.is_active.is_(True),
+        EquipmentSpec.show_in_usage.is_(True),
+    )
     config_stmt = select(InventoryConfiguration)
     # 已完成订单与进行中订单一样按签到时间计入“已使用”桶（原色展示）。
     # 业务日过滤下推到 SQL，避免把全部历史订单读进内存再逐条过滤。
@@ -317,6 +320,9 @@ def inventory_forecast(
         occupied_u = occupied_used[spec.id]
         occupied = [a + b for a, b in zip(occupied_a, occupied_u)]
         total = totals.get(spec.id, 0)
+        # 每个时段「最后一刻」的真实占用：过去/当前时段的可用 = 总量 - 该数量
+        # （时段内峰值占用可能是 2，但结束那一刻只剩 1 条在用，可用即 3）。
+        occupied_end = occupancy[spec.id]["end_occupied"]
         equipment.append(
             {
                 "spec_id": spec.id,
@@ -328,6 +334,7 @@ def inventory_forecast(
                 "occupied_active": occupied_a,
                 "occupied_used": occupied_u,
                 "available": [total - c for c in occupied],
+                "available_end": [total - c for c in occupied_end],
             }
         )
 

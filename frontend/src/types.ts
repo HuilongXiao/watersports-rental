@@ -7,6 +7,7 @@ export interface UserPermissions {
   manage_users: boolean
   view_revenue: boolean
   manage_payment_methods: boolean
+  boat_dispatch: boolean
 }
 
 export interface User {
@@ -35,6 +36,7 @@ export interface UserAccount {
   perm_manage_users: boolean
   perm_view_revenue: boolean
   perm_manage_payment_methods: boolean
+  perm_boat_dispatch: boolean
   created_at: string
   operator_code?: string | null
 }
@@ -77,6 +79,7 @@ export interface EquipmentType {
   id: string
   name: string
   color: EquipmentTypeColor
+  is_active: boolean
 }
 
 export interface EquipmentSpec {
@@ -84,11 +87,17 @@ export interface EquipmentSpec {
   equipment_type_id: string
   equipment_type_name?: string
   equipment_type_color?: EquipmentTypeColor
+  // 所属类型是否启用；类型停用后该规格在新订单中不可选
+  equipment_type_active?: boolean
   name: string
   price: number
   capacity: number | null
   sort_order: number
   is_active: boolean
+  // 是否需要为该器材逐件编号（关闭后不参与船只调配）
+  boat_numbering_required: boolean
+  // 是否在概览「船只用量」中展示该器材
+  show_in_usage: boolean
   sold_quantity_7d: number
 }
 
@@ -122,6 +131,8 @@ export interface OrderItem {
   equipment_spec_id: string | null
   equipment_spec_name?: string | null
   equipment_type_color?: EquipmentTypeColor | null
+  // 该规格是否启用了船只编号（用于订单详情「船只调配」区域排序）
+  requires_numbering?: boolean | null
   sale_item_id: string | null
   sale_item_name?: string | null
   quantity: number
@@ -154,6 +165,21 @@ export interface InventoryConflict {
   max_occupied: number
   shortage: number
   ranges: InventoryConflictRange[]
+}
+
+export interface BoatUsage {
+  number: string
+  // 所属订单项（用于把每只船归到对应器材项目下）
+  order_item_id: string
+  equipment_spec_id: string
+  equipment_spec_name: string | null
+  equipment_type_color: EquipmentTypeColor | null
+  departed_at: string | null
+  departed_by_user_name?: string | null
+  departed_by_user_code?: string | null
+  returned_at: string | null
+  returned_by_user_name?: string | null
+  returned_by_user_code?: string | null
 }
 
 export interface Order {
@@ -199,6 +225,15 @@ export interface Order {
   updated_by_user_name?: string | null
   updated_by_user_code?: string | null
   updated_at: string
+  // 船只调配时间：最早出发时间 / 全部船只返还完成时间（无调配记录时为空）
+  boat_departed_at: string | null
+  boat_departed_by_user_name?: string | null
+  boat_departed_by_user_code?: string | null
+  boat_returned_at: string | null
+  boat_returned_by_user_name?: string | null
+  boat_returned_by_user_code?: string | null
+  // 逐条船只的出发 / 返还明细（含编号与操作人）
+  boat_usage?: BoatUsage[]
   inventory_warnings?: InventoryWarning[]
 }
 
@@ -234,6 +269,7 @@ export interface PaymentMethod {
 export interface AppSettings {
   auto_return_after_minutes: number
   fast_customer_mode: boolean
+  boat_numbering_enabled: boolean
   updated_at: string
   payment_methods: PaymentMethod[]
   default_payment_method: string | null
@@ -296,6 +332,8 @@ export interface ForecastEquipment {
   occupied_active: number[] // 预订占用
   occupied_used: number[] // 已使用（进行中）占用
   available: number[]
+  // 时段最后一刻的可用数量：总量 - 该槽结束时刻仍在占用的数量
+  available_end: number[]
 }
 
 export interface InventoryForecast {

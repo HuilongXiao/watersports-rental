@@ -2,6 +2,7 @@ import { App, Button, Card, Form, Input } from 'antd'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth'
+import LayoutModeSwitch from '../components/LayoutModeSwitch'
 
 export default function Login() {
   const { login, user } = useAuth()
@@ -54,6 +55,7 @@ export default function Login() {
           <Button type="primary" htmlType="submit" block loading={submitting}>
             登录
           </Button>
+          <LayoutModeSwitch block style={{ marginTop: 12 }} />
         </Form>
       </Card>
     </div>

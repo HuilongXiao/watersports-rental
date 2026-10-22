@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom'
-import { App, Button, Card, DatePicker, Grid, Popover, Select, Space, Table, Tabs, Tag } from 'antd'
+import { App, Button, Card, DatePicker, Input, Popover, Select, Space, Table, Tabs, Tag } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { FilterOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
@@ -8,6 +8,7 @@ import type { Dayjs } from 'dayjs'
 import { api } from '../api'
 import { useAuth } from '../auth'
 import { typeColorHex, saveOrdersSnapshot, readOrdersSnapshot, type OrdersSnapshot } from '../utils'
+import { useLayoutMode } from '../layoutMode'
 import type { Customer, Order, OrderStatus } from '../types'
 
 // 状态展示顺序：进行中 → 预订 → 已完成 → 爽约 → 已取消（与概览“订单分布”配色一致）
@@ -62,11 +63,20 @@ interface OrderFilter {
   statuses: OrderStatus[]
   customerId: string | null
   day: string | null
+  /** 从指定业务日起（含当天）筛选，「未来订单」使用：明天起的所有预订订单 */
+  dayFrom: string | null
   specName: string | null
   hasRefund: boolean
 }
 
-const EMPTY_FILTER: OrderFilter = { statuses: [], customerId: null, day: null, specName: null, hasRefund: false }
+const EMPTY_FILTER: OrderFilter = {
+  statuses: [],
+  customerId: null,
+  day: null,
+  dayFrom: null,
+  specName: null,
+  hasRefund: false,
+}
 
 export default function Orders() {
   const navigate = useNavigate()
@@ -74,7 +84,7 @@ export default function Orders() {
   const { ordersRefreshKey } = useOutletContext<{ ordersRefreshKey: number }>()
   const { message } = App.useApp()
   const { user } = useAuth()
-  const screens = Grid.useBreakpoint()
+  const { isMobile, isDesktop } = useLayoutMode()
   const canCreateOrder = Boolean(user?.permissions.create_order)
 
   const scrollToTop = () => {
@@ -129,7 +139,7 @@ export default function Orders() {
   const spDay = searchParams.get('day')
   const urlFilterActive = Boolean(
     searchParams.get('fs') || searchParams.get('fc') || searchParams.get('fd') ||
-      searchParams.get('fp') || searchParams.get('fr'),
+      searchParams.get('ff') || searchParams.get('fp') || searchParams.get('fr'),
   )
 
   // 从工作台“订单分布”跳转过来时，URL 携带 status 参数，自动筛选当日该状态订单
@@ -145,8 +155,9 @@ export default function Orders() {
   // （这正是“tab 已切到预订、内容仍是进行中”的根因）
   const loadSeq = useRef(0)
   const [status, setStatus] = useState<OrderStatus | ''>(() => {
-    if (urlFilterActive || initialStatus) return '' // 筛选模式展示在“全部”tab 下
-    if (spTab !== null) return spTab === 'all' ? '' : (spTab as OrderStatus)
+    // 「全部」tab 已移除：筛选结果与旧链接/快照里的 tab=all 统一落到「预订」，
+    // 具体内容仍由 filter 决定（filtersActive 优先于 tab）。
+    if (spTab === 'in_progress') return 'in_progress'
     return 'active'
   })
   const [filter, setFilter] = useState<OrderFilter>(() => {
@@ -155,12 +166,20 @@ export default function Orders() {
         statuses: (searchParams.get('fs') || '').split(',').filter(Boolean) as OrderStatus[],
         customerId: searchParams.get('fc'),
         day: searchParams.get('fd'),
+        dayFrom: searchParams.get('ff'),
         specName: searchParams.get('fp'),
         hasRefund: searchParams.get('fr') === '1',
       }
     }
     return initialStatus
-      ? { statuses: [initialStatus], customerId: null, day: dayjs().format('YYYY-MM-DD'), specName: null, hasRefund: false }
+      ? {
+          statuses: [initialStatus],
+          customerId: null,
+          day: dayjs().format('YYYY-MM-DD'),
+          dayFrom: null,
+          specName: null,
+          hasRefund: false,
+        }
       : EMPTY_FILTER
   })
   const [filterOpen, setFilterOpen] = useState(false)
@@ -173,6 +192,14 @@ export default function Orders() {
   const [draftHasRefund, setDraftHasRefund] = useState(false)
   const [customerOptions, setCustomerOptions] = useState<Customer[]>([])
   const [specOptions, setSpecOptions] = useState<{ value: string; label: string }[]>([])
+  // 「搜索客户」气泡：按微信昵称 / 姓名 / 微信ID / 电话 搜索
+  const [customerSearchOpen, setCustomerSearchOpen] = useState(false)
+  const [searchNickname, setSearchNickname] = useState('')
+  const [searchName, setSearchName] = useState('')
+  const [searchWechatId, setSearchWechatId] = useState('')
+  const [searchPhone, setSearchPhone] = useState('')
+  const [searchResults, setSearchResults] = useState<Customer[]>([])
+  const [searching, setSearching] = useState(false)
   const customerSearchTimer = useRef<number | null>(null)
   const customerFilterSelectRef = useRef<any>(null)
   const [currentPage, setCurrentPage] = useState(() => (spPage > 0 ? spPage : 1))
@@ -180,7 +207,12 @@ export default function Orders() {
   const [bookingDay, setBookingDay] = useState(() => (spDay ? dayjs(spDay) : dayjs()))
 
   const filtersActive = Boolean(
-    filter.statuses.length > 0 || filter.customerId || filter.day || filter.specName || filter.hasRefund,
+    filter.statuses.length > 0 ||
+      filter.customerId ||
+      filter.day ||
+      filter.dayFrom ||
+      filter.specName ||
+      filter.hasRefund,
   )
 
   // 状态 -> URL query params 同步（replace 避免产生大量历史条目）
@@ -190,12 +222,13 @@ export default function Orders() {
       if (filter.statuses.length) next.set('fs', filter.statuses.join(','))
       if (filter.customerId) next.set('fc', filter.customerId)
       if (filter.day) next.set('fd', filter.day)
+      if (filter.dayFrom) next.set('ff', filter.dayFrom)
       if (filter.specName) next.set('fp', filter.specName)
       if (filter.hasRefund) next.set('fr', '1')
-      next.set('tab', 'all')
+      next.set('tab', status || 'active')
     } else {
-      next.set('tab', status === '' ? 'all' : status)
-      if (status === 'active') next.set('day', bookingDay.format('YYYY-MM-DD'))
+      next.set('tab', status || 'active')
+      if (status === 'active' || status === '') next.set('day', bookingDay.format('YYYY-MM-DD'))
     }
     if (currentPage > 1) next.set('page', String(currentPage))
     setSearchParams(next, { replace: true })
@@ -234,23 +267,24 @@ export default function Orders() {
     try {
       const params = new URLSearchParams()
       if (filtersActive) {
-        if (filter.day) params.set('business_day', filter.day)
+        // 「未来订单」按起点日期筛选，其余按具体某一天筛选（两者互斥）
+        if (filter.dayFrom) {
+          params.set('business_day_from', filter.dayFrom)
+        } else if (filter.day) {
+          params.set('business_day', filter.day)
+        }
         // 筛选里未勾选状态时不传 statuses：不限制状态，展示全部状态
         // （预订/进行中/已完成/爽约/取消）；勾选了状态才按所选状态请求。
-        // 注意：三个 tab 的“默认订单库”仍只加载预订+进行中，见下方 else 分支。
+        // 注意：两个 tab 的“默认订单库”仍只加载预订+进行中，见下方 else 分支。
         if (filter.statuses.length > 0) params.set('statuses', filter.statuses.join(','))
       } else {
-        if (status) params.set('status', status)
-        if (status === 'active') {
-          // 预订 tab 按所选日期查看当日预订订单
-          params.set('business_day', bookingDay.format('YYYY-MM-DD'))
-        } else if (status === 'in_progress') {
+        params.set('status', status || 'active')
+        if (status === 'in_progress') {
           // 进行中 tab 只显示今天的订单
           params.set('business_day', dayjs().format('YYYY-MM-DD'))
         } else {
-          // “全部”tab：只显示从明日开始往后的预订订单
-          params.set('status', 'active')
-          params.set('business_day_from', dayjs().add(1, 'day').format('YYYY-MM-DD'))
+          // 预订 tab 按所选日期查看当日预订订单
+          params.set('business_day', bookingDay.format('YYYY-MM-DD'))
         }
       }
       let result = await api.get<Order[]>(`/api/orders?${params.toString()}`)
@@ -323,6 +357,38 @@ export default function Orders() {
     }
   }, [])
 
+  // 「搜索客户」：按微信昵称 / 姓名 / 微信ID / 电话 组合筛选
+  const runCustomerSearch = async () => {
+    const nickname = searchNickname.trim()
+    const name = searchName.trim()
+    const wechatId = searchWechatId.trim()
+    const phone = searchPhone.trim()
+    if (!nickname && !name && !wechatId && !phone) {
+      message.warning('请至少填写一个搜索条件')
+      return
+    }
+    setSearching(true)
+    try {
+      // 接口支持跨字段模糊匹配：先用任一条件取候选，再按各维度精确过滤
+      const q = nickname || name || wechatId || phone
+      const result = await api.get<Customer[]>(
+        `/api/customers?q=${encodeURIComponent(q)}`,
+      )
+      const filtered = result.filter(
+        (c) =>
+          (!nickname || (c.wechat_nickname ?? '').includes(nickname)) &&
+          (!name || (c.name ?? '').includes(name)) &&
+          (!wechatId || (c.wechat_id ?? '').includes(wechatId)) &&
+          (!phone || (c.phone ?? '').includes(phone)),
+      )
+      setSearchResults(filtered.slice(0, 20))
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '搜索失败')
+    } finally {
+      setSearching(false)
+    }
+  }
+
   const loadSpecOptions = useCallback(async () => {
     try {
       const catalog = await api.get<{
@@ -368,8 +434,9 @@ export default function Orders() {
   const openFilterPopover = () => {
     setDraftStatuses(filter.statuses)
     setDraftCustomerId(filter.customerId)
-    // 打开弹窗时若未应用过日期，默认预填当日
-    setDraftDay(filter.day ? dayjs(filter.day) : dayjs())
+    // 打开弹窗时若未应用过日期，默认预填当日；
+    // 「未来订单」是按起点筛选，日期框保持为空
+    setDraftDay(filter.day ? dayjs(filter.day) : filter.dayFrom ? null : dayjs())
     setDraftSpecName(filter.specName)
     setDraftHasRefund(filter.hasRefund)
     if (customerOptions.length === 0) searchCustomers('')
@@ -381,11 +448,36 @@ export default function Orders() {
       statuses: draftStatuses,
       customerId: draftCustomerId,
       day: draftDay ? draftDay.format('YYYY-MM-DD') : null,
+      dayFrom: null,
       specName: draftSpecName,
       hasRefund: draftHasRefund,
     })
     setFilterOpen(false)
-    setStatus('') // 应用筛选后切换到“全部”展示结果
+    // 「全部」tab 已移除：筛选结果留在当前 tab 展示
+    setStatus(status || 'active')
+    setCurrentPage(1)
+    scrollToTop()
+  }
+
+  // 「未来订单」：一键筛选「明天起、状态为预订」的订单
+  const applyFutureOrders = () => {
+    const tomorrow = dayjs().add(1, 'day').format('YYYY-MM-DD')
+    setFilter({
+      statuses: ['active'],
+      customerId: null,
+      day: null,
+      dayFrom: tomorrow,
+      specName: null,
+      hasRefund: false,
+    })
+    // 同步弹窗草稿，避免下次打开时残留旧条件
+    setDraftStatuses(['active'])
+    setDraftCustomerId(null)
+    setDraftDay(null)
+    setDraftSpecName(null)
+    setDraftHasRefund(false)
+    setStatus(status || 'active')
+    setFilterOpen(false)
     setCurrentPage(1)
     scrollToTop()
   }
@@ -405,8 +497,6 @@ export default function Orders() {
     if (customerSearchTimer.current) window.clearTimeout(customerSearchTimer.current)
     customerSearchTimer.current = window.setTimeout(() => searchCustomers(q), 300)
   }
-
-  const isMobile = !screens.md
 
   // 手机端点击客户区域：复制该订单客户的微信昵称全部内容到剪贴板。
   // http 局域网环境下 navigator.clipboard 不可用，回退到 execCommand 方案。
@@ -750,6 +840,7 @@ export default function Orders() {
         />
       </div>
       <Space style={{ justifyContent: 'flex-end' }}>
+        <Button onClick={applyFutureOrders}>未来订单</Button>
         <Button onClick={clearFilter}>清除</Button>
         <Button type="primary" onClick={applyFilter}>
           确认
@@ -758,13 +849,95 @@ export default function Orders() {
     </div>
   )
 
+  const customerSearchContent = (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: 280 }}>
+      <Input
+        placeholder="微信昵称"
+        value={searchNickname}
+        allowClear
+        onChange={(e) => setSearchNickname(e.target.value)}
+        onPressEnter={runCustomerSearch}
+      />
+      <Input
+        placeholder="姓名"
+        value={searchName}
+        allowClear
+        onChange={(e) => setSearchName(e.target.value)}
+        onPressEnter={runCustomerSearch}
+      />
+      <Input
+        placeholder="微信ID"
+        value={searchWechatId}
+        allowClear
+        onChange={(e) => setSearchWechatId(e.target.value)}
+        onPressEnter={runCustomerSearch}
+      />
+      <Input
+        placeholder="电话"
+        type="tel"
+        inputMode="tel"
+        value={searchPhone}
+        allowClear
+        onChange={(e) => setSearchPhone(e.target.value)}
+        onPressEnter={runCustomerSearch}
+      />
+      <Button type="primary" block loading={searching} onClick={runCustomerSearch}>
+        搜索
+      </Button>
+      {searchResults.length > 0 && (
+        <div style={{ maxHeight: 260, overflowY: 'auto', borderTop: '1px solid #f0f0f0' }}>
+          {searchResults.map((c) => {
+            const primary =
+              c.wechat_nickname?.trim() || `${c.name ?? ''}${c.gender ?? ''}` || '游客'
+            const secondary = [
+              c.name ? `${c.name}${c.gender ?? ''}` : '',
+              c.wechat_id ? `微信ID：${c.wechat_id}` : '',
+              c.phone ? `电话：${c.phone}` : '',
+            ]
+              .filter(Boolean)
+              .join(' / ')
+            return (
+              <Button
+                key={c.id}
+                type="text"
+                block
+                style={{ textAlign: 'left', height: 'auto', padding: '6px 4px' }}
+                onClick={() => {
+                  setCustomerSearchOpen(false)
+                  navigate(`/customers/${c.id}`)
+                }}
+              >
+                <div style={{ fontWeight: 500 }}>{primary}</div>
+                {secondary && (
+                  <div style={{ fontSize: 12, color: '#888' }}>{secondary}</div>
+                )}
+              </Button>
+            )
+          })}
+        </div>
+      )}
+      {!searching && searchResults.length === 0 && (
+        <div style={{ fontSize: 12, color: '#999' }}>填写条件后点击「搜索」查看客户</div>
+      )}
+    </div>
+  )
+
   return (
     <Card
       title="订单管理"
       extra={
         <Space wrap>
+          <Popover
+            content={customerSearchContent}
+            trigger="click"
+            open={customerSearchOpen}
+            onOpenChange={setCustomerSearchOpen}
+            placement="bottomRight"
+          >
+            <Button>搜索客户</Button>
+          </Popover>
           {/* 电脑版才显示“新建订单”入口，手机版隐藏 */}
-          {screens.md && canCreateOrder && (
+          {isDesktop && canCreateOrder && (
             <Button type="primary" onClick={() => navigate('/orders/new')}>
               新建订单
             </Button>
@@ -781,9 +954,10 @@ export default function Orders() {
         </Space>
       }
     >
-      <Space wrap style={{ marginBottom: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
         <Tabs
-          activeKey={status}
+          className="orders-tabs"
+          activeKey={status || 'active'}
           onChange={(key) => {
             // 处于“筛选中”时点击其他 tab：清除筛选，真正切换到该 tab
             if (filtersActive) {
@@ -796,21 +970,20 @@ export default function Orders() {
           items={[
             { key: 'active', label: '预订' },
             { key: 'in_progress', label: '进行中' },
-            { key: '', label: '全部' },
           ]}
-          style={{ marginBottom: 0 }}
+          style={{ marginBottom: 0, flex: 1, minWidth: 0 }}
         />
         {filtersActive && (
           <Tag
             color="blue"
             closable
             onClose={clearFilter}
-            style={{ cursor: 'pointer', marginBottom: 8 }}
+            style={{ cursor: 'pointer', marginLeft: 8 }}
           >
             筛选中
           </Tag>
         )}
-      </Space>
+      </div>
       <Table
         className="orders-table"
         // 分隔行与其上一行去掉默认底边线，避免出现多余的两条线

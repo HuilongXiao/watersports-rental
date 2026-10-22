@@ -13,6 +13,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.api.auth import router as auth_router
 from app.api.auto_exports import router as auto_exports_router
 from app.api.backups import router as backups_router
+from app.api.boats import router as boats_router
 from app.api.catalog import router as catalog_router
 from app.api.customers import router as customers_router
 from app.api.dashboard import router as dashboard_router
@@ -106,6 +107,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(customers_router)
 app.include_router(catalog_router)
+app.include_router(boats_router)
 app.include_router(inventory_router)
 app.include_router(orders_router)
 app.include_router(payments_router)

@@ -83,9 +83,11 @@
 
 | 宿主机目录 | 容器路径 | 内容 |
 |-----------|---------|------|
-| `./data` | `/app/data` | SQLite 数据库 `rental_app.db` 及日志目录 `data/logs/`（后端请求耗时日志、前端上报日志，按天生成，保留 30 天） |
-| `./backups` | `/app/backups` | 数据库手动/自动备份 |
-| `./exports` | `/app/exports` | 每日 00:00 自动导出的订单 CSV |
+| `/volume1/docker/sportrentalmanager/data` | `/app/data` | SQLite 数据库 `rental_app.db` 及日志目录 `data/logs/`（后端请求耗时日志、前端上报日志，按天生成，保留 30 天） |
+| `/volume1/docker/sportrentalmanager/backups` | `/app/backups` | 数据库手动/自动备份 |
+| `/volume1/docker/sportrentalmanager/exports` | `/app/exports` | 每日 00:00 自动导出的订单 CSV |
+
+> 在 DSM 容器管理器 GUI 里逐条添加挂载时，宿主机路径可填去掉卷前缀的短形式：`/docker/sportrentalmanager/data`、`/docker/sportrentalmanager/backups`、`/docker/sportrentalmanager/exports`。
 
 - 端口映射：`6688 → 8000`
 - 容器名：`rental-app`
@@ -97,4 +99,4 @@
 - 本版本包含数据库结构变更（支付方式新增 `group_id` 列、器材目录唯一约束调整等），启动时自动完成迁移；
 - 迁移脚本为幂等设计，检测到存量跨 Group 同名脏数据时仅告警跳过，不会导致启动失败；
 - 升级后原数据（订单、客户、器材、支付方式、设置）全部保留；
-- 部署前建议备份 NAS 上的 `./data/rental_app.db`。
+- 部署前建议备份 NAS 上的 `/volume1/docker/sportrentalmanager/data/rental_app.db`。

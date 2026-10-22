@@ -21,6 +21,8 @@ class EquipmentType(Base):
     color: Mapped[str] = mapped_column(
         String(16), default=DEFAULT_EQUIPMENT_TYPE_COLOR, nullable=False
     )
+    # 类型停用后，其下所有规格在新订单中不可选（规格自身的 is_active 仍单独保留）
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_by_user_id: Mapped[str] = mapped_column(String(36), nullable=False)
     updated_by_user_id: Mapped[str] = mapped_column(String(36), nullable=False)
     created_at: Mapped[object] = mapped_column(UtcDateTime(), default=utc_now, nullable=False)
@@ -54,6 +56,14 @@ class EquipmentSpec(Base):
     # 操作员自定义的展示顺序（创建订单下拉、预测页等均遵照此顺序）
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # 是否需要为该器材逐件编号（关闭后不参与船只调配，也不要求编号完整）
+    boat_numbering_required: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    # 是否在概览的「船只用量」区域展示该器材
+    show_in_usage: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
     created_by_user_id: Mapped[str] = mapped_column(String(36), nullable=False)
     updated_by_user_id: Mapped[str] = mapped_column(String(36), nullable=False)
     created_at: Mapped[object] = mapped_column(UtcDateTime(), default=utc_now, nullable=False)

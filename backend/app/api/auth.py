@@ -54,6 +54,7 @@ def _user_payload(user: User, db: Session | None = None) -> dict:
             "manage_users": True,
             "view_revenue": True,
             "manage_payment_methods": True,
+            "boat_dispatch": True,
         }
     else:
         permissions = {
@@ -63,6 +64,7 @@ def _user_payload(user: User, db: Session | None = None) -> dict:
             "manage_users": user.perm_manage_users,
             "view_revenue": user.perm_view_revenue,
             "manage_payment_methods": user.perm_manage_payment_methods,
+            "boat_dispatch": user.perm_boat_dispatch,
         }
     group_name = None
     if user.group_id and db is not None:
@@ -97,6 +99,7 @@ def require_permission(perm: str):
             "manage_users": user.perm_manage_users,
             "view_revenue": user.perm_view_revenue,
             "manage_payment_methods": user.perm_manage_payment_methods,
+            "boat_dispatch": user.perm_boat_dispatch,
         }
         if not mapping.get(perm):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无此操作权限")
