@@ -36,7 +36,6 @@ const STATUS_META: Record<OrderStatus, { label: string; color: string }> = {
 }
 
 // 紧凑表格：缩小单元格内边距（手机端保证表头不换行）
-const compactCell = () => ({ style: { padding: '4px 6px' } })
 const centerHeader = () => ({
   style: { padding: '4px 6px', textAlign: 'center' as const, whiteSpace: 'nowrap' as const },
 })
@@ -382,6 +381,7 @@ export default function OrderDetail() {
           bordered
           column={2}
           size="small"
+          className="order-detail-info"
           labelStyle={{ padding: '4px 4px', textAlign: 'center' }}
           contentStyle={{ padding: '4px 4px', textAlign: 'center' }}
         >
@@ -588,7 +588,7 @@ export default function OrderDetail() {
               title: '项目',
               align: 'center',
               onHeaderCell: centerHeader,
-              onCell: compactCell,
+              onCell: centeredCell,
               render: (_, item) => {
                 const name = item.equipment_spec_name ?? item.sale_item_name ?? '—'
                 return (
@@ -681,14 +681,18 @@ export default function OrderDetail() {
             {
               title: '使用时长',
               align: 'center',
-              width: 90,
+              width: 100,
               onHeaderCell: centerHeader,
               onCell: centeredNowrapCell,
               render: (_, row) => {
                 if (!row.departedAt) return ''
-                return row.returnedAt
+                const text = row.returnedAt
                   ? formatDurationBetween(row.departedAt, row.returnedAt)
                   : formatDurationBetween(row.departedAt, dayjs().toISOString())
+                // 未返还的船用「进行中」橙色，已返还的用黑色
+                return (
+                  <span style={{ color: row.returnedAt ? '#000' : '#fa8c16' }}>{text}</span>
+                )
               },
             },
           ]}
@@ -706,7 +710,14 @@ export default function OrderDetail() {
       <Card title="支付面板">
         {payment ? (
           <>
-            <Descriptions column={1} size="small" style={{ maxWidth: 360 }}>
+            <Descriptions
+              column={1}
+              size="small"
+              style={{ maxWidth: 360 }}
+              // 固定标签列宽度，保证三行金额左边界对齐
+              labelStyle={{ width: 104, textAlign: 'left' }}
+              contentStyle={{ textAlign: 'left' }}
+            >
               <Descriptions.Item label="订单项目金额">¥{fenToYuan(payment.items_total_fen)}</Descriptions.Item>
               <Descriptions.Item label="调整项合计">
                 {payment.adjustments_total_fen === 0 ? (
@@ -727,19 +738,21 @@ export default function OrderDetail() {
             <div style={{ display: 'flex', alignItems: 'center', margin: '8px 0' }}>
               <div style={{ flex: 1, height: 1, background: '#f0f0f0' }} />
               <span style={{ padding: '0 12px', fontWeight: 500 }}>调整项</span>
-              <Button
-                type="dashed"
-                size="small"
-                icon={<PlusOutlined />}
-                title="添加调整项"
-                style={{ width: 28, height: 24, padding: 0 }}
-                onClick={() => {
-                  adjustForm.resetFields()
-                  setAdjustQty(1)
-                  setAdjustTab('charge')
-                  setAdjustOpen(true)
-                }}
-              />
+              {canEditOrder && (
+                <Button
+                  type="dashed"
+                  size="small"
+                  icon={<PlusOutlined />}
+                  title="添加调整项"
+                  style={{ width: 28, height: 24, padding: 0 }}
+                  onClick={() => {
+                    adjustForm.resetFields()
+                    setAdjustQty(1)
+                    setAdjustTab('charge')
+                    setAdjustOpen(true)
+                  }}
+                />
+              )}
               <div style={{ flex: 1, height: 1, background: '#f0f0f0' }} />
             </div>
             <Table
@@ -751,15 +764,16 @@ export default function OrderDetail() {
                 {
                   title: '说明',
                   dataIndex: 'note',
+                  align: 'center',
                   onHeaderCell: centerHeader,
-                  onCell: compactCell,
+                  onCell: centeredCell,
                 },
                 {
                   title: '金额',
                   width: 96,
-                  align: 'right',
+                  align: 'center',
                   onHeaderCell: centerHeader,
-                  onCell: nowrapCell,
+                  onCell: centeredNowrapCell,
                   render: (_, item) => (
                     <span style={{ color: item.amount > 0 ? '#cf1322' : '#3f8600' }}>
                       {item.amount > 0 ? '+' : ''}¥{fenToYuan(item.amount)}
@@ -769,8 +783,9 @@ export default function OrderDetail() {
                 {
                   title: '时间',
                   width: 162,
+                  align: 'center',
                   onHeaderCell: centerHeader,
-                  onCell: compactCell,
+                  onCell: centeredCell,
                   render: (_, item) => {
                     const d = dayjs(item.created_at)
                     const main = `${d.format('YYYY-MM-DD')} ${d.format('HH:mm')}`
@@ -942,7 +957,7 @@ export default function OrderDetail() {
         {(order.editable || order.status === 'in_progress') && canEditOrder && (
           <Button onClick={() => navigate(`/orders/${order.id}/edit`)}>编辑</Button>
         )}
-        {order.status === 'active' && !order.checked_in && (
+        {canEditOrder && order.status === 'active' && !order.checked_in && (
           today ? (
             <Popconfirm
               title="确认签到？"
@@ -956,7 +971,7 @@ export default function OrderDetail() {
             <Button disabled title="仅当天订单可签到">签到</Button>
           )
         )}
-        {order.status === 'in_progress' && (
+        {canEditOrder && order.status === 'in_progress' && (
           <Popconfirm
             title="取消签到？"
             description="将清除签到与自动归还时限记录，订单恢复为未签到活动状态。"
@@ -965,7 +980,7 @@ export default function OrderDetail() {
             <Button>取消签到</Button>
           </Popconfirm>
         )}
-        {(order.status === 'active' || order.status === 'in_progress') && (
+        {canEditOrder && (order.status === 'active' || order.status === 'in_progress') && (
           today ? (
             outstandingBoats.length > 0 ? (
               <Button type="primary" ghost onClick={() => setCompleteOpen(true)}>
@@ -983,7 +998,7 @@ export default function OrderDetail() {
             <Button disabled title="仅当天订单可归还">完成</Button>
           )
         )}
-        {order.returned && (
+        {canEditOrder && order.returned && (
           <Popconfirm
             title="取消完成？"
             description="订单将恢复为活动状态。"
@@ -992,17 +1007,18 @@ export default function OrderDetail() {
             <Button>取消完成</Button>
           </Popconfirm>
         )}
-        {order.status === 'active' && (
+        {canEditOrder && order.status === 'active' && (
           <Popconfirm title="确认标记爽约？" onConfirm={() => action(`/api/orders/${order.id}/no-show`, '已标记爽约')}>
             <Button>爽约</Button>
           </Popconfirm>
         )}
-        {order.status === 'active' && (
-          <Popconfirm title="确认取消订单？" onConfirm={() => action(`/api/orders/${order.id}/cancel`, '订单已取消')}>
+        {canEditOrder && order.status === 'active' && (
+          <Popconfirm
+            title="确认取消订单？" onConfirm={() => action(`/api/orders/${order.id}/cancel`, '订单已取消')}>
             <Button danger>取消</Button>
           </Popconfirm>
         )}
-        {(order.status === 'completed' || order.status === 'no_show' || order.status === 'cancelled') && (
+        {canEditOrder && (order.status === 'completed' || order.status === 'no_show' || order.status === 'cancelled') && (
           <Popconfirm
             title="恢复为活动订单？"
             description="仅未到原结束时间之后的订单可恢复。"

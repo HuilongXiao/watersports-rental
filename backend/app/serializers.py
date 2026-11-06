@@ -22,6 +22,7 @@ def customer_dict(customer: Customer) -> dict:
         "wechat_id": customer.wechat_id,
         "phone": customer.phone,
         "is_system": customer.is_system,
+        "is_active": customer.is_active,
         "note": customer.note,
         "remind": customer.remind,
         "created_at": to_iso_z(customer.created_at),

@@ -18,11 +18,17 @@ def _clean(value: str | None) -> str | None:
 
 
 def search_customers(
-    db: Session, q: str | None, user: User, active_group_id: str | None = None
+    db: Session,
+    q: str | None,
+    user: User,
+    active_group_id: str | None = None,
+    active_only: bool = False,
 ) -> list[Customer]:
     statement = select(Customer).order_by(Customer.updated_at.desc())
     if active_group_id is not None:
         statement = statement.where(Customer.group_id == active_group_id)
+    if active_only:
+        statement = statement.where(Customer.is_active.is_(True))
     term = _clean(q)
     if term:
         like = f"%{term}%"
@@ -52,7 +58,7 @@ def customer_order_stats(db: Session, customer_ids: list[str]) -> dict[str, tupl
     counts = dict(
         db.execute(
             select(Order.customer_id, func.count())
-            .where(Order.customer_id.in_(customer_ids))
+            .where(Order.customer_id.in_(customer_ids), Order.is_deleted.is_(False))
             .group_by(Order.customer_id)
         ).all()
     )
@@ -63,7 +69,11 @@ def customer_order_stats(db: Session, customer_ids: list[str]) -> dict[str, tupl
                 func.coalesce(func.sum(OrderItem.quantity * OrderItem.unit_price), 0),
             )
             .join(OrderItem, OrderItem.order_id == Order.id)
-            .where(Order.status == "completed", Order.customer_id.in_(customer_ids))
+            .where(
+                Order.status == "completed",
+                Order.customer_id.in_(customer_ids),
+                Order.is_deleted.is_(False),
+            )
             .group_by(Order.customer_id)
         ).all()
     )
@@ -72,7 +82,11 @@ def customer_order_stats(db: Session, customer_ids: list[str]) -> dict[str, tupl
             select(Order.customer_id, func.coalesce(func.sum(PaymentItem.amount), 0))
             .join(Payment, Payment.order_id == Order.id)
             .join(PaymentItem, PaymentItem.payment_id == Payment.id)
-            .where(Order.status == "completed", Order.customer_id.in_(customer_ids))
+            .where(
+                Order.status == "completed",
+                Order.customer_id.in_(customer_ids),
+                Order.is_deleted.is_(False),
+            )
             .group_by(Order.customer_id)
         ).all()
     )
@@ -176,28 +190,19 @@ def create_customer(
 def delete_customer(
     db: Session, user: User, customer_id: str, active_group_id: str | None = None
 ) -> None:
-    """永久删除客户 profile（仅 superuser 可调用，鉴权在 API 层）。
+    """停用客户 profile（仅 superuser 可调用，鉴权在 API 层）。
 
-    系统客户（游客）不可删除；仍有关联订单的客户需先删除订单，
-    避免破坏订单历史的外键完整性。
+    不再物理删除：仅把 ``is_active`` 置为 False。客户资料与历史订单全部保留，
+    客户管理列表仍可查看（标记为已停用），但新建订单时不会再匹配到该客户。
+    系统客户（游客）不可停用。
     """
-    from app.models.order import Order
-
     customer = get_customer(db, customer_id, user, active_group_id)
     if customer.is_system:
         raise HTTPException(status_code=409, detail="系统客户（游客）不可删除")
-
-    order_count = db.scalar(
-        select(func.count()).select_from(Order).where(Order.customer_id == customer.id)
-    )
-    if order_count:
-        raise HTTPException(
-            status_code=409,
-            detail=f"该客户存在 {order_count} 笔订单，请先删除相关订单后再删除客户",
-        )
-
-    db.delete(customer)
-    db.commit()
+    if customer.is_active:
+        customer.is_active = False
+        customer.updated_by_user_id = user.id
+        db.commit()
 
 
 def update_customer(

@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom'
-import { App, Button, Card, DatePicker, Input, Popover, Select, Space, Table, Tabs, Tag } from 'antd'
+import { App, Button, Card, Checkbox, DatePicker, Form, Input, Modal, Popover, Select, Space, Table, Tabs, Tag } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { FilterOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
@@ -59,6 +59,32 @@ function TimeDivider({ label }: { label: string }) {
   )
 }
 
+// 新建客户弹窗的性别选择（与客户管理页保持一致）
+function GenderCheckboxes({
+  value,
+  onChange,
+}: {
+  value?: string | null
+  onChange?: (value: string | null) => void
+}) {
+  return (
+    <Space>
+      <Checkbox
+        checked={value === '先生'}
+        onChange={(e) => onChange?.(e.target.checked ? '先生' : null)}
+      >
+        先生
+      </Checkbox>
+      <Checkbox
+        checked={value === '女士'}
+        onChange={(e) => onChange?.(e.target.checked ? '女士' : null)}
+      >
+        女士
+      </Checkbox>
+    </Space>
+  )
+}
+
 interface OrderFilter {
   statuses: OrderStatus[]
   customerId: string | null
@@ -67,6 +93,14 @@ interface OrderFilter {
   dayFrom: string | null
   specName: string | null
   hasRefund: boolean
+}
+
+interface CustomerFormValues {
+  name?: string
+  gender?: string
+  phone?: string
+  wechat_nickname?: string
+  wechat_id?: string
 }
 
 const EMPTY_FILTER: OrderFilter = {
@@ -86,6 +120,43 @@ export default function Orders() {
   const { user } = useAuth()
   const { isMobile, isDesktop } = useLayoutMode()
   const canCreateOrder = Boolean(user?.permissions.create_order)
+  const canAddCustomer = canCreateOrder || Boolean(user?.permissions.edit_order)
+  const [customerModalOpen, setCustomerModalOpen] = useState(false)
+  const [customerForm] = Form.useForm<CustomerFormValues>()
+
+  const openCustomerCreate = () => {
+    customerForm.setFieldsValue({
+      name: '',
+      phone: '',
+      wechat_nickname: '',
+      wechat_id: '',
+      gender: undefined,
+    })
+    setCustomerModalOpen(true)
+  }
+
+  // 停留在订单管理页直接新建客户，不跳转客户管理页
+  const submitCustomer = async () => {
+    const values = await customerForm.validateFields()
+    const body = Object.fromEntries(
+      Object.entries(values).map(([key, value]) => [
+        key,
+        typeof value === 'string' && value.trim() ? value.trim() : value || null,
+      ]),
+    )
+    if (!body.name && !body.wechat_nickname) {
+      message.warning('请至少填写姓名或微信昵称')
+      return
+    }
+    try {
+      const created = await api.post<Customer>('/api/customers', body)
+      message.success('客户已创建')
+      setCustomerModalOpen(false)
+      navigate(`/customers/${created.id}`)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '保存失败')
+    }
+  }
 
   const scrollToTop = () => {
     window.scrollTo(0, 0)
@@ -742,7 +813,8 @@ export default function Orders() {
   ]
 
   const filterContent = (
-    <div style={{ width: 300, display: 'flex', flexDirection: 'column', gap: 12 }}>
+    // 宽度随屏幕收缩（气泡右对齐按钮，过宽会让左侧超出手机屏幕）
+    <div style={{ width: 'min(300px, calc(100vw - 56px))', display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div>
         <div style={{ marginBottom: 6, fontWeight: 500 }}>订单状态</div>
         <Space wrap size={[8, 8]}>
@@ -850,7 +922,7 @@ export default function Orders() {
   )
 
   const customerSearchContent = (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: 280 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: 'min(280px, calc(100vw - 56px))' }}>
       <Input
         placeholder="微信昵称"
         value={searchNickname}
@@ -884,6 +956,17 @@ export default function Orders() {
       <Button type="primary" block loading={searching} onClick={runCustomerSearch}>
         搜索
       </Button>
+      {canAddCustomer && (
+        <Button
+          block
+          onClick={() => {
+            setCustomerSearchOpen(false)
+            openCustomerCreate()
+          }}
+        >
+          新建客户
+        </Button>
+      )}
       {searchResults.length > 0 && (
         <div style={{ maxHeight: 260, overflowY: 'auto', borderTop: '1px solid #f0f0f0' }}>
           {searchResults.map((c) => {
@@ -916,9 +999,6 @@ export default function Orders() {
           })}
         </div>
       )}
-      {!searching && searchResults.length === 0 && (
-        <div style={{ fontSize: 12, color: '#999' }}>填写条件后点击「搜索」查看客户</div>
-      )}
     </div>
   )
 
@@ -932,7 +1012,9 @@ export default function Orders() {
             trigger="click"
             open={customerSearchOpen}
             onOpenChange={setCustomerSearchOpen}
-            placement="bottomRight"
+            // 手机端按钮位于标题行左侧，右对齐会让气泡左侧超出屏幕；居中更稳
+            placement="bottom"
+            overlayStyle={{ maxWidth: 'calc(100vw - 16px)' }}
           >
             <Button>搜索客户</Button>
           </Popover>
@@ -947,7 +1029,8 @@ export default function Orders() {
             trigger="click"
             open={filterOpen}
             onOpenChange={setFilterOpen}
-            placement="bottomRight"
+            placement="bottom"
+            overlayStyle={{ maxWidth: 'calc(100vw - 16px)' }}
           >
             <Button icon={<FilterOutlined />}>筛选</Button>
           </Popover>
@@ -1030,6 +1113,38 @@ export default function Orders() {
               }
         }
       />
+      <Modal
+        title="新建客户"
+        open={customerModalOpen}
+        onCancel={() => setCustomerModalOpen(false)}
+        onOk={submitCustomer}
+        destroyOnClose
+      >
+        <Form form={customerForm} layout="vertical">
+          <Form.Item label="姓名">
+            <Form.Item name="name" noStyle>
+              <Input placeholder="客户姓名" />
+            </Form.Item>
+          </Form.Item>
+          <Form.Item label="手机号">
+            <Form.Item name="phone" noStyle>
+              <Input placeholder="手机号" type="tel" inputMode="tel" />
+            </Form.Item>
+          </Form.Item>
+          <Form.Item label="性别" name="gender">
+            <GenderCheckboxes />
+          </Form.Item>
+          <Form.Item label="微信昵称" name="wechat_nickname">
+            <Input placeholder="微信昵称" />
+          </Form.Item>
+          <Form.Item label="微信ID" name="wechat_id">
+            <Input placeholder="微信ID" />
+          </Form.Item>
+          <p style={{ color: '#999', marginBottom: 0 }}>
+            至少填写姓名或微信昵称中的一项即可保存；手机号、微信ID可选填。
+          </p>
+        </Form>
+      </Modal>
     </Card>
   )
 }

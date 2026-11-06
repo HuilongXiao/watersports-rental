@@ -76,6 +76,7 @@ def _orders_csv(db: Session, start_utc: datetime, end_utc: datetime) -> str:
         select(Order)
         .where(Order.start_at >= start_utc)
         .where(Order.start_at < end_utc)
+        .where(Order.is_deleted.is_(False))
         .order_by(Order.start_at.asc())
     )
     orders = list(db.scalars(stmt).all())
@@ -201,7 +202,7 @@ def _customers_csv(db: Session) -> str:
     customers = list(
         db.scalars(
             select(Customer)
-            .where(Customer.is_system.is_(False))
+            .where(Customer.is_system.is_(False), Customer.is_active.is_(True))
             .order_by(Customer.created_at)
         ).all()
     )
@@ -225,7 +226,11 @@ def _customers_csv(db: Session) -> str:
     )
 
     for c in customers:
-        orders = list(db.scalars(select(Order).where(Order.customer_id == c.id)).all())
+        orders = list(db.scalars(
+            select(Order).where(
+                Order.customer_id == c.id, Order.is_deleted.is_(False)
+            )
+        ).all())
         completed = [o for o in orders if o.status == "completed"]
         no_show_count = sum(1 for o in orders if o.status == "no_show")
         total_spending_fen = 0

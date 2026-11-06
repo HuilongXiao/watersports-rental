@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.auth import get_active_group_id, get_current_user
+from app.api.auth import can_view_revenue, get_active_group_id, get_current_user
 from app.core.time_utils import BUSINESS_TZ, business_date, to_shanghai, utc_now
 from app.db.session import get_db
 from app.models.equipment import EquipmentSpec, EquipmentType
@@ -30,7 +30,9 @@ def dashboard(
     today = business_date(utc_now())
     day_start = datetime.combine(today, time.min).replace(tzinfo=BUSINESS_TZ).astimezone(timezone.utc)
     day_end = day_start + timedelta(days=1)
-    group_filter = [Order.group_id == active_group_id] if active_group_id is not None else []
+    group_filter = [Order.is_deleted.is_(False)]
+    if active_group_id is not None:
+        group_filter.append(Order.group_id == active_group_id)
     config_stmt = select(InventoryConfiguration)
     if active_group_id is not None:
         config_stmt = config_stmt.where(InventoryConfiguration.group_id == active_group_id)
@@ -88,7 +90,11 @@ def dashboard(
             select(OrderItem.equipment_spec_id, func.coalesce(func.sum(OrderItem.quantity), 0))
             .select_from(OrderItem)
             .join(Order, Order.id == OrderItem.order_id)
-            .where(Order.check_in_at.is_not(None), Order.return_at.is_(None))
+            .where(
+                Order.check_in_at.is_not(None),
+                Order.return_at.is_(None),
+                Order.is_deleted.is_(False),
+            )
             .group_by(OrderItem.equipment_spec_id)
         ).all()
         if sid
@@ -108,13 +114,15 @@ def dashboard(
                 }
             )
 
+    # 无「查看营收」权限时不返回真实金额（避免仅靠前端隐藏）
+    revenue_allowed = can_view_revenue(user)
     return {
         "today": today.isoformat(),
         "today_orders": today_orders,
         "status_counts": counts,
-        "status_amounts_fen": status_amounts_fen,
+        "status_amounts_fen": status_amounts_fen if revenue_allowed else {k: 0 for k in counts},
         "checked_in_now": checked_in_now,
-        "today_completed_amount_fen": today_amount_fen,
+        "today_completed_amount_fen": today_amount_fen if revenue_allowed else 0,
         "low_inventory": low_inventory,
     }
 
@@ -143,7 +151,8 @@ def order_distribution(
     type_stmt = select(EquipmentType)
     spec_stmt = select(EquipmentSpec)
     order_stmt = select(Order).where(
-        Order.status.in_(["active", "in_progress", "completed"])
+        Order.status.in_(["active", "in_progress", "completed"]),
+        Order.is_deleted.is_(False),
     )
     if active_group_id is not None:
         type_stmt = type_stmt.where(EquipmentType.group_id == active_group_id)
@@ -246,6 +255,7 @@ def inventory_forecast(
         Order.status.in_(["active", "in_progress", "completed"]),
         Order.start_at >= day_start,
         Order.start_at < day_end,
+        Order.is_deleted.is_(False),
     )
     if active_group_id is not None:
         type_stmt = type_stmt.where(EquipmentType.group_id == active_group_id)
@@ -364,7 +374,7 @@ def daily_summary(
     today = business_date(utc_now())
     is_future = target > today
 
-    order_stmt = select(Order)
+    order_stmt = select(Order).where(Order.is_deleted.is_(False))
     if active_group_id is not None:
         order_stmt = order_stmt.where(Order.group_id == active_group_id)
     all_orders = list(db.scalars(order_stmt).all())
@@ -488,6 +498,23 @@ def daily_summary(
             for code, amount in sorted(buckets.items(), key=lambda x: -x[1])
         ]
 
+    # 无「查看营收」权限时不返回真实金额
+    if not can_view_revenue(user):
+        for row in equipment_usage:
+            row["amount_fen"] = 0
+        for row in sale_item_usage:
+            row["amount_fen"] = 0
+        for row in others:
+            row["amount_fen"] = 0
+        for row in payment_method_totals:
+            row["amount_fen"] = 0
+        completed_amount_fen = 0
+        equipment_usage_amount = 0
+        sale_item_usage_amount = 0
+    else:
+        equipment_usage_amount = sum(e["amount_fen"] for e in equipment_usage)
+        sale_item_usage_amount = sum(s["amount_fen"] for s in sale_item_usage)
+
     return {
         "date": target.isoformat(),
         "is_future": is_future,
@@ -495,8 +522,7 @@ def daily_summary(
         "summary_status": summary_status,
         "completed_amount_fen": completed_amount_fen if not is_future else 0,
         "estimated_amount_fen": (
-            sum(e["amount_fen"] for e in equipment_usage)
-            + sum(s["amount_fen"] for s in sale_item_usage)
+            equipment_usage_amount + sale_item_usage_amount
         ) if is_future else 0,
         "equipment_usage": equipment_usage,
         "sale_item_usage": sale_item_usage,

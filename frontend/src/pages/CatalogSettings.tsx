@@ -61,13 +61,15 @@ export default function CatalogSettings() {
   // 手机版“进入子页面”的当前选中项（电脑版不使用）
   const [mobileActive, setMobileActive] = useState<string | null>(null)
   const canManageUsers = Boolean(
-    user && (user.role === 'superuser' || user.role === 'admin' || user.permissions.manage_users),
+    user && (user.role === 'superuser' || user.role === 'admin'),
   )
   const canBackup = Boolean(user && user.role === 'superuser')
   const canExport = Boolean(
     user && (user.role === 'superuser' || user.role === 'admin' || user.permissions.export_report),
   )
   const isSuperuser = Boolean(user && user.role === 'superuser')
+  // 配置类入口（器材目录/系统设置）仅管理员与超级管理员可见
+  const isAdmin = Boolean(user && (user.role === 'superuser' || user.role === 'admin'))
 
   // 器材编号是否全部完成：未完成时在「器材编号」tab 上显示红色感叹号
   const [numberingAllComplete, setNumberingAllComplete] = useState(true)
@@ -83,7 +85,7 @@ export default function CatalogSettings() {
     refreshNumbering()
   }, [refreshNumbering])
 
-  const tabs: SettingsTabDef[] = [
+  const tabs: SettingsTabDef[] = isAdmin ? [
     {
       key: 'sale',
       label: '器材售卖',
@@ -120,6 +122,13 @@ export default function CatalogSettings() {
       ? [{ key: 'users', label: '用户管理', children: <Users /> }]
       : []),
     ...(isSuperuser ? [{ key: 'groups', label: 'Group管理', children: <Groups /> }] : []),
+  ] : [
+    // 系统设置对所有用户开放：调试上报、布局切换、版本信息在此页
+    { key: 'system', label: '系统设置', children: <SystemTab /> },
+    ...(canExport ? [{ key: 'export', label: '数据导出', children: <ExportTab /> }] : []),
+    ...(canManageUsers
+      ? [{ key: 'users', label: '用户管理', children: <Users /> }]
+      : []),
   ]
 
   // 手机版：竖排菜单，点击后进入独立页面编辑
@@ -342,8 +351,16 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
       dataIndex: 'capacity',
       align: 'center',
       width: isMobile ? 64 : 90,
-      render: (v: number | null) => (
-        <span style={{ whiteSpace: 'nowrap' }}>{v == null ? '不限' : `${v} 座`}</span>
+      render: (v: number | null, record) => (
+        <span
+          style={{
+            whiteSpace: 'nowrap',
+            // 已停用的器材座位数一并置灰
+            color: record.is_active ? undefined : '#8c8c8c',
+          }}
+        >
+          {v == null ? '不限' : `${v} 座`}
+        </span>
       ),
     },
     {
@@ -359,9 +376,11 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
             style={{
               display: 'inline-block',
               padding: '0 6px',
-              border: `1px ${dotted ? 'dashed' : 'solid'} #000`,
+              border: `1px ${dotted ? 'dashed' : 'solid'} ${record.is_active ? '#000' : '#8c8c8c'}`,
               borderRadius: 4,
               whiteSpace: 'nowrap',
+              // 已停用的器材数量（框与数字）一并置灰
+              color: record.is_active ? undefined : '#8c8c8c',
             }}
           >
             {row?.total_quantity ?? 0}
@@ -675,6 +694,7 @@ function NumberingModal({
                   <InputNumber
                     min={0}
                     precision={0}
+                    inputMode="tel"
                     value={firstNumber}
                     onChange={(v) => setFirstNumber(v ?? 0)}
                     style={{ width: 90 }}
@@ -685,6 +705,7 @@ function NumberingModal({
                   <InputNumber
                     min={1}
                     precision={0}
+                    inputMode="tel"
                     value={step}
                     onChange={(v) => setStep(v ?? 1)}
                     style={{ width: 90 }}
@@ -750,20 +771,21 @@ function NumberingTab({ onChanged }: { onChanged: () => void }) {
 
   const columns: ColumnsType<NumberingRow> = [
     {
-      title: '类型',
-      dataIndex: 'type_name',
-      width: 90,
+      title: '器材名称',
+      dataIndex: 'spec_name',
+      align: 'center',
+      // 器材名称使用其对应船型颜色
       render: (value: string, record) => (
         <span style={{ color: typeColorHex(record.type_color as any) }}>{value}</span>
       ),
     },
-    { title: '器材名称', dataIndex: 'spec_name' },
     { title: '数量', dataIndex: 'target_quantity', width: 70, align: 'center' },
     { title: '已编号', dataIndex: 'numbered_quantity', width: 80, align: 'center' },
     {
       title: '状态',
       dataIndex: 'complete',
       width: 100,
+      align: 'center',
       render: (_: boolean, record) =>
         record.boat_numbering_required === false ? (
           <Tag>无需编号</Tag>
@@ -1046,7 +1068,7 @@ function SaleTab() {
             <Input placeholder="如：防水袋、手机防水套" />
           </Form.Item>
           <Form.Item label="价格（元）" name="price" rules={[{ required: true, message: '请输入价格' }]}>
-            <InputNumber min={0} precision={2} style={{ width: '100%' }} />
+            <InputNumber min={0} precision={2} inputMode="tel" style={{ width: '100%' }} />
           </Form.Item>
           {editing && (
             <Form.Item
@@ -1066,8 +1088,8 @@ function SaleTab() {
 
 /* ---------------- System settings ---------------- */
 
-// 支付方式管理区（付款方式区域）：新增/编辑/删除/设默认需要
-// manage_payment_methods 权限（或 superuser/admin），无权限时只读展示。
+// 支付方式管理区（付款方式区域）：新增/编辑/删除/设默认仅管理员与超级管理员可操作，
+// 普通用户仅只读展示。
 function PaymentSection() {
   const { user } = useAuth()
   const { message } = App.useApp()
@@ -1078,9 +1100,8 @@ function PaymentSection() {
   const [newCode, setNewCode] = useState('')
   const [busy, setBusy] = useState(false)
 
-  const canManage = Boolean(
-    user && (user.role === 'superuser' || user.role === 'admin' || user.permissions.manage_payment_methods),
-  )
+  // 付款方式管理（含更改默认）仅管理员与超级管理员
+  const canManage = Boolean(user && (user.role === 'superuser' || user.role === 'admin'))
 
   const load = useCallback(async () => {
     try {
@@ -1251,6 +1272,9 @@ function PaymentSection() {
 }
 
 function SystemTab() {
+  const { user } = useAuth()
+  // 配置项（自动归还/极速客户/船只编号/保存）仅管理员与超级管理员可改
+  const isAdmin = Boolean(user && (user.role === 'superuser' || user.role === 'admin'))
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [minutes, setMinutes] = useState(120)
   const [fastMode, setFastMode] = useState(false)
@@ -1313,6 +1337,7 @@ function SystemTab() {
 
   return (
     <Card title="系统设置">
+      {isAdmin && (
       <Form layout="vertical" style={{ maxWidth: 420 }}>
         <Form.Item
           label="自动归还时限（分钟）"
@@ -1320,6 +1345,7 @@ function SystemTab() {
         >
           <InputNumber
             min={1}
+            inputMode="tel"
             value={minutes}
             onChange={(value) => setMinutes(value ?? 120)}
             addonAfter="分钟"
@@ -1348,6 +1374,7 @@ function SystemTab() {
           />
         </Form.Item>
       </Form>
+      )}
       {/* 调试上报开关：写入当前浏览器（含 PWA 独立存储）的 localStorage，
           开启后所有网络请求会附带一条摘要上报到后端 POST /api/_trace，
           NAS 上 ./data/logs/frontend-trace-YYYY-MM-DD.log 按天生成。 */}
@@ -1369,19 +1396,21 @@ function SystemTab() {
       {(settings?.payment_methods?.length ?? 0) > 0 && <PaymentSection />}
       <Divider />
       <Descriptions size="small" column={1}>
-        <Descriptions.Item label="系统版本">v1.1.15</Descriptions.Item>
+        <Descriptions.Item label="系统版本">v1.1.17</Descriptions.Item>
       </Descriptions>
-      {/* 保存按钮固定放在所有设置内容之后 */}
-      <div style={{ marginTop: 16 }}>
-        <Button type="primary" loading={saving} onClick={save}>
-          保存设置
-        </Button>
-        {settings && (
-          <p style={{ color: '#999', marginTop: 12 }}>
-            最近更新：{new Date(settings.updated_at).toLocaleString('zh-CN')}
-          </p>
-        )}
-      </div>
+      {/* 保存按钮固定放在所有设置内容之后（仅管理员可保存） */}
+      {isAdmin && (
+        <div style={{ marginTop: 16 }}>
+          <Button type="primary" loading={saving} onClick={save}>
+            保存设置
+          </Button>
+          {settings && (
+            <p style={{ color: '#999', marginTop: 12 }}>
+              最近更新：{new Date(settings.updated_at).toLocaleString('zh-CN')}
+            </p>
+          )}
+        </div>
+      )}
     </Card>
   )
 }
@@ -1527,12 +1556,12 @@ function ExportTab() {
             </Space>
           </Form.Item>
           <Form.Item label="按客户ID导出订单">
-            <Space>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               <Input
                 placeholder="输入客户ID"
                 value={customerId}
                 onChange={(e) => setCustomerId(e.target.value)}
-                style={{ width: 300 }}
+                style={{ width: 300, maxWidth: '100%' }}
               />
               <Button
                 type="primary"
@@ -1555,7 +1584,7 @@ function ExportTab() {
               >
                 导出该客户订单 CSV
               </Button>
-            </Space>
+            </div>
           </Form.Item>
           {!canExport && <p style={{ color: '#999' }}>当前账号无导出权限。</p>}
           {isSuperuser && (

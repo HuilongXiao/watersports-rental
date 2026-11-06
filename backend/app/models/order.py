@@ -37,6 +37,8 @@ class Order(Base):
     note_popup: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # 支付方式 code（对应 payment_methods.code，可为空=未选择）
     payment_method_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 软删除标记：由超管删除的订单仅置此标记，数据保留但前端不可见
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     check_in_at: Mapped[object | None] = mapped_column(UtcDateTime(), nullable=True)
     check_in_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)

@@ -53,7 +53,7 @@ export default function AppLayout() {
   }, [location.pathname])
 
   const canManageUsers = Boolean(
-    user && (user.role === 'superuser' || user.role === 'admin' || user.permissions.manage_users),
+    user && (user.role === 'superuser' || user.role === 'admin'),
   )
 
   const isSuperuser = Boolean(user && user.role === 'superuser')
@@ -279,6 +279,7 @@ export default function AppLayout() {
           items={[
             { key: '/dashboard', icon: <DashboardOutlined />, label: '概览' },
             { key: '/orders', icon: <ShoppingOutlined />, label: '订单管理' },
+            { key: '/boats', icon: <CompassOutlined />, label: '船只调配' },
             { key: '/customers', icon: <TeamOutlined />, label: '客户管理' },
             ...(canManageUsers
               ? [{ key: '/users', icon: <UserOutlined />, label: '用户管理' }]
@@ -327,6 +328,8 @@ const mobileContentStyle: React.CSSProperties = {
   flex: 1,
   minHeight: 0,
   overflowY: 'auto',
+  // 不允许页面被超宽内容撑出横向滑动
+  overflowX: 'hidden',
   WebkitOverflowScrolling: 'touch',
   // Stop scroll chaining to the body at the rubber-band boundaries.
   overscrollBehavior: 'contain',

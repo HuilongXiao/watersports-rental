@@ -33,7 +33,6 @@ class UserCreateInput(BaseModel):
     perm_create_order: bool = False
     perm_edit_order: bool = False
     perm_export_report: bool = False
-    perm_manage_users: bool = False
     perm_view_revenue: bool = False
     perm_manage_payment_methods: bool = False
     perm_boat_dispatch: bool = False
@@ -54,7 +53,6 @@ class UserUpdateInput(BaseModel):
     perm_create_order: bool | None = None
     perm_edit_order: bool | None = None
     perm_export_report: bool | None = None
-    perm_manage_users: bool | None = None
     perm_view_revenue: bool | None = None
     perm_manage_payment_methods: bool | None = None
     perm_boat_dispatch: bool | None = None
@@ -62,11 +60,11 @@ class UserUpdateInput(BaseModel):
 
 
 def _can_list_users(user: User) -> bool:
+    """用户管理仅管理员与超级管理员可用，普通用户不可查看。"""
+
     if user.is_system:
         return False
-    if user.role in ("superuser", "admin"):
-        return True
-    return bool(user.perm_manage_users)
+    return user.role in ("superuser", "admin")
 
 
 @router.get("")
@@ -84,12 +82,8 @@ def list_users(
         else:
             pass  # superuser sees all non-system users
     else:
-        # admin and user-managers see only their group, and cannot see superusers.
+        # admin sees all non-superuser users in their group
         stmt = stmt.where(User.group_id == user.group_id, User.role != "superuser")
-        if user.role == "admin":
-            pass  # admin sees all non-superuser users in their group
-        else:  # user with manage_users permission
-            stmt = stmt.where(User.role == "user")
     users = list(db.scalars(stmt.order_by(User.created_at)))
     return [user_dict(u) for u in users]
 
@@ -141,7 +135,6 @@ def create_user(
         perm_create_order=payload.perm_create_order,
         perm_edit_order=payload.perm_edit_order,
         perm_export_report=payload.perm_export_report,
-        perm_manage_users=payload.perm_manage_users,
         perm_view_revenue=payload.perm_view_revenue,
         perm_manage_payment_methods=payload.perm_manage_payment_methods,
         perm_boat_dispatch=payload.perm_boat_dispatch,
@@ -174,22 +167,16 @@ def update_user(
     if user.role == "superuser":
         pass  # full control over any non-system user
     elif user.role == "admin":
-        # Admin can only manage users in their own group.
+        # Admin can manage users in their own group, including promoting/demoting
+        # between user and admin. Superusers and other groups remain off-limits.
         if target.group_id != user.group_id:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "无权管理其他 Group 的用户")
-        if target.role != "user":
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "管理员只能管理普通用户")
-        if data.get("role") not in (None, "user"):
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "管理员不能提升用户角色")
-    else:  # role == "user"
-        if not user.perm_manage_users:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "无此操作权限")
-        if target.group_id != user.group_id:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "无权管理其他 Group 的用户")
-        if target.role != "user":
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "只能管理普通用户")
-        if any(k != "is_active" for k in data):
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "仅可启停账户状态")
+        if target.role not in ("user", "admin"):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "管理员只能管理本 Group 的普通用户或管理员")
+        if data.get("role") not in (None, "user", "admin"):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "管理员只能设置普通用户或管理员角色")
+    else:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "无此操作权限")
 
     if "role" in data and data["role"] not in VALID_ROLES:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "角色无效")
@@ -205,7 +192,6 @@ def update_user(
         "perm_create_order",
         "perm_edit_order",
         "perm_export_report",
-        "perm_manage_users",
         "perm_view_revenue",
         "perm_manage_payment_methods",
         "perm_boat_dispatch",

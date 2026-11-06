@@ -64,7 +64,11 @@ def list_catalog(db: Session, user: User, active_group_id: str | None = None) ->
             .where(OrderItem.equipment_spec_id.is_not(None))
             .select_from(OrderItem)
             .join(Order, Order.id == OrderItem.order_id)
-            .where(Order.start_at >= since, Order.status != "cancelled")
+            .where(
+                Order.start_at >= since,
+                Order.status != "cancelled",
+                Order.is_deleted.is_(False),
+            )
             .group_by(OrderItem.equipment_spec_id)
         ).all()
     )
@@ -74,7 +78,11 @@ def list_catalog(db: Session, user: User, active_group_id: str | None = None) ->
             .where(OrderItem.sale_item_id.is_not(None))
             .select_from(OrderItem)
             .join(Order, Order.id == OrderItem.order_id)
-            .where(Order.start_at >= since, Order.status != "cancelled")
+            .where(
+                Order.start_at >= since,
+                Order.status != "cancelled",
+                Order.is_deleted.is_(False),
+            )
             .group_by(OrderItem.sale_item_id)
         ).all()
     )

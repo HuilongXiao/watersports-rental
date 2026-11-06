@@ -124,6 +124,7 @@ export default function Customers() {
         <Space>
           {value || '—'}
           {record.is_system ? <Tag color="gold">系统</Tag> : null}
+          {record.is_active === false ? <Tag color="default">已停用</Tag> : null}
         </Space>
       ),
     },
@@ -179,7 +180,10 @@ export default function Customers() {
         pagination={{ pageSize: 20 }}
         onRow={(record) => ({
           onClick: () => navigate(`/customers/${record.id}`),
-          style: { cursor: 'pointer' },
+          style: {
+            cursor: 'pointer',
+            ...(record.is_active === false ? { color: '#8c8c8c' } : {}),
+          },
         })}
       />
 
@@ -198,7 +202,7 @@ export default function Customers() {
           </Form.Item>
           <Form.Item label="手机号">
             <Form.Item name="phone" noStyle>
-              <Input placeholder="手机号" />
+              <Input placeholder="手机号" type="tel" inputMode="tel" />
             </Form.Item>
           </Form.Item>
           <Form.Item label="性别" name="gender">

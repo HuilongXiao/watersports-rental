@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.auth import get_active_group_id, get_current_user
+from app.api.auth import get_active_group_id, get_current_user, require_role
 from app.core.time_utils import to_iso_z
 from app.db.session import get_db
 from app.models.group import Group
@@ -68,7 +68,7 @@ def get_settings(
 def update_settings(
     payload: SettingsInput,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("superuser", "admin")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     group_id = _resolve_group_id(db, user, active_group_id)

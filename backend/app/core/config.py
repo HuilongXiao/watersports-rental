@@ -21,6 +21,10 @@ SESSION_SECRET = os.getenv("SESSION_SECRET") or "change-me-in-production"
 SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true"
 SESSION_MAX_AGE_SECONDS = 24 * 60 * 60
 
+# FastAPI 交互式文档 / OpenAPI：默认关闭，避免公网暴露接口结构；
+# 本地调试需要时设置 API_DOCS_ENABLED=1。
+API_DOCS_ENABLED = os.getenv("API_DOCS_ENABLED", "0").lower() in ("1", "true", "on")
+
 # Fixed business rules (not editable settings).
 BUSINESS_TIMEZONE = "Asia/Shanghai"
 ORDER_DURATION_HOURS = 2

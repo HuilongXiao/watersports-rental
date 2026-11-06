@@ -34,6 +34,7 @@ def occupied_quantity(db: Session, equipment_spec_id: str) -> int:
             OrderItem.equipment_spec_id == equipment_spec_id,
             Order.check_in_at.is_not(None),
             Order.return_at.is_(None),
+            Order.is_deleted.is_(False),
         )
     ).all()
     if not rows:
@@ -389,7 +390,10 @@ def check_order_conflicts(
     candidate_slots = [origin + timedelta(minutes=30 * i) for i in range(slot_count)]
 
     # 查询窗口可能重叠的预订/进行中/已完成订单（±26 小时足够覆盖跨日边界）
-    stmt = select(Order).where(Order.status.in_(["active", "in_progress", "completed"]))
+    stmt = select(Order).where(
+        Order.status.in_(["active", "in_progress", "completed"]),
+        Order.is_deleted.is_(False),
+    )
     if active_group_id is not None:
         stmt = stmt.where(Order.group_id == active_group_id)
     if exclude_order_id:

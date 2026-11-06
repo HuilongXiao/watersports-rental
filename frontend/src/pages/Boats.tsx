@@ -15,7 +15,6 @@ import dayjs from 'dayjs'
 import { api } from '../api'
 import { useSettings } from '../contexts/SettingsContext'
 import { formatDurationBetween, typeColorHex } from '../utils'
-import type { Catalog } from '../types'
 
 interface BoardAssigned {
   dispatch_id: string
@@ -61,9 +60,17 @@ interface DepartedBoat {
   departed_at: string | null
 }
 
+interface TypeOption {
+  id: string
+  name: string
+  color: string
+}
+
 interface BoardData {
   orders: BoardOrder[]
   departed: DepartedBoat[]
+  // 后端按近 30 天该类型销售数量由多到少排序
+  type_options: TypeOption[]
 }
 
 // 器材类型筛选按浏览器记住上一次选择（进入页面不重置）
@@ -166,7 +173,6 @@ function BoatNumberInput({
 export default function Boats() {
   const { message } = App.useApp()
   const { settings } = useSettings()
-  const [catalog, setCatalog] = useState<Catalog | null>(null)
   const [board, setBoard] = useState<BoardData | null>(null)
   const [loading, setLoading] = useState(false)
   const [tab, setTab] = useState<'depart' | 'return'>('depart')
@@ -179,12 +185,8 @@ export default function Boats() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [boardData, catalogData] = await Promise.all([
-        api.get<BoardData>('/api/boats/board'),
-        api.get<Catalog>('/api/catalog').catch(() => null),
-      ])
+      const boardData = await api.get<BoardData>('/api/boats/board')
       setBoard(boardData)
-      if (catalogData) setCatalog(catalogData)
     } catch (error) {
       message.error(error instanceof Error ? error.message : '加载失败')
     } finally {
@@ -209,9 +211,9 @@ export default function Boats() {
   const typeOptions = useMemo(
     () => [
       { value: '', label: '全部类型' },
-      ...(catalog?.equipment_types ?? []).map((t) => ({ value: t.id, label: t.name })),
+      ...(board?.type_options ?? []).map((t) => ({ value: t.id, label: t.name })),
     ],
-    [catalog],
+    [board],
   )
 
   const matchType = (typeId: string | null) => !typeFilter || typeId === typeFilter

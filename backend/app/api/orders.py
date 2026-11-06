@@ -61,7 +61,7 @@ def list_orders(
     user: User = Depends(get_current_user),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
-    statement = select(Order).order_by(Order.start_at.asc())
+    statement = select(Order).where(Order.is_deleted.is_(False)).order_by(Order.start_at.asc())
     if active_group_id is not None:
         statement = statement.where(Order.group_id == active_group_id)
 
@@ -186,7 +186,7 @@ def delete_order(
     user: User = Depends(require_role("superuser")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
-    # 永久删除订单（含订单项目与支付记录）：仅 superuser
+    # 软删除订单（仅置隐藏标记，数据保留）：仅 superuser
     order_service.delete_order(db, user, order_id, active_group_id)
     return {"deleted": True}
 
@@ -195,7 +195,7 @@ def delete_order(
 def check_in(
     order_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("edit_order")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     order, warnings = order_service.check_in(db, user, order_id, active_group_id)
@@ -206,7 +206,7 @@ def check_in(
 def cancel_check_in(
     order_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("edit_order")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     order = order_service.cancel_check_in(db, user, order_id, active_group_id)
@@ -217,7 +217,7 @@ def cancel_check_in(
 def return_order(
     order_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("edit_order")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     order = order_service.return_order(db, user, order_id, active_group_id)
@@ -228,7 +228,7 @@ def return_order(
 def cancel_return(
     order_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("edit_order")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     order = order_service.cancel_return(db, user, order_id, active_group_id)
@@ -239,7 +239,7 @@ def cancel_return(
 def cancel_order(
     order_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("edit_order")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     order = order_service.cancel_order(db, user, order_id, active_group_id)
@@ -250,7 +250,7 @@ def cancel_order(
 def mark_no_show(
     order_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("edit_order")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     order = order_service.mark_no_show(db, user, order_id, active_group_id)
@@ -261,7 +261,7 @@ def mark_no_show(
 def complete_order(
     order_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("edit_order")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     order = order_service.complete_order(db, user, order_id, active_group_id)
@@ -272,7 +272,7 @@ def complete_order(
 def restore_order(
     order_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("edit_order")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     order = order_service.restore_order(db, user, order_id, active_group_id)

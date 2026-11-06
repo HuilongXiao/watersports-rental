@@ -57,6 +57,7 @@ export interface Customer {
   wechat_id: string | null
   phone: string | null
   is_system?: boolean
+  is_active?: boolean
   note?: string | null
   remind?: boolean
   total_orders?: number

@@ -110,7 +110,7 @@ export default function OrderForm() {
       return
     }
     try {
-      setCustomerOptions(await api.get<Customer[]>(`/api/customers?q=${encodeURIComponent(value)}`))
+      setCustomerOptions(await api.get<Customer[]>(`/api/customers?active_only=true&q=${encodeURIComponent(value)}`))
     } catch {
       setCustomerOptions([])
     }
@@ -750,8 +750,7 @@ export default function OrderForm() {
         ]),
     {
       title: '',
-      // feature 开启时加宽本列（仅桌面端），用于在合计行右侧展示支付方式摘要
-      width: !isMobile && settings.payment_methods.length > 0 ? 190 : 36,
+      width: 36,
       render: (_: unknown, record: DraftItem) => (
         <Button
           type="text"
@@ -835,7 +834,9 @@ export default function OrderForm() {
         </p>
       ) : null}
 
-      <Form layout="vertical" className="compact-order-form" style={{ maxWidth: 720 }}>
+      {/* 表单、订单项目表、备注区统一 720 最大宽度，桌面端左右边界保持一致 */}
+      <div style={{ maxWidth: 720 }}>
+      <Form layout="vertical" className="compact-order-form">
         <div
           style={{
             display: 'flex',
@@ -853,7 +854,6 @@ export default function OrderForm() {
                 value={customerWechatNickname}
                 onChange={(e) => setCustomerWechatNickname(e.target.value)}
                 style={{
-                  maxWidth: 300,
                   caretColor: isEdit || fromCustomerProfile ? 'transparent' : undefined,
                 }}
                 readOnly={isEdit || fromCustomerProfile}
@@ -918,9 +918,16 @@ export default function OrderForm() {
           </Form.Item>
         </div>
 
-        <Space wrap size={12}>
+        {/* 日期/时间/成人/儿童统一等宽栅格：手机端 2 列、桌面端 4 列，左右边界对齐 */}
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: isMobile ? 'repeat(2, minmax(0, 1fr))' : 'repeat(4, minmax(0, 1fr))',
+            columnGap: 12,
+          }}
+        >
           <Form.Item label="开始日期">
-            <Space.Compact style={{ width: 220 }}>
+            <Space.Compact style={{ width: '100%' }}>
               <Button
                 style={{ width: 40 }}
                 disabled={isInProgress}
@@ -956,7 +963,7 @@ export default function OrderForm() {
             </Space.Compact>
           </Form.Item>
           <Form.Item label="开始时间">
-            <Space.Compact style={{ width: 160 }}>
+            <Space.Compact style={{ width: '100%' }}>
               <Button style={{ width: 40 }} disabled={isInProgress} onClick={decTime}>
                 −
               </Button>
@@ -969,7 +976,7 @@ export default function OrderForm() {
             </Space.Compact>
           </Form.Item>
           <Form.Item label="成人">
-            <Space.Compact style={{ width: 140 }}>
+            <Space.Compact style={{ width: '100%' }}>
               <Button
                 style={{ width: 40 }}
                 disabled={adultCount <= 0 || isInProgress}
@@ -994,7 +1001,7 @@ export default function OrderForm() {
             </Space.Compact>
           </Form.Item>
           <Form.Item label="儿童">
-            <Space.Compact style={{ width: 140 }}>
+            <Space.Compact style={{ width: '100%' }}>
               <Button
                 style={{ width: 40 }}
                 disabled={childCount <= 0 || isInProgress}
@@ -1018,7 +1025,7 @@ export default function OrderForm() {
               </Button>
             </Space.Compact>
           </Form.Item>
-        </Space>
+        </div>
         <p style={{ color: '#999', marginTop: -4 }}>
           结束时间：{startAt.add(2, 'hour').format('YYYY-MM-DD HH:mm')}
         </p>
@@ -1033,34 +1040,21 @@ export default function OrderForm() {
         pagination={false}
         summary={() => (
           <Table.Summary.Row>
-            {isMobile ? (
-              <>
-                <Table.Summary.Cell index={0} colSpan={3}>
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: 12,
-                      flexWrap: 'wrap',
-                    }}
-                  >
-                    <strong>合计 ¥{fenToYuan(totalFen)}</strong>
-                    {paymentSummary}
-                  </div>
-                </Table.Summary.Cell>
-              </>
-            ) : (
-              <>
-                <Table.Summary.Cell index={0} colSpan={4}>
-                  <strong>合计</strong>
-                </Table.Summary.Cell>
-                <Table.Summary.Cell index={4} align="right">
-                  <strong>¥{fenToYuan(totalFen)}</strong>
-                </Table.Summary.Cell>
-                <Table.Summary.Cell index={5} align="right">{paymentSummary}</Table.Summary.Cell>
-              </>
-            )}
+            {/* 合计行横跨整行，与表头/数据行列数一致；金额与支付方式左右对齐 */}
+            <Table.Summary.Cell index={0} colSpan={isMobile ? 3 : 5}>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                  flexWrap: 'wrap',
+                }}
+              >
+                <strong>合计 ¥{fenToYuan(totalFen)}</strong>
+                {paymentSummary}
+              </div>
+            </Table.Summary.Cell>
           </Table.Summary.Row>
         )}
       />
@@ -1091,6 +1085,7 @@ export default function OrderForm() {
         >
           打开订单时展示气泡对话框，提示备注内容，并点击"确认"关闭气泡对话框
         </Checkbox>
+      </div>
       </div>
 
       <Modal
@@ -1152,7 +1147,7 @@ export default function OrderForm() {
             <Input placeholder="客户姓名" />
           </Form.Item>
           <Form.Item label="手机号" name="phone">
-            <Input placeholder="手机号" />
+            <Input placeholder="手机号" type="tel" inputMode="tel" />
           </Form.Item>
           <Form.Item label="微信昵称" name="wechat_nickname">
             <Input placeholder="微信昵称" />
@@ -1217,12 +1212,22 @@ export default function OrderForm() {
         </div>
       </Modal>
     </Card>
+    {/* 与订单详情页一致：桌面端右下悬浮、手机端底部通栏居中；底部留白避免遮挡备注区 */}
+    <div style={{ height: isDesktop ? 72 : 'calc(104px + env(safe-area-inset-bottom, 0px))' }} />
     <div
       style={{
         position: 'fixed',
-        bottom: isDesktop ? 24 : 'calc(72px + env(safe-area-inset-bottom, 0px))',
-        right: 16,
+        bottom: isDesktop ? 16 : 'calc(56px + env(safe-area-inset-bottom, 0px))',
+        left: isDesktop ? 'auto' : 0,
+        right: isDesktop ? 16 : 0,
         zIndex: 100,
+        background: '#fff',
+        padding: '8px 12px',
+        borderTop: isDesktop ? 'none' : '1px solid #f0f0f0',
+        borderRadius: isDesktop ? 8 : 0,
+        boxShadow: '0 -2px 8px rgba(0,0,0,0.06)',
+        display: 'flex',
+        justifyContent: 'center',
       }}
     >
       <Space>

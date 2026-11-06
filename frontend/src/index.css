@@ -104,3 +104,11 @@ body {
 .layout-mobile .ant-descriptions-item-content {
   word-break: break-word;
 }
+
+/* 订单详情顶部信息表：固定标签列宽度，使左右两组列宽对称、内容列均分剩余宽度 */
+.order-detail-info.ant-descriptions-bordered > .ant-descriptions-view > table {
+  table-layout: fixed;
+}
+.order-detail-info .ant-descriptions-row > th {
+  width: 74px;
+}

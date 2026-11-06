@@ -10,7 +10,7 @@ from datetime import timedelta
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.time_utils import to_iso_z, utc_now
@@ -256,7 +256,7 @@ def assign_number(
 ) -> dict:
     item = _order_item_or_404(db, order_item_id)
     order = db.get(Order, item.order_id)
-    if not order:
+    if not order or order.is_deleted:
         raise HTTPException(status_code=404, detail="订单不存在")
     _assert_group(user, order.group_id, active_group_id)
     if order.status != "in_progress":
@@ -348,7 +348,9 @@ def list_board(
 ) -> dict:
     """出发 / 返还 页面数据：进行中订单 + 已出发船只。"""
     scope = _group_scope(user, active_group_id)
-    stmt = select(Order).where(Order.status == "in_progress")
+    stmt = select(Order).where(
+        Order.status == "in_progress", Order.is_deleted.is_(False)
+    )
     if scope is not None:
         stmt = stmt.where(Order.group_id == scope)
     orders = list(db.scalars(stmt).all())
@@ -446,7 +448,38 @@ def list_board(
         )
     departed.sort(key=lambda x: _natural_key(x["number"]))
 
-    return {"orders": cards, "departed": departed}
+    # 顶部器材类型下拉的排序：近 30 天（按订单开始时间）该类型器材的销售数量
+    # 由多到少，销量相同按名称；无销量的类型排在后面。
+    since = utc_now() - timedelta(days=30)
+    type_sales_stmt = (
+        select(
+            EquipmentSpec.equipment_type_id,
+            func.coalesce(func.sum(OrderItem.quantity), 0),
+        )
+        .select_from(OrderItem)
+        .join(Order, Order.id == OrderItem.order_id)
+        .join(EquipmentSpec, EquipmentSpec.id == OrderItem.equipment_spec_id)
+        .where(
+            Order.start_at >= since,
+            Order.status != "cancelled",
+            Order.is_deleted.is_(False),
+            OrderItem.equipment_spec_id.is_not(None),
+        )
+        .group_by(EquipmentSpec.equipment_type_id)
+    )
+    if scope is not None:
+        type_sales_stmt = type_sales_stmt.where(Order.group_id == scope)
+    type_sales = {tid: int(qty) for tid, qty in db.execute(type_sales_stmt).all()}
+
+    type_options = [
+        {"id": t.id, "name": t.name, "color": t.color}
+        for t in sorted(
+            types.values(),
+            key=lambda t: (-type_sales.get(t.id, 0), t.name),
+        )
+    ]
+
+    return {"orders": cards, "departed": departed, "type_options": type_options}
 
 
 def return_dispatch(
@@ -456,7 +489,7 @@ def return_dispatch(
     if not dispatch:
         raise HTTPException(status_code=404, detail="船只出发记录不存在")
     order = db.get(Order, dispatch.order_id)
-    if not order:
+    if not order or order.is_deleted:
         raise HTTPException(status_code=404, detail="订单不存在")
     _assert_group(user, order.group_id, active_group_id)
 
@@ -486,7 +519,7 @@ def reset_dispatch(
     if not dispatch:
         raise HTTPException(status_code=404, detail="船只出发记录不存在")
     order = db.get(Order, dispatch.order_id)
-    if not order:
+    if not order or order.is_deleted:
         raise HTTPException(status_code=404, detail="订单不存在")
     _assert_group(user, order.group_id, active_group_id)
 

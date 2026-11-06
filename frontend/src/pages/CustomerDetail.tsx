@@ -95,16 +95,16 @@ export default function CustomerDetail() {
 
   const noShowOrders = orders.filter((o) => o.status === 'no_show')
 
-  // superuser 永久删除客户 profile（系统客户/仍有订单的客户由后端拒绝）
+  // superuser 停用客户（软删除）：资料与历史订单保留，系统客户由后端拒绝
   const doDelete = async () => {
     if (!id) return
     setDeleting(true)
     try {
       await api.del(`/api/customers/${id}`)
-      message.success('客户已删除')
+      message.success('客户已停用')
       navigate('/customers')
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '删除失败')
+      message.error(error instanceof Error ? error.message : '停用失败')
       setDeleting(false)
     }
   }
@@ -243,22 +243,24 @@ export default function CustomerDetail() {
             {customer && !customer.is_system && (
               <>
                 {/* 创建订单：预填当前客户信息（通过 URL query 传递 customerId，OrderForm 自动识别） */}
-                <Button type="primary" onClick={() => navigate(`/orders/new?customerId=${customer.id}`)}>
-                  创建订单
-                </Button>
+                {customer.is_active !== false && (
+                  <Button type="primary" onClick={() => navigate(`/orders/new?customerId=${customer.id}`)}>
+                    创建订单
+                  </Button>
+                )}
                 <Button onClick={openEdit}>编辑</Button>
               </>
             )}
-            {isSuperuser && customer && !customer.is_system ? (
+            {isSuperuser && customer && !customer.is_system && customer.is_active !== false ? (
               <Popconfirm
-                title="确认删除该客户？"
-                description="删除后不可恢复；若该客户仍有订单，需先删除相关订单。"
-                okText="永久删除"
+                title="确认停用该客户？"
+                description="停用后客户资料与历史订单仍保留，但新建订单时不再匹配到该客户。"
+                okText="停用"
                 okButtonProps={{ danger: true, loading: deleting }}
                 cancelText="取消"
                 onConfirm={doDelete}
               >
-                <Button danger>删除客户</Button>
+                <Button danger>停用客户</Button>
               </Popconfirm>
             ) : undefined}
           </Space>
@@ -270,6 +272,9 @@ export default function CustomerDetail() {
           <Descriptions.Item label="微信昵称">{customer?.wechat_nickname ?? ''}</Descriptions.Item>
           <Descriptions.Item label="微信ID">{customer?.wechat_id ?? ''}</Descriptions.Item>
           <Descriptions.Item label="手机号">{customer?.phone ?? ''}</Descriptions.Item>
+          <Descriptions.Item label="状态">
+            {customer ? (customer.is_active === false ? '已停用' : '启用') : ''}
+          </Descriptions.Item>
         </Descriptions>
       </Card>
 
@@ -367,7 +372,7 @@ export default function CustomerDetail() {
           </Form.Item>
           <Form.Item label="手机号">
             <Form.Item name="phone" noStyle>
-              <Input placeholder="手机号" />
+              <Input placeholder="手机号" type="tel" inputMode="tel" />
             </Form.Item>
           </Form.Item>
           <Form.Item label="性别" name="gender">

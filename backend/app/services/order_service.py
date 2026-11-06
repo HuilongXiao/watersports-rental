@@ -10,7 +10,7 @@ import logging
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.time_utils import (
@@ -123,6 +123,23 @@ def _sole_group_id(db: Session) -> str | None:
     return groups[0].id if len(groups) == 1 else None
 
 
+def _assert_no_inactive_customer(
+    db: Session, column, value: str, group_id: str | None = None
+) -> None:
+    """停用客户不可再用于新建订单，避免自动创建出重名客户。
+
+    客户昵称/姓名在 Group 内仍然唯一，因此停用后若直接新建同名客户会撞唯一
+    约束；这里提前给出明确提示。
+    """
+    statement = select(Customer.id).where(
+        column == value, Customer.is_active.is_(False)
+    )
+    if group_id is not None:
+        statement = statement.where(Customer.group_id == group_id)
+    if db.scalar(statement):
+        raise HTTPException(status_code=422, detail="该客户已停用，无法创建订单")
+
+
 def _resolve_fast_customer(
     db: Session, user: User, payload, active_group_id: str | None
 ) -> Customer:
@@ -152,14 +169,22 @@ def _resolve_fast_customer(
         column = Customer.wechat_nickname if nickname else Customer.name
         existing = db.scalar(
             select(Customer)
-            .where(column == value, Customer.group_id.is_not(None))
+            .where(
+                column == value,
+                Customer.group_id.is_not(None),
+                Customer.is_active.is_(True),
+            )
             .order_by(Customer.updated_at.desc())
         )
         if existing:
             return existing
         groupless = db.scalar(
             select(Customer)
-            .where(column == value, Customer.group_id.is_(None))
+            .where(
+                column == value,
+                Customer.group_id.is_(None),
+                Customer.is_active.is_(True),
+            )
             .order_by(Customer.updated_at.desc())
         )
         fallback_group_id = _sole_group_id(db)
@@ -173,6 +198,7 @@ def _resolve_fast_customer(
             groupless.group_id = fallback_group_id
             db.flush()
             return groupless
+        _assert_no_inactive_customer(db, column, value)
         system = db.scalar(select(User).where(User.is_system.is_(True)))
         customer = Customer(
             id=str(uuid4()),
@@ -193,11 +219,18 @@ def _resolve_fast_customer(
     if nickname:
         existing = db.scalar(
             select(Customer)
-            .where(Customer.group_id == group_id, Customer.wechat_nickname == nickname)
+            .where(
+                Customer.group_id == group_id,
+                Customer.wechat_nickname == nickname,
+                Customer.is_active.is_(True),
+            )
             .order_by(Customer.updated_at.desc())
         )
         if existing:
             return existing
+        _assert_no_inactive_customer(
+            db, Customer.wechat_nickname, nickname, group_id=group_id
+        )
         system = db.scalar(select(User).where(User.is_system.is_(True)))
         customer = Customer(
             id=str(uuid4()),
@@ -218,11 +251,16 @@ def _resolve_fast_customer(
     if name:
         existing = db.scalar(
             select(Customer)
-            .where(Customer.group_id == group_id, Customer.name == name)
+            .where(
+                Customer.group_id == group_id,
+                Customer.name == name,
+                Customer.is_active.is_(True),
+            )
             .order_by(Customer.updated_at.desc())
         )
         if existing:
             return existing
+        _assert_no_inactive_customer(db, Customer.name, name, group_id=group_id)
         system = db.scalar(select(User).where(User.is_system.is_(True)))
         customer = Customer(
             id=str(uuid4()),
@@ -271,6 +309,8 @@ def create_order(db: Session, user: User, payload, active_group_id: str | None =
         customer = db.get(Customer, payload.customer_id)
         if not customer:
             raise HTTPException(status_code=404, detail="客户不存在")
+        if not customer.is_active:
+            raise HTTPException(status_code=422, detail="该客户已停用，无法创建订单")
 
     # Group ownership: non-superuser must own the customer.
     if (
@@ -358,14 +398,22 @@ def check_duplicate_order(
         if nickname:
             existing = db.scalar(
                 select(Customer)
-                .where(Customer.group_id == group_id, Customer.wechat_nickname == nickname)
+                .where(
+                    Customer.group_id == group_id,
+                    Customer.wechat_nickname == nickname,
+                    Customer.is_active.is_(True),
+                )
                 .order_by(Customer.updated_at.desc())
             )
             customer_id = existing.id if existing else None
         elif name:
             existing = db.scalar(
                 select(Customer)
-                .where(Customer.group_id == group_id, Customer.name == name)
+                .where(
+                    Customer.group_id == group_id,
+                    Customer.name == name,
+                    Customer.is_active.is_(True),
+                )
                 .order_by(Customer.updated_at.desc())
             )
             customer_id = existing.id if existing else None
@@ -390,6 +438,7 @@ def check_duplicate_order(
         select(Order)
         .where(Order.customer_id == customer_id)
         .where(Order.status.in_(["active", "in_progress"]))
+        .where(Order.is_deleted.is_(False))
     )
     if active_group_id is not None:
         stmt = stmt.where(Order.group_id == active_group_id)
@@ -440,7 +489,7 @@ def get_order(
     db: Session, order_id: str, user: User | None = None, active_group_id: str | None = None
 ) -> Order:
     order = db.get(Order, order_id)
-    if not order:
+    if not order or order.is_deleted:
         raise HTTPException(status_code=404, detail="订单不存在")
     if (
         active_group_id is not None
@@ -462,22 +511,27 @@ def list_items(db: Session, order_id: str) -> list[OrderItem]:
 def delete_order(
     db: Session, user: User, order_id: str, active_group_id: str | None = None
 ) -> None:
-    """永久删除订单及其关联数据（仅 superuser 可调用，鉴权在 API 层）。
+    """软删除订单（仅 superuser 可调用，鉴权在 API 层）。
 
-    级联删除：支付调整项 → 支付记录 → 订单项目 → 订单本身。
+    仅置 ``is_deleted = True``，订单、订单项目与支付记录全部保留。所有业务
+    查询与普通/管理员导出都会排除这些订单，超管导出会额外标注删除状态。
+    正在进行的船只调委会顺手置为已返还，避免已删订单继续占用船只。
     """
-    from app.models.payment import Payment, PaymentItem
-
     order = get_order(db, order_id, user, active_group_id)
-    order_id_pk = order.id
 
-    # 模型间只声明了外键列、未声明 relationship，工作单元无法自动排序删除，
-    # 因此显式按依赖顺序执行 DELETE：支付调整项 → 支付记录 → 订单项目 → 订单。
-    payment_ids = select(Payment.id).where(Payment.order_id == order_id_pk)
-    db.execute(delete(PaymentItem).where(PaymentItem.payment_id.in_(payment_ids)))
-    db.execute(delete(Payment).where(Payment.order_id == order_id_pk))
-    db.execute(delete(OrderItem).where(OrderItem.order_id == order_id_pk))
-    db.execute(delete(Order).where(Order.id == order_id_pk))
+    now = utc_now()
+    for dispatch in db.scalars(
+        select(BoatDispatch).where(
+            BoatDispatch.order_id == order.id,
+            BoatDispatch.returned.is_(False),
+        )
+    ).all():
+        dispatch.returned = True
+        dispatch.returned_at = now
+        dispatch.returned_by_user_id = user.id
+
+    order.is_deleted = True
+    order.updated_by_user_id = user.id
     db.commit()
 
 
@@ -818,6 +872,7 @@ def auto_return_overdue_orders(db: Session) -> list[Order]:
         .where(Order.check_in_at.is_not(None))
         .where(Order.return_at.is_(None))
         .where(Order.auto_return_after_minutes.is_not(None))
+        .where(Order.is_deleted.is_(False))
     )
     returned: list[Order] = []
     # 已经操作过船只出发的订单由「船只调配」流程负责完成，不做超时自动完成
@@ -859,6 +914,7 @@ def daily_forced_return(db: Session) -> list[Order]:
         .where(Order.status == "in_progress")
         .where(Order.check_in_at.is_not(None))
         .where(Order.return_at.is_(None))
+        .where(Order.is_deleted.is_(False))
     )
     returned: list[Order] = []
     for order in db.scalars(stmt).all():

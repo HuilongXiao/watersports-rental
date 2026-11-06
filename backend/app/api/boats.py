@@ -2,7 +2,12 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.api.auth import get_active_group_id, get_current_user
+from app.api.auth import (
+    get_active_group_id,
+    get_current_user,
+    require_permission,
+    require_role,
+)
 from app.db.session import get_db
 from app.models.user import User
 from app.services import boat_service
@@ -43,7 +48,7 @@ def save_spec_numbers(
     spec_id: str,
     payload: NumbersInput,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("superuser", "admin")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     return boat_service.set_spec_numbers(db, user, spec_id, payload.numbers, active_group_id)
@@ -52,7 +57,7 @@ def save_spec_numbers(
 @router.get("/board")
 def dispatch_board(
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("boat_dispatch")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     return boat_service.list_board(db, user, active_group_id)
@@ -62,7 +67,7 @@ def dispatch_board(
 def assign_number(
     payload: AssignInput,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("boat_dispatch")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     return boat_service.assign_number(
@@ -74,7 +79,7 @@ def assign_number(
 def return_number(
     dispatch_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("boat_dispatch")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     return boat_service.return_dispatch(db, user, dispatch_id, active_group_id)
@@ -84,7 +89,7 @@ def return_number(
 def reset_departure(
     dispatch_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("boat_dispatch")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     return boat_service.reset_dispatch(db, user, dispatch_id, active_group_id)

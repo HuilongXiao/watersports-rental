@@ -34,6 +34,12 @@ const ALL_ROLE_OPTIONS = [
 
 const USER_ROLE_OPTIONS = [{ value: 'user', label: '用户' }]
 
+// 管理员可在本 Group 内调整普通用户与管理员角色
+const ADMIN_ROLE_OPTIONS = [
+  { value: 'admin', label: '管理员' },
+  { value: 'user', label: '用户' },
+]
+
 function PermissionCheckboxes() {
   return (
     <Space direction="vertical">
@@ -46,14 +52,8 @@ function PermissionCheckboxes() {
       <Form.Item name="perm_export_report" valuePropName="checked" noStyle>
         <Checkbox>导出报表</Checkbox>
       </Form.Item>
-      <Form.Item name="perm_manage_users" valuePropName="checked" noStyle>
-        <Checkbox>启停用户账户</Checkbox>
-      </Form.Item>
       <Form.Item name="perm_view_revenue" valuePropName="checked" noStyle>
         <Checkbox>看营业额</Checkbox>
-      </Form.Item>
-      <Form.Item name="perm_manage_payment_methods" valuePropName="checked" noStyle>
-        <Checkbox>添加支付方式</Checkbox>
       </Form.Item>
       <Form.Item name="perm_boat_dispatch" valuePropName="checked" noStyle>
         <Checkbox>船只调配</Checkbox>
@@ -82,9 +82,7 @@ export default function Users() {
 
   const isSuperuser = user?.role === 'superuser'
   const isAdmin = user?.role === 'admin'
-  const canManage = Boolean(
-    user && (isSuperuser || isAdmin || user.permissions.manage_users),
-  )
+  const canManage = Boolean(user && (isSuperuser || isAdmin))
   const canCreate = isSuperuser || isAdmin
 
   const groupOptions = groups.map((g) => ({ value: g.id, label: g.name }))
@@ -135,9 +133,7 @@ export default function Users() {
       perm_create_order: values.perm_create_order ?? false,
       perm_edit_order: values.perm_edit_order ?? false,
       perm_export_report: values.perm_export_report ?? false,
-      perm_manage_users: values.perm_manage_users ?? false,
       perm_view_revenue: values.perm_view_revenue ?? false,
-      perm_manage_payment_methods: values.perm_manage_payment_methods ?? false,
       perm_boat_dispatch: values.perm_boat_dispatch ?? false,
       ...(isSuperuser ? { group_id: values.group_id } : {}),
     }
@@ -159,9 +155,7 @@ export default function Users() {
       perm_create_order: record.perm_create_order,
       perm_edit_order: record.perm_edit_order,
       perm_export_report: record.perm_export_report,
-      perm_manage_users: record.perm_manage_users,
       perm_view_revenue: record.perm_view_revenue,
-      perm_manage_payment_methods: record.perm_manage_payment_methods,
       perm_boat_dispatch: record.perm_boat_dispatch,
       is_active: record.is_active,
     })
@@ -179,17 +173,14 @@ export default function Users() {
       body.perm_create_order = values.perm_create_order
       body.perm_edit_order = values.perm_edit_order
       body.perm_export_report = values.perm_export_report
-      body.perm_manage_users = values.perm_manage_users
-      body.perm_manage_payment_methods = values.perm_manage_payment_methods
       body.perm_boat_dispatch = values.perm_boat_dispatch
     } else if (isAdmin) {
       body.display_name = values.display_name.trim()
+      body.role = values.role
       body.perm_create_order = values.perm_create_order
       body.perm_edit_order = values.perm_edit_order
       body.perm_export_report = values.perm_export_report
-      body.perm_manage_users = values.perm_manage_users
       body.perm_view_revenue = values.perm_view_revenue
-      body.perm_manage_payment_methods = values.perm_manage_payment_methods
       body.perm_boat_dispatch = values.perm_boat_dispatch
     }
     if (values.password) body.password = values.password
@@ -267,7 +258,7 @@ export default function Users() {
   const canEditRecord = (record: UserAccount) =>
     !record.is_system &&
     record.id !== user?.id &&
-    (isSuperuser || (isAdmin && record.role === 'user') || Boolean(canManage && record.role === 'user'))
+    (isSuperuser || (isAdmin && record.role !== 'superuser'))
 
   return (
     <Card
@@ -347,9 +338,9 @@ export default function Users() {
           <Form.Item label="重置密码（留空则不修改）" name="password">
             <Input.Password placeholder="留空不修改" />
           </Form.Item>
-          {isSuperuser && (
+          {(isSuperuser || isAdmin) && (
             <Form.Item label="角色" name="role">
-              <Select options={ALL_ROLE_OPTIONS} />
+              <Select options={isSuperuser ? ALL_ROLE_OPTIONS : ADMIN_ROLE_OPTIONS} />
             </Form.Item>
           )}
           {(isSuperuser || isAdmin) && (

@@ -1,4 +1,5 @@
 import os
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -25,7 +26,7 @@ from app.api.payments import router as payments_router
 from app.api.settings import router as settings_router
 from app.api.users import router as users_router
 from app.api.reports import router as reports_router
-from app.core.config import TRACE_REPORT_ENABLED
+from app.core.config import API_DOCS_ENABLED, SESSION_SECRET, TRACE_REPORT_ENABLED
 from app.db.init_db import check_database_connection, initialize_database
 from app.db.seed import seed_system_data
 from app.middleware.timing_middleware import (
@@ -35,8 +36,15 @@ from app.middleware.timing_middleware import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    if SESSION_SECRET in ("change-me-in-production", "change-me-to-a-long-random-secret") or len(SESSION_SECRET) < 32:
+        logger.warning(
+            "SESSION_SECRET 仍为默认/占位值或长度不足 32 位；公网部署请更换为随机长字符串，否则登录态可能被伪造"
+        )
     initialize_database()
     seed_system_data()
     from app.services.scheduler import start_scheduler, stop_scheduler
@@ -48,7 +56,28 @@ async def lifespan(_: FastAPI):
         stop_scheduler()
 
 
-app = FastAPI(title="Rental App API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title="Rental App API",
+    version="0.1.0",
+    lifespan=lifespan,
+    # 公网部署默认不暴露 /docs、/redoc、/openapi.json；本地调试可设置 API_DOCS_ENABLED=1。
+    docs_url="/docs" if API_DOCS_ENABLED else None,
+    redoc_url=None,
+    openapi_url="/openapi.json" if API_DOCS_ENABLED else None,
+)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """补充基础安全响应头，不改变页面行为。"""
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    if request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+    return response
 
 
 class StaticCacheMiddleware:

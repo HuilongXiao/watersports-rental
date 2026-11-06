@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.api.auth import get_active_group_id, get_current_user
+from app.api.auth import get_active_group_id, get_current_user, require_role
 from app.db.session import get_db
 from app.models.user import User
 from app.services import catalog_service
@@ -72,7 +72,7 @@ def list_catalog(
 def create_equipment_type(
     payload: EquipmentTypeInput,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("superuser", "admin")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     item = catalog_service.create_equipment_type(
@@ -91,7 +91,7 @@ def update_equipment_type(
     type_id: str,
     payload: EquipmentTypeInput,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("superuser", "admin")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     item = catalog_service.update_equipment_type(
@@ -109,7 +109,7 @@ def update_equipment_type(
 def create_equipment_spec(
     payload: EquipmentSpecInput,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("superuser", "admin")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     catalog_service.create_equipment_spec(
@@ -125,7 +125,7 @@ def update_equipment_spec(
     spec_id: str,
     payload: EquipmentSpecUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("superuser", "admin")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     if payload.clear_capacity:
@@ -156,7 +156,7 @@ class EquipmentSpecReorder(BaseModel):
 def reorder_equipment_specs(
     payload: EquipmentSpecReorder,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("superuser", "admin")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     catalog_service.reorder_equipment_specs(db, user, payload.ids, active_group_id)
@@ -167,7 +167,7 @@ def reorder_equipment_specs(
 def create_sale_item(
     payload: SaleItemInput,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("superuser", "admin")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     catalog_service.create_sale_item(
@@ -181,7 +181,7 @@ def update_sale_item(
     item_id: str,
     payload: SaleItemUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("superuser", "admin")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     catalog_service.update_sale_item(

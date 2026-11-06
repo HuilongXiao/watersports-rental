@@ -21,6 +21,8 @@ class Customer(Base):
     wechat_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     phone: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # 停用标记：超管「删除」客户时仅置为 False（停用），资料与历史订单保留
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     remind: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_by_user_id: Mapped[str] = mapped_column(String(36), nullable=False)

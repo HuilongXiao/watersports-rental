@@ -41,6 +41,8 @@ _ADDITIVE_COLUMNS = [
     ("users", "perm_manage_payment_methods", "BOOLEAN NOT NULL DEFAULT 0"),
     ("users", "perm_boat_dispatch", "BOOLEAN NOT NULL DEFAULT 0"),
     ("users", "operator_code", "VARCHAR(2)"),
+    ("orders", "is_deleted", "BOOLEAN NOT NULL DEFAULT 0"),
+    ("customers", "is_active", "BOOLEAN NOT NULL DEFAULT 1"),
 ]
 
 
@@ -88,6 +90,7 @@ CREATE TABLE customers_new (
     wechat_id VARCHAR(128),
     phone VARCHAR(32),
     is_system BOOLEAN NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT 1,
     note TEXT,
     remind BOOLEAN NOT NULL,
     created_by_user_id VARCHAR(36) NOT NULL,
@@ -124,9 +127,18 @@ def _needs_customers_rebuild(bind) -> bool:
 
 def _rebuild_customers_table(bind) -> None:
     bind.exec_driver_sql(_CUSTOMERS_REBUILD_DDL)
+    # 旧表可能尚未有 is_active 列：只复制确实存在的列，其余走 DDL 默认值。
+    existing = _existing_columns(bind, "customers")
+    copy_columns = [
+        col.strip()
+        for col in _CUSTOMERS_COPY_COLUMNS.split(",")
+        if col.strip() in existing
+    ]
+    if "is_active" in existing:
+        copy_columns.append("is_active")
+    quoted = ", ".join(copy_columns)
     bind.exec_driver_sql(
-        f"INSERT INTO customers_new ({_CUSTOMERS_COPY_COLUMNS}) "
-        f"SELECT {_CUSTOMERS_COPY_COLUMNS} FROM customers"
+        f"INSERT INTO customers_new ({quoted}) SELECT {quoted} FROM customers"
     )
     bind.exec_driver_sql("DROP TABLE customers")
     bind.exec_driver_sql("ALTER TABLE customers_new RENAME TO customers")

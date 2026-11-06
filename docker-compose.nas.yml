@@ -12,14 +12,18 @@
 
 services:
   app:
-    image: watersports-rental:1.1.15
+    image: watersports-rental:1.1.17
     container_name: rental-app
     restart: unless-stopped
     ports:
       - "6688:8000"
     environment:
-      # 必填：填写一段随机长字符串；留空则使用内置默认值（仅建议测试时）
+      # 必填：替换为随机长字符串（例如 `openssl rand -hex 32` 的输出）。
+      # 不要保留下方占位值：它等同于公开密钥，攻击者可伪造任何人的登录态。
       SESSION_SECRET: change-me-to-a-long-random-secret
+      # 已通过 HTTPS 反向代理访问，开启 Secure Cookie，避免会话在明文链路泄露。
+      # 若临时改用 http://NAS-IP:6688 直连，需改为 "false"，否则无法保持登录。
+      SESSION_COOKIE_SECURE: "true"
       # 忘记密码时：取消下一行注释设为新密码，启动一次后再注释掉
       # SUPERUSER_PASSWORD_RESET: newpassword
     volumes:

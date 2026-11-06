@@ -1,14 +1,14 @@
 """支付方式管理 API（per-Group 隔离）。
 
 - GET：任何登录用户可读（前端展示 name 需要），但只看到自己 Group 的方式
-- POST/PUT/DELETE：需要 manage_payment_methods 权限或 superuser/admin
+- POST/PUT/DELETE：仅管理员与超级管理员可操作（普通用户不可管理/设默认）
 """
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.api.auth import get_active_group_id, get_current_user, require_permission
+from app.api.auth import get_active_group_id, get_current_user, require_admin
 from app.db.session import get_db
 from app.models.user import User
 from app.services import payment_method_service
@@ -47,7 +47,7 @@ def list_payment_methods(
 def create_payment_method(
     payload: MethodCreateInput,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("manage_payment_methods")),
+    user: User = Depends(require_admin),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     return payment_method_service.create_method(
@@ -60,7 +60,7 @@ def update_payment_method(
     method_id: int,
     payload: MethodUpdateInput,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("manage_payment_methods")),
+    user: User = Depends(require_admin),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     if payload.name is None and payload.active is None and payload.is_default is None:
@@ -78,7 +78,7 @@ def update_payment_method(
 def delete_payment_method(
     method_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("manage_payment_methods")),
+    user: User = Depends(require_admin),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     """软删除（active=false）。默认方式必须先切换默认，否则 422。"""
