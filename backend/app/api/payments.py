@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.api.auth import get_active_group_id, get_current_user
+from app.api.auth import get_active_group_id, get_current_user, require_permission
 from app.core.time_utils import to_iso_z
 from app.db.session import get_db
 from app.models.user import User
@@ -40,7 +40,7 @@ def add_adjustment(
     order_id: str,
     payload: AdjustmentInput,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("edit_order")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     return _serialize(

@@ -6,6 +6,7 @@ final_amount = SUM(OrderItem.quantity * unit_price)
 Adjustments are allowed in ANY order status (including terminal statuses).
 """
 
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -16,6 +17,11 @@ from app.models.order import Order, OrderItem
 from app.models.payment import Payment, PaymentItem
 from app.models.user import User
 from app.services.order_service import get_order, list_items
+
+# 幂等窗口：同一用户对同一订单提交完全相同的调整项（数量、单价、说明），
+# 若在此时间内已有一条，则视为重复提交，不再新建。用于防御前端「成功后 load 失败
+# 误导用户重试」或多标签页连点导致的重复调整项。
+ADJUSTMENT_IDEMPOTENCY_WINDOW = timedelta(seconds=5)
 
 
 def order_items_total(db: Session, order_id: str) -> int:
@@ -75,6 +81,23 @@ def add_adjustment(
         raise HTTPException(status_code=422, detail="金额必须是大于 0 的正整数")
 
     payment = get_or_create_payment(db, user, order_id, active_group_id)
+
+    # 幂等性检查：5 秒内同一用户对同一订单提交完全相同的调整项，视为重复提交，
+    # 直接返回当前支付视图（不新建），防御前端连点或 load 失败后的误重试。
+    cutoff = datetime.utcnow() - ADJUSTMENT_IDEMPOTENCY_WINDOW
+    duplicate = db.scalar(
+        select(PaymentItem).where(
+            PaymentItem.payment_id == payment.id,
+            PaymentItem.quantity == payload.quantity,
+            PaymentItem.unit_amount == payload.unit_amount,
+            PaymentItem.note == note,
+            PaymentItem.created_by_user_id == user.id,
+            PaymentItem.created_at >= cutoff,
+        )
+    )
+    if duplicate is not None:
+        return payment_view(db, order_id, user, active_group_id)
+
     item = PaymentItem(
         id=str(uuid4()),
         payment_id=payment.id,
@@ -97,8 +120,9 @@ def payment_view(
     payment = _get_payment(db, order_id)
     adjustments = (
         list(
-            db.scalars(
-                select(PaymentItem)
+            db.execute(
+                select(PaymentItem, User.display_name, User.operator_code)
+                .join(User, User.id == PaymentItem.created_by_user_id, isouter=True)
                 .where(PaymentItem.payment_id == payment.id)
                 .order_by(PaymentItem.created_at)
             ).all()
@@ -134,7 +158,9 @@ def payment_view(
                 "amount": item.amount,
                 "note": item.note,
                 "created_at": item.created_at,
+                "created_by_user_name": operator_name,
+                "created_by_user_code": operator_code,
             }
-            for item in adjustments
+            for item, operator_name, operator_code in adjustments
         ],
     }

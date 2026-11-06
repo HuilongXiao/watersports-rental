@@ -26,15 +26,18 @@ ENV TZ=Asia/Shanghai \
     STATIC_DIR=/app/static \
     DATABASE_URL=sqlite:////app/data/rental_app.db \
     BACKUP_DIR=/app/backups \
-    AUTO_EXPORT_DIR=/app/exports
+    AUTO_EXPORT_DIR=/app/exports \
+    LOG_DIR=/app/data/logs \
+    REQUEST_TIMING=1 \
+    TRACE_REPORT_ENABLED=1 \
+    SESSION_COOKIE_SECURE=false \
+    SEED_DEFAULT_DATA=false
 
-# 部署时需由用户填写的变量（名称预填、值留空；TZ 已在上方预置无需再填）。
-# 留空时后端回退到安全默认值（见 backend/app/core/config.py）。
-ENV SESSION_SECRET= \
-    SESSION_COOKIE_SECURE= \
-    INITIAL_ADMIN_USERNAME= \
-    INITIAL_ADMIN_PASSWORD= \
-    SEED_DEFAULT_DATA=
+# 部署时唯一需要用户填写的变量：会话密钥（名称预填、值留空）。
+# 留空时回退到内置默认值（见 backend/app/core/config.py）。
+# 初始管理员账号无需配置：变量不存在时自动使用默认 superuserx / 123456
+# （仅首次建库生效，登录后请及时改密）。
+ENV SESSION_SECRET=
 
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

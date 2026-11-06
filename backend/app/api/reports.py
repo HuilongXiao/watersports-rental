@@ -15,6 +15,7 @@ from app.models.customer import Customer
 from app.models.equipment import EquipmentSpec, SaleItem
 from app.models.order import Order, OrderItem
 from app.models.payment import Payment, PaymentItem
+from app.models.payment_method import PaymentMethod
 from app.models.user import User
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
@@ -93,6 +94,10 @@ def export_orders(
         .where(Order.start_at < end_utc)
         .order_by(Order.start_at.asc())
     )
+    # 普通用户/管理员导出不含已删除订单；超管导出包含并额外标注删除状态
+    include_deleted = user.role == "superuser"
+    if not include_deleted:
+        stmt = stmt.where(Order.is_deleted.is_(False))
     if active_group_id is not None:
         stmt = stmt.where(Order.group_id == active_group_id)
     orders = list(db.scalars(stmt).all())
@@ -122,10 +127,16 @@ def export_orders(
             "数量",
             "单价(元)",
             "类目总额(元)",
+            "付款方式",
         ]
+        + (["是否被删除"] if include_deleted else [])
     )
 
+    # 付款方式 code→名称全局映射（code 全局唯一）；已删除的方式留空，不显示 code
+    payment_names = dict(db.execute(select(PaymentMethod.code, PaymentMethod.name)).all())
+
     for order in orders:
+        pay_name = payment_names.get(order.payment_method_code, "") if order.payment_method_code else ""
         # Order items (equipment / sale items) sorted by creation order.
         items = list(
             db.scalars(
@@ -189,7 +200,9 @@ def export_orders(
                     str(qty),
                     f"{unit_price / 100:.2f}",
                     f"{unit_price * qty / 100:.2f}",
+                    pay_name,
                 ]
+                + (["是" if order.is_deleted else "否"] if include_deleted else [])
             )
             seq += 1
 
@@ -203,7 +216,9 @@ def export_orders(
                     str(adj.quantity),
                     f"{adj.unit_amount / 100:.2f}",
                     f"{adj.amount / 100:.2f}",
+                    pay_name,
                 ]
+                + (["是" if order.is_deleted else "否"] if include_deleted else [])
             )
             seq += 1
 
@@ -218,16 +233,17 @@ def export_orders(
 @router.get("/customers/export")
 def export_customers(
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("export_report")),
+    user: User = Depends(require_permission("export_report")),
 ):
-    """Export all customers with cumulative stats as CSV."""
-    customers = list(
-        db.scalars(
-            select(Customer)
-            .where(Customer.is_system.is_(False))
-            .order_by(Customer.created_at)
-        ).all()
-    )
+    """Export all customers with cumulative stats as CSV.
+
+    普通用户/管理员导出不含停用客户；超管导出包含停用客户并额外标注状态。
+    """
+    include_inactive = user.role == "superuser"
+    stmt = select(Customer).where(Customer.is_system.is_(False))
+    if not include_inactive:
+        stmt = stmt.where(Customer.is_active.is_(True))
+    customers = list(db.scalars(stmt.order_by(Customer.created_at)).all())
 
     buf = io.StringIO()
     buf.write("﻿")  # UTF-8 BOM so Excel decodes Chinese correctly.
@@ -235,10 +251,12 @@ def export_customers(
     writer.writerow([
         "客户ID", "姓名", "性别", "微信昵称", "微信ID", "手机号",
         "累计消费金额(元)", "总订单数", "完成订单数", "爽约订单数",
-    ])
+    ] + (["状态"] if include_inactive else []))
 
     for c in customers:
-        orders = list(db.scalars(select(Order).where(Order.customer_id == c.id)).all())
+        orders = list(db.scalars(
+            select(Order).where(Order.customer_id == c.id, Order.is_deleted.is_(False))
+        ).all())
         completed = [o for o in orders if o.status == "completed"]
         no_show_count = sum(1 for o in orders if o.status == "no_show")
         total_spending_fen = 0
@@ -266,7 +284,7 @@ def export_customers(
             str(len(orders)),
             str(len(completed)),
             str(no_show_count),
-        ])
+        ] + (["启用" if c.is_active else "停用"] if include_inactive else []))
 
     filename = "customers_all.csv"
     return Response(
@@ -280,16 +298,22 @@ def export_customers(
 def export_customer_orders(
     customer_id: str,
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("export_report")),
+    user: User = Depends(require_permission("export_report")),
 ):
     """Export a single customer's orders as CSV (same format as order export)."""
     customer = db.get(Customer, customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="客户不存在")
 
-    orders = list(db.scalars(
-        select(Order).where(Order.customer_id == customer_id).order_by(Order.start_at.asc())
-    ).all())
+    include_deleted = user.role == "superuser"
+    stmt = (
+        select(Order)
+        .where(Order.customer_id == customer_id)
+        .order_by(Order.start_at.asc())
+    )
+    if not include_deleted:
+        stmt = stmt.where(Order.is_deleted.is_(False))
+    orders = list(db.scalars(stmt).all())
 
     # Reuse the same CSV format as export_orders
     buf = io.StringIO()
@@ -299,10 +323,14 @@ def export_customer_orders(
         "订单号", "订单状态", "微信昵称", "订单日期", "订单时间", "创建日期", "创建时间",
         "散客",
         "签到时间", "归还时间", "使用时间", "成人", "儿童", "消费总额(元)",
-        "类目排序", "类目名称", "备注", "数量", "单价(元)", "类目总额(元)",
-    ])
+        "类目排序", "类目名称", "备注", "数量", "单价(元)", "类目总额(元)", "付款方式",
+    ] + (["是否被删除"] if include_deleted else []))
+
+    # 付款方式 code→名称全局映射；已删除的方式留空，不显示 code
+    payment_names = dict(db.execute(select(PaymentMethod.code, PaymentMethod.name)).all())
 
     for order in orders:
+        pay_name = payment_names.get(order.payment_method_code, "") if order.payment_method_code else ""
         items = list(db.scalars(
             select(OrderItem).where(OrderItem.order_id == order.id).order_by(OrderItem.created_at)
         ).all())
@@ -342,13 +370,15 @@ def export_customer_orders(
             writer.writerow(common + [
                 str(seq), name, "", str(item.quantity),
                 f"{item.unit_price / 100:.2f}", f"{item.unit_price * item.quantity / 100:.2f}",
-            ])
+                pay_name,
+            ] + (["是" if order.is_deleted else "否"] if include_deleted else []))
             seq += 1
         for adj in adjustments:
             writer.writerow(common + [
                 str(seq), "其他", adj.note, str(adj.quantity),
                 f"{adj.unit_amount / 100:.2f}", f"{adj.amount / 100:.2f}",
-            ])
+                pay_name,
+            ] + (["是" if order.is_deleted else "否"] if include_deleted else []))
             seq += 1
 
     filename = f"customer_{customer_id}_orders.csv"

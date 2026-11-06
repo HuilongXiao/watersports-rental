@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.api.auth import get_active_group_id, get_current_user
+from app.api.auth import get_active_group_id, get_current_user, require_role
 from app.db.session import get_db
 from app.models.user import User
 from app.services import catalog_service
@@ -18,6 +18,7 @@ EquipmentColor = Literal["red", "blue", "green", "yellow", "purple", "orange", "
 class EquipmentTypeInput(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     color: EquipmentColor = "blue"
+    is_active: bool = True
 
 
 class EquipmentSpecInput(BaseModel):
@@ -26,6 +27,12 @@ class EquipmentSpecInput(BaseModel):
     price: int = Field(ge=0)
     capacity: int | None = Field(default=None, ge=1)
     is_active: bool = True
+    # 新建规格时直接写入库存总量（0 表示暂未投入）
+    quantity: int = Field(default=0, ge=0)
+    # 是否需要为该器材逐件编号（关闭后不参与船只调配）
+    boat_numbering_required: bool = True
+    # 是否在概览「船只用量」中展示该器材
+    show_in_usage: bool = True
 
 
 class EquipmentSpecUpdate(BaseModel):
@@ -36,6 +43,8 @@ class EquipmentSpecUpdate(BaseModel):
     capacity: int | None = Field(default=None, ge=1)
     clear_capacity: bool = False
     is_active: bool | None = None
+    boat_numbering_required: bool | None = None
+    show_in_usage: bool | None = None
 
 
 class SaleItemInput(BaseModel):
@@ -63,13 +72,18 @@ def list_catalog(
 def create_equipment_type(
     payload: EquipmentTypeInput,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("superuser", "admin")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     item = catalog_service.create_equipment_type(
-        db, user, payload.name, payload.color, active_group_id
+        db, user, payload.name, payload.color, payload.is_active, active_group_id
     )
-    return {"id": item.id, "name": item.name, "color": item.color}
+    return {
+        "id": item.id,
+        "name": item.name,
+        "color": item.color,
+        "is_active": item.is_active,
+    }
 
 
 @router.put("/equipment-types/{type_id}")
@@ -77,25 +91,31 @@ def update_equipment_type(
     type_id: str,
     payload: EquipmentTypeInput,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("superuser", "admin")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     item = catalog_service.update_equipment_type(
-        db, user, type_id, payload.name, payload.color
+        db, user, type_id, payload.name, payload.color, payload.is_active
     )
-    return {"id": item.id, "name": item.name, "color": item.color}
+    return {
+        "id": item.id,
+        "name": item.name,
+        "color": item.color,
+        "is_active": item.is_active,
+    }
 
 
 @router.post("/equipment-specs")
 def create_equipment_spec(
     payload: EquipmentSpecInput,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("superuser", "admin")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
-    spec = catalog_service.create_equipment_spec(
+    catalog_service.create_equipment_spec(
         db, user, payload.equipment_type_id, payload.name, payload.price,
-        payload.capacity, payload.is_active,
+        payload.capacity, payload.is_active, payload.quantity,
+        payload.boat_numbering_required, payload.show_in_usage,
     )
     return catalog_service.list_catalog(db, user, active_group_id)
 
@@ -105,7 +125,7 @@ def update_equipment_spec(
     spec_id: str,
     payload: EquipmentSpecUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("superuser", "admin")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     if payload.clear_capacity:
@@ -121,6 +141,8 @@ def update_equipment_spec(
         capacity=capacity,
         is_active=payload.is_active,
         equipment_type_id=payload.equipment_type_id,
+        boat_numbering_required=payload.boat_numbering_required,
+        show_in_usage=payload.show_in_usage,
     )
     return catalog_service.list_catalog(db, user, active_group_id)
 
@@ -134,7 +156,7 @@ class EquipmentSpecReorder(BaseModel):
 def reorder_equipment_specs(
     payload: EquipmentSpecReorder,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("superuser", "admin")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     catalog_service.reorder_equipment_specs(db, user, payload.ids, active_group_id)
@@ -145,7 +167,7 @@ def reorder_equipment_specs(
 def create_sale_item(
     payload: SaleItemInput,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("superuser", "admin")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     catalog_service.create_sale_item(
@@ -159,7 +181,7 @@ def update_sale_item(
     item_id: str,
     payload: SaleItemUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("superuser", "admin")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     catalog_service.update_sale_item(

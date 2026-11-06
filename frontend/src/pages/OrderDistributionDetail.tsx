@@ -44,7 +44,7 @@ export default function OrderDistributionDetail() {
         onClick={() => navigate('/dashboard')}
         style={{ marginBottom: 16, paddingLeft: 0 }}
       >
-        ← 返回工作台
+        ← 返回概览
       </Button>
       <Card title="当日订单分布" style={{ marginBottom: 16 }}>
         <Space style={{ marginBottom: 16 }}>

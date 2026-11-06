@@ -11,6 +11,10 @@ services:
       BACKUP_DIR: /app/backups
       AUTO_EXPORT_DIR: /app/exports
       TZ: Asia/Shanghai
+      # 请求耗时日志写入已挂载的 ./data/logs/，便于宿主机查看
+      LOG_DIR: /app/data/logs
+      # 与镜像内默认值保持一致：允许接收前端上报（浏览器端还需开 enable_tracing）
+      TRACE_REPORT_ENABLED: "1"
     volumes:
       - ./data:/app/data
       - ./backups:/app/backups

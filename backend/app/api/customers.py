@@ -2,7 +2,13 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.api.auth import get_active_group_id, get_current_user, require_role
+from app.api.auth import (
+    can_view_revenue,
+    get_active_group_id,
+    get_current_user,
+    require_any_permission,
+    require_role,
+)
 from app.db.session import get_db
 from app.models.user import User
 from app.serializers import customer_dict
@@ -24,11 +30,25 @@ class CustomerInput(BaseModel):
 @router.get("")
 def list_customers(
     q: str | None = None,
+    active_only: bool = False,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
-    return [customer_dict(c) for c in customer_service.search_customers(db, q, user, active_group_id)]
+    customers = customer_service.search_customers(
+        db, q, user, active_group_id, active_only=active_only
+    )
+    stats = customer_service.customer_order_stats(db, [c.id for c in customers])
+    revenue_allowed = can_view_revenue(user)
+    result = []
+    for c in customers:
+        item = customer_dict(c)
+        total_orders, total_spending_fen = stats.get(c.id, (0, 0))
+        item["total_orders"] = total_orders
+        # 无「查看营收」权限时不返回消费总额
+        item["total_spending_fen"] = total_spending_fen if revenue_allowed else 0
+        result.append(item)
+    return result
 
 
 @router.get("/{customer_id}")
@@ -45,7 +65,7 @@ def get_customer(
 def create_customer(
     payload: CustomerInput,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_any_permission("create_order", "edit_order")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     customer = customer_service.create_customer(db, user, payload.model_dump(), active_group_id)
@@ -57,7 +77,7 @@ def update_customer(
     customer_id: str,
     payload: CustomerInput,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_any_permission("create_order", "edit_order")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     customer = customer_service.update_customer(
@@ -73,9 +93,9 @@ def delete_customer(
     user: User = Depends(require_role("superuser")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
-    # 永久删除客户 profile：仅 superuser；系统客户与仍有订单的客户由 service 拒绝
+    # 停用客户（软删除）：仅 superuser；系统客户由 service 拒绝
     customer_service.delete_customer(db, user, customer_id, active_group_id)
-    return {"deleted": True}
+    return {"deactivated": True}
 
 
 @router.get("/{customer_id}/stats")
@@ -92,7 +112,9 @@ def customer_stats(
     from app.models.payment import Payment, PaymentItem
 
     orders = list(db.scalars(
-        sa_select(Order).where(Order.customer_id == customer_id).order_by(Order.start_at.asc())
+        sa_select(Order)
+        .where(Order.customer_id == customer_id, Order.is_deleted.is_(False))
+        .order_by(Order.start_at.asc())
     ).all())
 
     total_orders = len(orders)
@@ -117,7 +139,7 @@ def customer_stats(
         total_spending_fen += int(items_total) + int(adjustments_total)
 
     return {
-        "total_spending_fen": total_spending_fen,
+        "total_spending_fen": total_spending_fen if can_view_revenue(user) else 0,
         "total_orders": total_orders,
         "completed_orders": completed_count,
         "no_show_orders": no_show_count,
@@ -137,6 +159,8 @@ def customer_orders(
     from app.models.order import Order
     from app.serializers import order_dict
     orders = list(db.scalars(
-        sa_select(Order).where(Order.customer_id == customer_id).order_by(Order.start_at.asc())
+        sa_select(Order)
+        .where(Order.customer_id == customer_id, Order.is_deleted.is_(False))
+        .order_by(Order.start_at.asc())
     ).all())
     return [order_dict(db, o) for o in orders]

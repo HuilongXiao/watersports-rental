@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, time, timedelta, timezone
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -11,16 +11,21 @@ from app.api.auth import (
     require_permission,
     require_role,
 )
-from app.core.time_utils import business_date
+from app.core.time_utils import BUSINESS_TZ
 from app.db.session import get_db
 from app.models.order import Order
 from app.models.user import User
-from app.serializers import order_dict
+from app.serializers import order_dict, orders_dict
 from app.services import inventory_service, order_service
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
 
 VALID_STATUS_FILTERS = {"active", "in_progress", "cancelled", "no_show", "completed"}
+
+
+def _day_start_utc(day) -> datetime:
+    """业务日（Asia/Shanghai 日历日）00:00 对应的 UTC 时刻。"""
+    return datetime.combine(day, time.min).replace(tzinfo=BUSINESS_TZ).astimezone(timezone.utc)
 
 
 class OrderItemInput(BaseModel):
@@ -41,27 +46,42 @@ class OrderInput(BaseModel):
     note: str | None = None
     is_walk_in: bool = False
     note_popup: bool = False
+    # 支付方式 code（必须是启用中的方式，空值表示未选择）
+    payment_method_code: str | None = None
     items: list[OrderItemInput] = Field(min_length=1)
 
 
 @router.get("")
 def list_orders(
     status: str | None = None,
+    statuses: str | None = None,
     business_day: str | None = None,
     business_day_from: str | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
-    statement = select(Order).order_by(Order.start_at.asc())
+    statement = select(Order).where(Order.is_deleted.is_(False)).order_by(Order.start_at.asc())
     if active_group_id is not None:
         statement = statement.where(Order.group_id == active_group_id)
-    if status:
+
+    # 状态过滤全部下推到 SQL：
+    # - statuses：逗号分隔的状态集合，支持 "all"（不过滤状态）
+    # - status：单个状态（兼容旧调用方）
+    # - 两者都不传：返回全部状态（日结、订单分布等页面依赖此默认行为）
+    if statuses:
+        wanted = {s.strip() for s in statuses.split(",") if s.strip()}
+        if "all" not in wanted:
+            valid = wanted & VALID_STATUS_FILTERS
+            if valid:
+                statement = statement.where(Order.status.in_(valid))
+            else:
+                statement = statement.where(Order.id.is_(None))
+    elif status:
         if status not in VALID_STATUS_FILTERS:
             statement = statement.where(Order.id.is_(None))
-        else:
+        elif status != "all":
             statement = statement.where(Order.status == status)
-    orders = list(db.scalars(statement).all())
 
     def _parse_day(value: str):
         try:
@@ -69,16 +89,23 @@ def list_orders(
         except ValueError:
             return None
 
+    # 业务日过滤下推到 SQL：避免把整个 group 的订单读进内存再逐条过滤
     if business_day:
         target = _parse_day(business_day)
         if target:
-            orders = [o for o in orders if business_date(o.start_at) == target]
+            start_utc = _day_start_utc(target)
+            statement = statement.where(
+                Order.start_at >= start_utc,
+                Order.start_at < start_utc + timedelta(days=1),
+            )
     if business_day_from:
-        # 业务日期下限（含当日）：只保留开始时间业务日期 >= 该日期的订单
+        # 业务日期下限（含当日）
         lower = _parse_day(business_day_from)
         if lower:
-            orders = [o for o in orders if business_date(o.start_at) >= lower]
-    return [order_dict(db, o) for o in orders]
+            statement = statement.where(Order.start_at >= _day_start_utc(lower))
+
+    orders = list(db.scalars(statement).all())
+    return orders_dict(db, orders)
 
 
 @router.get("/{order_id}")
@@ -101,6 +128,22 @@ def create_order(
 ):
     order = order_service.create_order(db, user, payload, active_group_id)
     return order_dict(db, order)
+
+
+@router.post("/duplicate-check")
+def check_duplicate(
+    payload: OrderInput,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    active_group_id: str | None = Depends(get_active_group_id),
+):
+    """创建订单前重复检查：同一客户 + 同一业务日期 + 船型类型有交集。
+
+    仅检查 active 和 in_progress 状态的订单。不写库，仅预警，
+    前端由用户二次确认后仍可正常创建。
+    """
+    duplicates = order_service.check_duplicate_order(db, payload, active_group_id)
+    return {"duplicates": duplicates}
 
 
 @router.post("/conflicts")
@@ -143,7 +186,7 @@ def delete_order(
     user: User = Depends(require_role("superuser")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
-    # 永久删除订单（含订单项目与支付记录）：仅 superuser
+    # 软删除订单（仅置隐藏标记，数据保留）：仅 superuser
     order_service.delete_order(db, user, order_id, active_group_id)
     return {"deleted": True}
 
@@ -152,7 +195,7 @@ def delete_order(
 def check_in(
     order_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("edit_order")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     order, warnings = order_service.check_in(db, user, order_id, active_group_id)
@@ -163,7 +206,7 @@ def check_in(
 def cancel_check_in(
     order_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("edit_order")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     order = order_service.cancel_check_in(db, user, order_id, active_group_id)
@@ -174,7 +217,7 @@ def cancel_check_in(
 def return_order(
     order_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("edit_order")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     order = order_service.return_order(db, user, order_id, active_group_id)
@@ -185,7 +228,7 @@ def return_order(
 def cancel_return(
     order_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("edit_order")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     order = order_service.cancel_return(db, user, order_id, active_group_id)
@@ -196,7 +239,7 @@ def cancel_return(
 def cancel_order(
     order_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("edit_order")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     order = order_service.cancel_order(db, user, order_id, active_group_id)
@@ -207,7 +250,7 @@ def cancel_order(
 def mark_no_show(
     order_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("edit_order")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     order = order_service.mark_no_show(db, user, order_id, active_group_id)
@@ -218,7 +261,7 @@ def mark_no_show(
 def complete_order(
     order_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("edit_order")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     order = order_service.complete_order(db, user, order_id, active_group_id)
@@ -229,7 +272,7 @@ def complete_order(
 def restore_order(
     order_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("edit_order")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     order = order_service.restore_order(db, user, order_id, active_group_id)

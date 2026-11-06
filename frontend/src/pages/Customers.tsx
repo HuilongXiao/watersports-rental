@@ -8,15 +8,14 @@ import {
   Form,
   Input,
   Modal,
-  Popconfirm,
   Space,
   Table,
   Tag,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { api } from '../api'
-import { useAuth } from '../auth'
 import type { Customer } from '../types'
+import { fenToYuan } from '../utils'
 
 interface FormValues {
   name?: string
@@ -64,12 +63,9 @@ export default function Customers() {
   const [keyword, setKeyword] = useState('')
   const [loading, setLoading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
-  const [editing, setEditing] = useState<Customer | null>(null)
   const [form] = Form.useForm<FormValues>()
   const { message } = App.useApp()
   const navigate = useNavigate()
-  const { user } = useAuth()
-  const isSuperuser = user?.role === 'superuser'
 
   const load = async (q = '') => {
     setLoading(true)
@@ -93,20 +89,7 @@ export default function Customers() {
   }, [])
 
   const openCreate = () => {
-    setEditing(null)
     form.setFieldsValue(EMPTY_VALUES)
-    setModalOpen(true)
-  }
-
-  const openEdit = (record: Customer) => {
-    setEditing(record)
-    form.setFieldsValue({
-      name: record.name ?? '',
-      gender: record.gender ?? undefined,
-      phone: record.phone ?? '',
-      wechat_nickname: record.wechat_nickname ?? '',
-      wechat_id: record.wechat_id ?? '',
-    })
     setModalOpen(true)
   }
 
@@ -120,13 +103,8 @@ export default function Customers() {
       return
     }
     try {
-      if (editing) {
-        await api.put(`/api/customers/${editing.id}`, body)
-        message.success('客户已更新')
-      } else {
-        await api.post('/api/customers', body)
-        message.success('客户已创建')
-      }
+      await api.post('/api/customers', body)
+      message.success('客户已创建')
       setModalOpen(false)
       load(keyword)
     } catch (error) {
@@ -134,68 +112,43 @@ export default function Customers() {
     }
   }
 
-  const removeCustomer = async (record: Customer) => {
-    try {
-      await api.del(`/api/customers/${record.id}`)
-      message.success('客户已删除')
-      load(keyword)
-    } catch (error) {
-      // 常见原因：该客户仍有关联订单（后端返回 409 提示先删订单）
-      message.error(error instanceof Error ? error.message : '删除失败')
-    }
-  }
+  const centerHeader = () => ({ style: { textAlign: 'center' as const } })
 
-  // 列表仅展示：微信昵称、姓名、操作（微信ID、手机号、性别在客户详情/编辑中查看）
+  // 列表展示：微信昵称、姓名共享剩余宽度；订单总数（最多 3 位数）、消费总额（最多 5 位数）固定窄列
   const columns: ColumnsType<Customer> = [
     {
       title: '微信昵称',
       dataIndex: 'wechat_nickname',
+      onHeaderCell: centerHeader,
       render: (value, record) => (
         <Space>
           {value || '—'}
           {record.is_system ? <Tag color="gold">系统</Tag> : null}
+          {record.is_active === false ? <Tag color="default">已停用</Tag> : null}
         </Space>
       ),
     },
-    { title: '姓名', dataIndex: 'name', render: (v) => v || '—' },
     {
-      title: '操作',
-      width: 130,
-      render: (_, record) =>
-        record.is_system ? (
-          <span style={{ color: '#999' }}>不可编辑</span>
-        ) : (
-          <Space size={0}>
-            <Button
-              type="link"
-              onClick={(e) => {
-                e.stopPropagation()
-                openEdit(record)
-              }}
-            >
-              编辑
-            </Button>
-            {isSuperuser && (
-              <Popconfirm
-                title="确认删除该客户？"
-                description="删除后不可恢复；若该客户仍有订单，需先删除相关订单。"
-                onConfirm={(e) => {
-                  e?.stopPropagation()
-                  removeCustomer(record)
-                }}
-                onCancel={(e) => e?.stopPropagation()}
-              >
-                <Button
-                  type="link"
-                  danger
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  删除
-                </Button>
-              </Popconfirm>
-            )}
-          </Space>
-        ),
+      title: '姓名',
+      dataIndex: 'name',
+      onHeaderCell: centerHeader,
+      render: (v) => v || '—',
+    },
+    {
+      title: '订单总数',
+      dataIndex: 'total_orders',
+      width: 88,
+      align: 'center',
+      onHeaderCell: centerHeader,
+      render: (v: number | undefined) => v ?? 0,
+    },
+    {
+      title: '消费总额',
+      dataIndex: 'total_spending_fen',
+      width: 110,
+      align: 'center',
+      onHeaderCell: centerHeader,
+      render: (v: number | undefined) => `¥${fenToYuan(v ?? 0)}`,
     },
   ]
 
@@ -227,12 +180,15 @@ export default function Customers() {
         pagination={{ pageSize: 20 }}
         onRow={(record) => ({
           onClick: () => navigate(`/customers/${record.id}`),
-          style: { cursor: 'pointer' },
+          style: {
+            cursor: 'pointer',
+            ...(record.is_active === false ? { color: '#8c8c8c' } : {}),
+          },
         })}
       />
 
       <Modal
-        title={editing ? '编辑客户' : '新建客户'}
+        title="新建客户"
         open={modalOpen}
         onCancel={() => setModalOpen(false)}
         onOk={onSubmit}
@@ -246,7 +202,7 @@ export default function Customers() {
           </Form.Item>
           <Form.Item label="手机号">
             <Form.Item name="phone" noStyle>
-              <Input placeholder="手机号" />
+              <Input placeholder="手机号" type="tel" inputMode="tel" />
             </Form.Item>
           </Form.Item>
           <Form.Item label="性别" name="gender">

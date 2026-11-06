@@ -15,12 +15,11 @@ import {
   Space,
   Statistic,
   Table,
-  Tag,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { api } from '../api'
 import { useAuth } from '../auth'
-import { fenToYuan, formatDateTime } from '../utils'
+import { fenToYuan, formatDateTime, typeColorHex } from '../utils'
 import { GenderCheckboxes } from './Customers'
 import type { Customer, CustomerStats, Order } from '../types'
 
@@ -40,12 +39,13 @@ const STATUS_LABELS: Record<string, string> = {
   no_show: '爽约',
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  active: 'processing',
-  in_progress: 'orange',
-  completed: 'green',
-  cancelled: 'default',
-  no_show: 'red',
+// 状态颜色值（CSS 圆点渲染，与 Orders.tsx 配色一致：绿=预订/蓝=已完成/灰=已取消/橙=进行中/红=爽约）
+const STATUS_DOT_COLOR: Record<string, string> = {
+  active: '#52c41a',
+  in_progress: '#fa8c16',
+  completed: '#1890ff',
+  cancelled: '#bfbfbf',
+  no_show: '#ff4d4f',
 }
 
 export default function CustomerDetail() {
@@ -95,16 +95,16 @@ export default function CustomerDetail() {
 
   const noShowOrders = orders.filter((o) => o.status === 'no_show')
 
-  // superuser 永久删除客户 profile（系统客户/仍有订单的客户由后端拒绝）
+  // superuser 停用客户（软删除）：资料与历史订单保留，系统客户由后端拒绝
   const doDelete = async () => {
     if (!id) return
     setDeleting(true)
     try {
       await api.del(`/api/customers/${id}`)
-      message.success('客户已删除')
+      message.success('客户已停用')
       navigate('/customers')
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '删除失败')
+      message.error(error instanceof Error ? error.message : '停用失败')
       setDeleting(false)
     }
   }
@@ -174,28 +174,58 @@ export default function CustomerDetail() {
     }
   }
 
+  const centerHeader = () => ({ style: { textAlign: 'center' as const } })
+
   const orderColumns: ColumnsType<Order> = [
     {
-      title: '状态',
-      dataIndex: 'status',
-      width: 90,
-      render: (v: string) => <Tag color={STATUS_COLORS[v]}>{STATUS_LABELS[v] ?? v}</Tag>,
+      title: '开始时间',
+      dataIndex: 'start_at',
+      width: 200,
+      onHeaderCell: centerHeader,
+      render: (v: string, record: Order) => (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: '50%',
+              background: STATUS_DOT_COLOR[record.status] ?? '#bfbfbf',
+              display: 'inline-block',
+              flexShrink: 0,
+            }}
+            title={STATUS_LABELS[record.status] ?? record.status}
+          />
+          {formatDateTime(record.check_in_at ?? v)}
+        </span>
+      ),
     },
-    { title: '开始时间', dataIndex: 'start_at', width: 180, render: (v: string) => formatDateTime(v) },
+    {
+      title: '器材',
+      width: 160,
+      onHeaderCell: centerHeader,
+      render: (_: unknown, record: Order) => (
+        <div>
+          {record.items.map((item, i) => {
+            const name = item.equipment_spec_name ?? item.sale_item_name ?? '—'
+            const color = item.equipment_type_color
+              ? typeColorHex(item.equipment_type_color)
+              : undefined
+            return (
+              <div key={item.id ?? i}>
+                <span style={color ? { color } : undefined}>{name}</span>
+                <span> * {item.quantity}</span>
+              </div>
+            )
+          })}
+        </div>
+      ),
+    },
     {
       title: '金额',
       dataIndex: 'total_amount_fen',
       width: 100,
+      onHeaderCell: centerHeader,
       render: (v: number) => `¥${fenToYuan(v)}`,
-    },
-    {
-      title: '操作',
-      width: 80,
-      render: (_, record) => (
-        <Button type="link" onClick={() => navigate(`/orders/${record.id}`)}>
-          查看
-        </Button>
-      ),
     },
   ]
 
@@ -211,31 +241,40 @@ export default function CustomerDetail() {
         extra={
           <Space>
             {customer && !customer.is_system && (
-              <Button type="primary" onClick={openEdit}>
-                编辑
-              </Button>
+              <>
+                {/* 创建订单：预填当前客户信息（通过 URL query 传递 customerId，OrderForm 自动识别） */}
+                {customer.is_active !== false && (
+                  <Button type="primary" onClick={() => navigate(`/orders/new?customerId=${customer.id}`)}>
+                    创建订单
+                  </Button>
+                )}
+                <Button onClick={openEdit}>编辑</Button>
+              </>
             )}
-            {isSuperuser && customer && !customer.is_system ? (
+            {isSuperuser && customer && !customer.is_system && customer.is_active !== false ? (
               <Popconfirm
-                title="确认删除该客户？"
-                description="删除后不可恢复；若该客户仍有订单，需先删除相关订单。"
-                okText="永久删除"
+                title="确认停用该客户？"
+                description="停用后客户资料与历史订单仍保留，但新建订单时不再匹配到该客户。"
+                okText="停用"
                 okButtonProps={{ danger: true, loading: deleting }}
                 cancelText="取消"
                 onConfirm={doDelete}
               >
-                <Button danger>删除客户</Button>
+                <Button danger>停用客户</Button>
               </Popconfirm>
             ) : undefined}
           </Space>
         }
       >
         <Descriptions column={{ xs: 1, sm: 2, md: 3 }}>
-          <Descriptions.Item label="姓名">{customer?.name || '—'}</Descriptions.Item>
-          <Descriptions.Item label="性别">{customer?.gender || '—'}</Descriptions.Item>
-          <Descriptions.Item label="微信昵称">{customer?.wechat_nickname || '—'}</Descriptions.Item>
-          <Descriptions.Item label="微信ID">{customer?.wechat_id || '—'}</Descriptions.Item>
-          <Descriptions.Item label="手机号">{customer?.phone || '—'}</Descriptions.Item>
+          <Descriptions.Item label="姓名">{customer?.name ?? ''}</Descriptions.Item>
+          <Descriptions.Item label="性别">{customer?.gender ?? ''}</Descriptions.Item>
+          <Descriptions.Item label="微信昵称">{customer?.wechat_nickname ?? ''}</Descriptions.Item>
+          <Descriptions.Item label="微信ID">{customer?.wechat_id ?? ''}</Descriptions.Item>
+          <Descriptions.Item label="手机号">{customer?.phone ?? ''}</Descriptions.Item>
+          <Descriptions.Item label="状态">
+            {customer ? (customer.is_active === false ? '已停用' : '启用') : ''}
+          </Descriptions.Item>
         </Descriptions>
       </Card>
 
@@ -333,7 +372,7 @@ export default function CustomerDetail() {
           </Form.Item>
           <Form.Item label="手机号">
             <Form.Item name="phone" noStyle>
-              <Input placeholder="手机号" />
+              <Input placeholder="手机号" type="tel" inputMode="tel" />
             </Form.Item>
           </Form.Item>
           <Form.Item label="性别" name="gender">

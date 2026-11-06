@@ -51,8 +51,22 @@ export default function Dashboard() {
           <ForecastPanel dateStr={data?.today ?? new Date().toISOString().slice(0, 10)} />
         </Card>
 
-        {/* 订单分布 */}
-        <Card title="订单分布">
+        {/* 订单分布 + 今日订单统计（右上角）+ 概况入口 */}
+        <Card
+          title="订单分布"
+          extra={
+            <Space size="middle">
+              {data && (
+                <span style={{ fontSize: 13, color: '#333' }}>
+                  今日订单：<strong style={{ fontSize: 15 }}>{data.today_orders}</strong>
+                </span>
+              )}
+              <Button type="link" onClick={() => navigate('/dashboard/daily-summary')}>
+                概况
+              </Button>
+            </Space>
+          }
+        >
           {data ? (
             <Space direction="vertical" style={{ display: 'flex' }}>
               {STATUS_OPTIONS.map((s) => {
@@ -80,37 +94,6 @@ export default function Dashboard() {
                   </div>
                 )
               })}
-            </Space>
-          ) : (
-            <p style={{ color: '#999' }}>暂无数据</p>
-          )}
-        </Card>
-
-        {/* 今日概况 */}
-        <Card
-          title="今日概况"
-          extra={
-            <Button type="link" onClick={() => navigate('/dashboard/daily-summary')}>
-              更多
-            </Button>
-          }
-        >
-          {data ? (
-            <Space wrap size="middle">
-              <div style={{ textAlign: 'center', minWidth: 100 }}>
-                <div style={{ fontSize: 24, fontWeight: 700 }}>{data.today_orders}</div>
-                <div style={{ fontSize: 12, color: '#999' }}>今日订单</div>
-              </div>
-              <div style={{ textAlign: 'center', minWidth: 100 }}>
-                <div style={{ fontSize: 24, fontWeight: 700 }}>
-                  {canViewRevenue ? `¥${fenToYuan(data.today_completed_amount_fen)}` : '—'}
-                </div>
-                <div style={{ fontSize: 12, color: '#999' }}>已完成金额</div>
-              </div>
-              <div style={{ textAlign: 'center', minWidth: 100 }}>
-                <div style={{ fontSize: 24, fontWeight: 700 }}>{data.checked_in_now}</div>
-                <div style={{ fontSize: 12, color: '#999' }}>当前签到</div>
-              </div>
             </Space>
           ) : (
             <p style={{ color: '#999' }}>暂无数据</p>

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.api.auth import get_active_group_id, get_current_user
+from app.api.auth import get_active_group_id, get_current_user, require_role
 from app.db.session import get_db
 from app.models.user import User
 from app.services import inventory_service
@@ -28,7 +28,7 @@ def set_inventory(
     equipment_spec_id: str,
     payload: InventoryInput,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("superuser", "admin")),
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     return inventory_service.set_inventory(

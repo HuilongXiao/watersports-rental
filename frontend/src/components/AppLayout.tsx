@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { App, Grid, Layout, Menu, Dropdown, Typography, Modal, Input, Select, Tag } from 'antd'
+import { App, Layout, Menu, Dropdown, Typography, Modal, Input, Select, Tag } from 'antd'
 import {
   DashboardOutlined,
   ShoppingOutlined,
@@ -10,10 +10,12 @@ import {
   PlusOutlined,
   KeyOutlined,
   SwapOutlined,
+  CompassOutlined,
 } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { useAuth } from '../auth'
+import { useLayoutMode } from '../layoutMode'
 
 const { Header, Sider, Content } = Layout
 
@@ -21,7 +23,7 @@ export default function AppLayout() {
   const { user, logout, activeGroup, activeGroupName, setActiveGroup, groups } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const screens = Grid.useBreakpoint()
+  const { isMobile } = useLayoutMode()
   const { message } = App.useApp()
   const [pwdOpen, setPwdOpen] = useState(false)
   const [pwdLoading, setPwdLoading] = useState(false)
@@ -43,6 +45,7 @@ export default function AppLayout() {
 
   const selectedKey = useMemo(() => {
     if (location.pathname.startsWith('/orders')) return '/orders'
+    if (location.pathname.startsWith('/boats')) return '/boats'
     if (location.pathname.startsWith('/customers')) return '/customers'
     if (location.pathname.startsWith('/users')) return '/users'
     if (location.pathname.startsWith('/settings')) return '/settings'
@@ -50,7 +53,7 @@ export default function AppLayout() {
   }, [location.pathname])
 
   const canManageUsers = Boolean(
-    user && (user.role === 'superuser' || user.role === 'admin' || user.permissions.manage_users),
+    user && (user.role === 'superuser' || user.role === 'admin'),
   )
 
   const isSuperuser = Boolean(user && user.role === 'superuser')
@@ -193,11 +196,11 @@ export default function AppLayout() {
   )
 
   // Mobile layout: no Sider, fixed bottom TabBar with a raised center + button.
-  if (!screens.md) {
+  if (isMobile) {
     const tabs: TabItem[] = [
       { key: '/dashboard', icon: <DashboardOutlined />, label: '概览' },
       { key: '/orders', icon: <ShoppingOutlined />, label: '订单' },
-      { key: '/customers', icon: <TeamOutlined />, label: '客户' },
+      { key: '/boats', icon: <CompassOutlined />, label: '船只' },
       { key: '/settings', icon: <SettingOutlined />, label: '设置' },
     ]
     const headerTitle =
@@ -274,8 +277,9 @@ export default function AppLayout() {
           mode="inline"
           selectedKeys={[selectedKey]}
           items={[
-            { key: '/dashboard', icon: <DashboardOutlined />, label: '工作台' },
+            { key: '/dashboard', icon: <DashboardOutlined />, label: '概览' },
             { key: '/orders', icon: <ShoppingOutlined />, label: '订单管理' },
+            { key: '/boats', icon: <CompassOutlined />, label: '船只调配' },
             { key: '/customers', icon: <TeamOutlined />, label: '客户管理' },
             ...(canManageUsers
               ? [{ key: '/users', icon: <UserOutlined />, label: '用户管理' }]
@@ -324,6 +328,8 @@ const mobileContentStyle: React.CSSProperties = {
   flex: 1,
   minHeight: 0,
   overflowY: 'auto',
+  // 不允许页面被超宽内容撑出横向滑动
+  overflowX: 'hidden',
   WebkitOverflowScrolling: 'touch',
   // Stop scroll chaining to the body at the rubber-band boundaries.
   overscrollBehavior: 'contain',

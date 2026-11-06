@@ -27,6 +27,7 @@ from app.models.customer import Customer
 from app.models.equipment import EquipmentSpec, SaleItem
 from app.models.order import Order, OrderItem
 from app.models.payment import Payment, PaymentItem
+from app.models.payment_method import PaymentMethod
 
 EXPORT_NAME_RE = re.compile(r"^auto_(orders|customers)_\d{8}\.csv$")
 
@@ -75,6 +76,7 @@ def _orders_csv(db: Session, start_utc: datetime, end_utc: datetime) -> str:
         select(Order)
         .where(Order.start_at >= start_utc)
         .where(Order.start_at < end_utc)
+        .where(Order.is_deleted.is_(False))
         .order_by(Order.start_at.asc())
     )
     orders = list(db.scalars(stmt).all())
@@ -104,10 +106,15 @@ def _orders_csv(db: Session, start_utc: datetime, end_utc: datetime) -> str:
             "数量",
             "单价(元)",
             "类目总额(元)",
+            "付款方式",
         ]
     )
 
+    # 付款方式 code→名称全局映射（code 全局唯一）；已删除的方式留空，不显示 code
+    payment_names = dict(db.execute(select(PaymentMethod.code, PaymentMethod.name)).all())
+
     for order in orders:
+        pay_name = payment_names.get(order.payment_method_code, "") if order.payment_method_code else ""
         items = list(
             db.scalars(
                 select(OrderItem)
@@ -167,6 +174,7 @@ def _orders_csv(db: Session, start_utc: datetime, end_utc: datetime) -> str:
                     str(qty),
                     f"{unit_price / 100:.2f}",
                     f"{unit_price * qty / 100:.2f}",
+                    pay_name,
                 ]
             )
             seq += 1
@@ -181,6 +189,7 @@ def _orders_csv(db: Session, start_utc: datetime, end_utc: datetime) -> str:
                     str(adj.quantity),
                     f"{adj.unit_amount / 100:.2f}",
                     f"{adj.amount / 100:.2f}",
+                    pay_name,
                 ]
             )
             seq += 1
@@ -193,7 +202,7 @@ def _customers_csv(db: Session) -> str:
     customers = list(
         db.scalars(
             select(Customer)
-            .where(Customer.is_system.is_(False))
+            .where(Customer.is_system.is_(False), Customer.is_active.is_(True))
             .order_by(Customer.created_at)
         ).all()
     )
@@ -217,7 +226,11 @@ def _customers_csv(db: Session) -> str:
     )
 
     for c in customers:
-        orders = list(db.scalars(select(Order).where(Order.customer_id == c.id)).all())
+        orders = list(db.scalars(
+            select(Order).where(
+                Order.customer_id == c.id, Order.is_deleted.is_(False)
+            )
+        ).all())
         completed = [o for o in orders if o.status == "completed"]
         no_show_count = sum(1 for o in orders if o.status == "no_show")
         total_spending_fen = 0

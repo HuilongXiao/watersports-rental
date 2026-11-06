@@ -1,13 +1,14 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom'
-import { App, Button, Card, DatePicker, Grid, Popover, Select, Space, Table, Tabs, Tag } from 'antd'
+import { App, Button, Card, Checkbox, DatePicker, Form, Input, Modal, Popover, Select, Space, Table, Tabs, Tag } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { FilterOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
 import { api } from '../api'
 import { useAuth } from '../auth'
-import { typeColorHex } from '../utils'
+import { typeColorHex, saveOrdersSnapshot, readOrdersSnapshot, type OrdersSnapshot } from '../utils'
+import { useLayoutMode } from '../layoutMode'
 import type { Customer, Order, OrderStatus } from '../types'
 
 // 状态展示顺序：进行中 → 预订 → 已完成 → 爽约 → 已取消（与概览“订单分布”配色一致）
@@ -35,82 +36,331 @@ const STATUS_HEX: Record<OrderStatus, string> = {
   cancelled: '#bfbfbf',
 }
 
+// 订单表的一行：普通订单，或时间分隔行（__divider 存该行的半小时刻度标签）
+type OrderRow = Order & { __divider?: string }
+
+// 时间分隔行：两侧灰线 + 中间半小时刻度
+function TimeDivider({ label }: { label: string }) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        color: '#999',
+        fontSize: 12,
+        lineHeight: '16px',
+      }}
+    >
+      <span style={{ flex: 1, borderTop: '1px solid #d9d9d9' }} />
+      <span style={{ whiteSpace: 'nowrap' }}>{label}</span>
+      <span style={{ flex: 1, borderTop: '1px solid #d9d9d9' }} />
+    </div>
+  )
+}
+
+// 新建客户弹窗的性别选择（与客户管理页保持一致）
+function GenderCheckboxes({
+  value,
+  onChange,
+}: {
+  value?: string | null
+  onChange?: (value: string | null) => void
+}) {
+  return (
+    <Space>
+      <Checkbox
+        checked={value === '先生'}
+        onChange={(e) => onChange?.(e.target.checked ? '先生' : null)}
+      >
+        先生
+      </Checkbox>
+      <Checkbox
+        checked={value === '女士'}
+        onChange={(e) => onChange?.(e.target.checked ? '女士' : null)}
+      >
+        女士
+      </Checkbox>
+    </Space>
+  )
+}
+
 interface OrderFilter {
   statuses: OrderStatus[]
   customerId: string | null
   day: string | null
+  /** 从指定业务日起（含当天）筛选，「未来订单」使用：明天起的所有预订订单 */
+  dayFrom: string | null
   specName: string | null
   hasRefund: boolean
 }
 
-const EMPTY_FILTER: OrderFilter = { statuses: [], customerId: null, day: null, specName: null, hasRefund: false }
+interface CustomerFormValues {
+  name?: string
+  gender?: string
+  phone?: string
+  wechat_nickname?: string
+  wechat_id?: string
+}
+
+const EMPTY_FILTER: OrderFilter = {
+  statuses: [],
+  customerId: null,
+  day: null,
+  dayFrom: null,
+  specName: null,
+  hasRefund: false,
+}
 
 export default function Orders() {
   const navigate = useNavigate()
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const { ordersRefreshKey } = useOutletContext<{ ordersRefreshKey: number }>()
   const { message } = App.useApp()
   const { user } = useAuth()
-  const screens = Grid.useBreakpoint()
+  const { isMobile, isDesktop } = useLayoutMode()
   const canCreateOrder = Boolean(user?.permissions.create_order)
+  const canAddCustomer = canCreateOrder || Boolean(user?.permissions.edit_order)
+  const [customerModalOpen, setCustomerModalOpen] = useState(false)
+  const [customerForm] = Form.useForm<CustomerFormValues>()
+
+  const openCustomerCreate = () => {
+    customerForm.setFieldsValue({
+      name: '',
+      phone: '',
+      wechat_nickname: '',
+      wechat_id: '',
+      gender: undefined,
+    })
+    setCustomerModalOpen(true)
+  }
+
+  // 停留在订单管理页直接新建客户，不跳转客户管理页
+  const submitCustomer = async () => {
+    const values = await customerForm.validateFields()
+    const body = Object.fromEntries(
+      Object.entries(values).map(([key, value]) => [
+        key,
+        typeof value === 'string' && value.trim() ? value.trim() : value || null,
+      ]),
+    )
+    if (!body.name && !body.wechat_nickname) {
+      message.warning('请至少填写姓名或微信昵称')
+      return
+    }
+    try {
+      const created = await api.post<Customer>('/api/customers', body)
+      message.success('客户已创建')
+      setCustomerModalOpen(false)
+      navigate(`/customers/${created.id}`)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '保存失败')
+    }
+  }
 
   const scrollToTop = () => {
     window.scrollTo(0, 0)
     document.querySelector('.ant-layout-content')?.scrollTo(0, 0)
   }
 
+  // ---- 进入详情前保存列表快照（数据 + 滚动位置），返回列表时瞬时恢复 ----
+  // 快照按 location.search 存于 sessionStorage（orders:snapshot:*），5 分钟过期。
+  // 桌面端滚动容器是 window，移动端是 .ant-layout-content，两者都记录。
+  // 回滚：删除本段快照读写、下方 orders 初始化的 snapshotRef、恢复滚动的 effect，
+  // 并把 orders useState 恢复为 useState<Order[]>([])、行点击中的 saveSnapshot 调用删除。
+  const snapshotRef = useRef<OrdersSnapshot | null>(null)
+  const snapshotLoaded = useRef(false)
+  if (!snapshotLoaded.current) {
+    snapshotLoaded.current = true
+    snapshotRef.current = readOrdersSnapshot(window.location.search)
+  }
+  const restoredScroll = useRef<OrdersSnapshot | null>(snapshotRef.current)
+
+  const saveSnapshot = () => {
+    const content = document.querySelector('.ant-layout-content')
+    // 仅保存列表渲染所需的最小字段，避免快照过大
+    const items = orders.map((o) => ({
+      id: o.id,
+      order_number: o.order_number,
+      status: o.status,
+      customer_id: o.customer_id,
+      customer_name: o.customer_name,
+      customer_wechat_nickname: o.customer_wechat_nickname,
+      start_at: o.start_at,
+      check_in_at: o.check_in_at,
+      note_popup: o.note_popup,
+      refund_amount_fen: o.refund_amount_fen,
+      items: o.items,
+    }))
+    saveOrdersSnapshot({
+      items,
+      pageMeta: { page: currentPage, pageSize: 20 },
+      scrollY: window.scrollY,
+      contentY: content?.scrollTop ?? 0,
+      search: window.location.search,
+      ts: Date.now(),
+    })
+  }
+
+  // ---- URL query params <-> 列表状态（tab/分页/筛选/预订日期）双向同步 ----
+  // 回滚：删除本段 URL 读取与下方同步 effect，并把各 useState 恢复为硬编码初始值；
+  // 同时删除行点击中的 saveSnapshot 调用与上方快照相关代码。
+  const spTab = searchParams.get('tab')
+  const spPage = Number(searchParams.get('page') || '0')
+  const spDay = searchParams.get('day')
+  const urlFilterActive = Boolean(
+    searchParams.get('fs') || searchParams.get('fc') || searchParams.get('fd') ||
+      searchParams.get('ff') || searchParams.get('fp') || searchParams.get('fr'),
+  )
+
   // 从工作台“订单分布”跳转过来时，URL 携带 status 参数，自动筛选当日该状态订单
   const initialStatus = searchParams.get('status') as OrderStatus | null
-  const [orders, setOrders] = useState<Order[]>([])
+  // 命中未过期快照时立即用快照数据渲染（瞬时恢复），后台再拉真实数据刷新
+  const [orders, setOrders] = useState<Order[]>(
+    () => (snapshotRef.current?.items as Order[] | undefined) ?? [],
+  )
   const [loading, setLoading] = useState(false)
-  const [status, setStatus] = useState<OrderStatus | ''>(
-    initialStatus ? '' : 'active',
-  )
-  const [filter, setFilter] = useState<OrderFilter>(
-    initialStatus
-      ? { statuses: [initialStatus], customerId: null, day: dayjs().format('YYYY-MM-DD'), specName: null, hasRefund: false }
-      : EMPTY_FILTER,
-  )
+  // 首次数据加载完成标记：确保滚动在列表有高度后才恢复
+  const firstLoadDone = useRef(false)
+  // 并发请求序号：仅最新一次请求的结果/loading 才会生效，避免过期响应覆盖新数据
+  // （这正是“tab 已切到预订、内容仍是进行中”的根因）
+  const loadSeq = useRef(0)
+  const [status, setStatus] = useState<OrderStatus | ''>(() => {
+    // 「全部」tab 已移除：筛选结果与旧链接/快照里的 tab=all 统一落到「预订」，
+    // 具体内容仍由 filter 决定（filtersActive 优先于 tab）。
+    if (spTab === 'in_progress') return 'in_progress'
+    return 'active'
+  })
+  const [filter, setFilter] = useState<OrderFilter>(() => {
+    if (urlFilterActive) {
+      return {
+        statuses: (searchParams.get('fs') || '').split(',').filter(Boolean) as OrderStatus[],
+        customerId: searchParams.get('fc'),
+        day: searchParams.get('fd'),
+        dayFrom: searchParams.get('ff'),
+        specName: searchParams.get('fp'),
+        hasRefund: searchParams.get('fr') === '1',
+      }
+    }
+    return initialStatus
+      ? {
+          statuses: [initialStatus],
+          customerId: null,
+          day: dayjs().format('YYYY-MM-DD'),
+          dayFrom: null,
+          specName: null,
+          hasRefund: false,
+        }
+      : EMPTY_FILTER
+  })
   const [filterOpen, setFilterOpen] = useState(false)
   // 弹窗内的草稿，点击“确认”后才应用
   const [draftStatuses, setDraftStatuses] = useState<OrderStatus[]>([])
   const [draftCustomerId, setDraftCustomerId] = useState<string | null>(null)
-  const [draftDay, setDraftDay] = useState<Dayjs | null>(null)
+  // 弹窗打开时若未应用日期，默认预填当日
+  const [draftDay, setDraftDay] = useState<Dayjs | null>(() => dayjs())
   const [draftSpecName, setDraftSpecName] = useState<string | null>(null)
   const [draftHasRefund, setDraftHasRefund] = useState(false)
   const [customerOptions, setCustomerOptions] = useState<Customer[]>([])
   const [specOptions, setSpecOptions] = useState<{ value: string; label: string }[]>([])
+  // 「搜索客户」气泡：按微信昵称 / 姓名 / 微信ID / 电话 搜索
+  const [customerSearchOpen, setCustomerSearchOpen] = useState(false)
+  const [searchNickname, setSearchNickname] = useState('')
+  const [searchName, setSearchName] = useState('')
+  const [searchWechatId, setSearchWechatId] = useState('')
+  const [searchPhone, setSearchPhone] = useState('')
+  const [searchResults, setSearchResults] = useState<Customer[]>([])
+  const [searching, setSearching] = useState(false)
   const customerSearchTimer = useRef<number | null>(null)
   const customerFilterSelectRef = useRef<any>(null)
-  const [currentPage, setCurrentPage] = useState(1)
+  const [currentPage, setCurrentPage] = useState(() => (spPage > 0 ? spPage : 1))
   // 预订 tab 可翻日期查看，默认今天；- 号在所选日期 ≤ 今天时禁用（过去的日子无预订订单）
-  const [bookingDay, setBookingDay] = useState(() => dayjs())
+  const [bookingDay, setBookingDay] = useState(() => (spDay ? dayjs(spDay) : dayjs()))
 
   const filtersActive = Boolean(
-    filter.statuses.length > 0 || filter.customerId || filter.day || filter.specName || filter.hasRefund,
+    filter.statuses.length > 0 ||
+      filter.customerId ||
+      filter.day ||
+      filter.dayFrom ||
+      filter.specName ||
+      filter.hasRefund,
   )
 
+  // 状态 -> URL query params 同步（replace 避免产生大量历史条目）
+  useEffect(() => {
+    const next = new URLSearchParams()
+    if (filtersActive) {
+      if (filter.statuses.length) next.set('fs', filter.statuses.join(','))
+      if (filter.customerId) next.set('fc', filter.customerId)
+      if (filter.day) next.set('fd', filter.day)
+      if (filter.dayFrom) next.set('ff', filter.dayFrom)
+      if (filter.specName) next.set('fp', filter.specName)
+      if (filter.hasRefund) next.set('fr', '1')
+      next.set('tab', status || 'active')
+    } else {
+      next.set('tab', status || 'active')
+      if (status === 'active' || status === '') next.set('day', bookingDay.format('YYYY-MM-DD'))
+    }
+    if (currentPage > 1) next.set('page', String(currentPage))
+    setSearchParams(next, { replace: true })
+  }, [status, filter, filtersActive, bookingDay, currentPage, setSearchParams])
+
+  // 恢复滚动：命中快照时数据首帧已渲染，立即恢复（瞬时体验）；
+  // 无快照时等待首次数据加载完成（列表高度不足时浏览器会截断 scrollTo）。
+  useEffect(() => {
+    if (snapshotRef.current) {
+      const snap = restoredScroll.current
+      restoredScroll.current = null
+      if (snap) {
+        requestAnimationFrame(() => {
+          window.scrollTo(0, snap.scrollY)
+          document.querySelector('.ant-layout-content')?.scrollTo(0, snap.contentY)
+        })
+      }
+      return
+    }
+    const snap = restoredScroll.current
+    if (!firstLoadDone.current || loading || !snap) return
+    restoredScroll.current = null
+    requestAnimationFrame(() => {
+      window.scrollTo(0, snap.scrollY)
+      document.querySelector('.ant-layout-content')?.scrollTo(0, snap.contentY)
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading])
+
   const load = useCallback(async () => {
-    setLoading(true)
+    // 并发保护：记录本次请求序号，只有最新请求才会写入结果与 loading 状态
+    const reqId = ++loadSeq.current
+    // 快照已命中且 orders 有数据时，静默后台刷新——不遮罩已渲染的列表
+    const silentRefresh = Boolean(snapshotRef.current) && orders.length > 0
+    if (!silentRefresh) setLoading(true)
     try {
       const params = new URLSearchParams()
       if (filtersActive) {
-        if (filter.day) params.set('business_day', filter.day)
+        // 「未来订单」按起点日期筛选，其余按具体某一天筛选（两者互斥）
+        if (filter.dayFrom) {
+          params.set('business_day_from', filter.dayFrom)
+        } else if (filter.day) {
+          params.set('business_day', filter.day)
+        }
+        // 筛选里未勾选状态时不传 statuses：不限制状态，展示全部状态
+        // （预订/进行中/已完成/爽约/取消）；勾选了状态才按所选状态请求。
+        // 注意：两个 tab 的“默认订单库”仍只加载预订+进行中，见下方 else 分支。
+        if (filter.statuses.length > 0) params.set('statuses', filter.statuses.join(','))
       } else {
-        if (status) params.set('status', status)
-        if (status === 'active') {
-          // 预订 tab 按所选日期查看当日预订订单
-          params.set('business_day', bookingDay.format('YYYY-MM-DD'))
-        } else if (status === 'in_progress') {
+        params.set('status', status || 'active')
+        if (status === 'in_progress') {
           // 进行中 tab 只显示今天的订单
           params.set('business_day', dayjs().format('YYYY-MM-DD'))
         } else {
-          // “全部”tab：只显示从明日开始往后的预订订单
-          params.set('status', 'active')
-          params.set('business_day_from', dayjs().add(1, 'day').format('YYYY-MM-DD'))
+          // 预订 tab 按所选日期查看当日预订订单
+          params.set('business_day', bookingDay.format('YYYY-MM-DD'))
         }
       }
       let result = await api.get<Order[]>(`/api/orders?${params.toString()}`)
+      // 期间已发出更新的请求：丢弃本次过期响应，不覆盖界面（否则会出现 tab 与内容不一致）
+      if (reqId !== loadSeq.current) return
       if (filtersActive) {
         if (filter.statuses.length > 0) {
           result = result.filter((o) => filter.statuses.includes(o.status))
@@ -155,9 +405,15 @@ export default function Orders() {
       }
       setOrders(result)
     } catch (error) {
+      // 过期请求的错误同样忽略（例如被后续请求取代）
+      if (reqId !== loadSeq.current) return
       message.error(error instanceof Error ? error.message : '加载失败')
     } finally {
-      setLoading(false)
+      // 仅最新请求负责结束 loading，避免旧请求提前关闭遮罩
+      if (reqId === loadSeq.current) {
+        firstLoadDone.current = true
+        setLoading(false)
+      }
     }
   }, [status, filter, filtersActive, bookingDay, message])
 
@@ -171,6 +427,38 @@ export default function Orders() {
       // 静默失败：保留现有选项
     }
   }, [])
+
+  // 「搜索客户」：按微信昵称 / 姓名 / 微信ID / 电话 组合筛选
+  const runCustomerSearch = async () => {
+    const nickname = searchNickname.trim()
+    const name = searchName.trim()
+    const wechatId = searchWechatId.trim()
+    const phone = searchPhone.trim()
+    if (!nickname && !name && !wechatId && !phone) {
+      message.warning('请至少填写一个搜索条件')
+      return
+    }
+    setSearching(true)
+    try {
+      // 接口支持跨字段模糊匹配：先用任一条件取候选，再按各维度精确过滤
+      const q = nickname || name || wechatId || phone
+      const result = await api.get<Customer[]>(
+        `/api/customers?q=${encodeURIComponent(q)}`,
+      )
+      const filtered = result.filter(
+        (c) =>
+          (!nickname || (c.wechat_nickname ?? '').includes(nickname)) &&
+          (!name || (c.name ?? '').includes(name)) &&
+          (!wechatId || (c.wechat_id ?? '').includes(wechatId)) &&
+          (!phone || (c.phone ?? '').includes(phone)),
+      )
+      setSearchResults(filtered.slice(0, 20))
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '搜索失败')
+    } finally {
+      setSearching(false)
+    }
+  }
 
   const loadSpecOptions = useCallback(async () => {
     try {
@@ -217,7 +505,9 @@ export default function Orders() {
   const openFilterPopover = () => {
     setDraftStatuses(filter.statuses)
     setDraftCustomerId(filter.customerId)
-    setDraftDay(filter.day ? dayjs(filter.day) : null)
+    // 打开弹窗时若未应用过日期，默认预填当日；
+    // 「未来订单」是按起点筛选，日期框保持为空
+    setDraftDay(filter.day ? dayjs(filter.day) : filter.dayFrom ? null : dayjs())
     setDraftSpecName(filter.specName)
     setDraftHasRefund(filter.hasRefund)
     if (customerOptions.length === 0) searchCustomers('')
@@ -229,11 +519,36 @@ export default function Orders() {
       statuses: draftStatuses,
       customerId: draftCustomerId,
       day: draftDay ? draftDay.format('YYYY-MM-DD') : null,
+      dayFrom: null,
       specName: draftSpecName,
       hasRefund: draftHasRefund,
     })
     setFilterOpen(false)
-    setStatus('') // 应用筛选后切换到“全部”展示结果
+    // 「全部」tab 已移除：筛选结果留在当前 tab 展示
+    setStatus(status || 'active')
+    setCurrentPage(1)
+    scrollToTop()
+  }
+
+  // 「未来订单」：一键筛选「明天起、状态为预订」的订单
+  const applyFutureOrders = () => {
+    const tomorrow = dayjs().add(1, 'day').format('YYYY-MM-DD')
+    setFilter({
+      statuses: ['active'],
+      customerId: null,
+      day: null,
+      dayFrom: tomorrow,
+      specName: null,
+      hasRefund: false,
+    })
+    // 同步弹窗草稿，避免下次打开时残留旧条件
+    setDraftStatuses(['active'])
+    setDraftCustomerId(null)
+    setDraftDay(null)
+    setDraftSpecName(null)
+    setDraftHasRefund(false)
+    setStatus(status || 'active')
+    setFilterOpen(false)
     setCurrentPage(1)
     scrollToTop()
   }
@@ -245,7 +560,7 @@ export default function Orders() {
     setDraftDay(null)
     setDraftSpecName(null)
     setDraftHasRefund(false)
-    setFilterOpen(false)
+    // 不关闭筛选弹窗，用户可继续选择或直接点"确认"
     setCurrentPage(1)
   }
 
@@ -253,8 +568,6 @@ export default function Orders() {
     if (customerSearchTimer.current) window.clearTimeout(customerSearchTimer.current)
     customerSearchTimer.current = window.setTimeout(() => searchCustomers(q), 300)
   }
-
-  const isMobile = !screens.md
 
   // 手机端点击客户区域：复制该订单客户的微信昵称全部内容到剪贴板。
   // http 局域网环境下 navigator.clipboard 不可用，回退到 execCommand 方案。
@@ -323,10 +636,45 @@ export default function Orders() {
     )
   }
 
-  const columns: ColumnsType<Order> = [
+  // 预订 tab：按开始时间向下取整到半小时刻度，刻度变化处插入时间分隔行（仅展示用，不改订单顺序）
+  const withTimeDividers = !filtersActive && status === 'active'
+  const { tableRows, noRowBorderIds } = useMemo(() => {
+    if (!withTimeDividers) {
+      return { tableRows: orders as OrderRow[], noRowBorderIds: new Set<string>() }
+    }
+    const rows: OrderRow[] = []
+    // 分隔行及它上面那一行都要去掉表格默认的底边线，只留分隔行自己的时间线
+    const noRowBorderIds = new Set<string>()
+    let prev = ''
+    let prevOrderId = ''
+    orders.forEach((o) => {
+      const d = dayjs(o.start_at)
+      // 向下取整：12:29 → 12:00，12:31 → 12:30
+      const label = (d.minute() < 30 ? d.minute(0) : d.minute(30)).format('HH:mm')
+      if (prev && label !== prev) {
+        const dividerId = `divider-${o.id}`
+        rows.push({ ...o, id: dividerId, __divider: label })
+        noRowBorderIds.add(dividerId)
+        if (prevOrderId) noRowBorderIds.add(prevOrderId)
+      }
+      prev = label
+      prevOrderId = o.id
+      rows.push(o)
+    })
+    return { tableRows: rows, noRowBorderIds }
+  }, [orders, withTimeDividers])
+
+  const columns: ColumnsType<OrderRow> = [
     {
       title: '客户',
       render: (_, record) => {
+        // 时间分隔行：colSpan 铺满整行，只在本列渲染
+        if (record.__divider) {
+          return {
+            children: <TimeDivider label={record.__divider} />,
+            props: { colSpan: 3, style: { padding: '2px 4px' } },
+          }
+        }
         const name = record.customer_wechat_nickname || record.customer_name || '游客'
         // 勾选备注弹窗的订单，客户名用红色显示以示提醒
         const content = record.note_popup ? (
@@ -367,11 +715,10 @@ export default function Orders() {
       dataIndex: 'start_at',
       width: isMobile ? 92 : undefined,
       render: (value: string, record) => {
+        // 时间分隔行已由首列铺满，本列不再渲染
+        if (record.__divider) return { children: null, props: { colSpan: 0 } }
         const isTodayTab = status === 'active' || status === 'in_progress'
-        const source =
-          !filtersActive && status === 'in_progress'
-            ? (record.check_in_at ?? value)
-            : value
+        const source = record.check_in_at ?? value
         // 预订订单迟到 30 分钟以上 → 时间标红
         const isLate =
           record.status === 'active' &&
@@ -430,6 +777,8 @@ export default function Orders() {
       title: '项目',
       width: isMobile ? 68 : undefined,
       render: (_, record) => {
+        // 时间分隔行已由首列铺满，本列不再渲染
+        if (record.__divider) return { children: null, props: { colSpan: 0 } }
         const eqItems = record.items.filter((i) => i.equipment_spec_name)
         if (!isMobile) {
           // 桌面端：显示所有项目（船型+销售），保持原格式
@@ -464,7 +813,8 @@ export default function Orders() {
   ]
 
   const filterContent = (
-    <div style={{ width: 300, display: 'flex', flexDirection: 'column', gap: 12 }}>
+    // 宽度随屏幕收缩（气泡右对齐按钮，过宽会让左侧超出手机屏幕）
+    <div style={{ width: 'min(300px, calc(100vw - 56px))', display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div>
         <div style={{ marginBottom: 6, fontWeight: 500 }}>订单状态</div>
         <Space wrap size={[8, 8]}>
@@ -562,6 +912,7 @@ export default function Orders() {
         />
       </div>
       <Space style={{ justifyContent: 'flex-end' }}>
+        <Button onClick={applyFutureOrders}>未来订单</Button>
         <Button onClick={clearFilter}>清除</Button>
         <Button type="primary" onClick={applyFilter}>
           确认
@@ -570,13 +921,105 @@ export default function Orders() {
     </div>
   )
 
+  const customerSearchContent = (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: 'min(280px, calc(100vw - 56px))' }}>
+      <Input
+        placeholder="微信昵称"
+        value={searchNickname}
+        allowClear
+        onChange={(e) => setSearchNickname(e.target.value)}
+        onPressEnter={runCustomerSearch}
+      />
+      <Input
+        placeholder="姓名"
+        value={searchName}
+        allowClear
+        onChange={(e) => setSearchName(e.target.value)}
+        onPressEnter={runCustomerSearch}
+      />
+      <Input
+        placeholder="微信ID"
+        value={searchWechatId}
+        allowClear
+        onChange={(e) => setSearchWechatId(e.target.value)}
+        onPressEnter={runCustomerSearch}
+      />
+      <Input
+        placeholder="电话"
+        type="tel"
+        inputMode="tel"
+        value={searchPhone}
+        allowClear
+        onChange={(e) => setSearchPhone(e.target.value)}
+        onPressEnter={runCustomerSearch}
+      />
+      <Button type="primary" block loading={searching} onClick={runCustomerSearch}>
+        搜索
+      </Button>
+      {canAddCustomer && (
+        <Button
+          block
+          onClick={() => {
+            setCustomerSearchOpen(false)
+            openCustomerCreate()
+          }}
+        >
+          新建客户
+        </Button>
+      )}
+      {searchResults.length > 0 && (
+        <div style={{ maxHeight: 260, overflowY: 'auto', borderTop: '1px solid #f0f0f0' }}>
+          {searchResults.map((c) => {
+            const primary =
+              c.wechat_nickname?.trim() || `${c.name ?? ''}${c.gender ?? ''}` || '游客'
+            const secondary = [
+              c.name ? `${c.name}${c.gender ?? ''}` : '',
+              c.wechat_id ? `微信ID：${c.wechat_id}` : '',
+              c.phone ? `电话：${c.phone}` : '',
+            ]
+              .filter(Boolean)
+              .join(' / ')
+            return (
+              <Button
+                key={c.id}
+                type="text"
+                block
+                style={{ textAlign: 'left', height: 'auto', padding: '6px 4px' }}
+                onClick={() => {
+                  setCustomerSearchOpen(false)
+                  navigate(`/customers/${c.id}`)
+                }}
+              >
+                <div style={{ fontWeight: 500 }}>{primary}</div>
+                {secondary && (
+                  <div style={{ fontSize: 12, color: '#888' }}>{secondary}</div>
+                )}
+              </Button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+
   return (
     <Card
       title="订单管理"
       extra={
         <Space wrap>
+          <Popover
+            content={customerSearchContent}
+            trigger="click"
+            open={customerSearchOpen}
+            onOpenChange={setCustomerSearchOpen}
+            // 手机端按钮位于标题行左侧，右对齐会让气泡左侧超出屏幕；居中更稳
+            placement="bottom"
+            overlayStyle={{ maxWidth: 'calc(100vw - 16px)' }}
+          >
+            <Button>搜索客户</Button>
+          </Popover>
           {/* 电脑版才显示“新建订单”入口，手机版隐藏 */}
-          {screens.md && canCreateOrder && (
+          {isDesktop && canCreateOrder && (
             <Button type="primary" onClick={() => navigate('/orders/new')}>
               新建订单
             </Button>
@@ -586,16 +1029,18 @@ export default function Orders() {
             trigger="click"
             open={filterOpen}
             onOpenChange={setFilterOpen}
-            placement="bottomRight"
+            placement="bottom"
+            overlayStyle={{ maxWidth: 'calc(100vw - 16px)' }}
           >
             <Button icon={<FilterOutlined />}>筛选</Button>
           </Popover>
         </Space>
       }
     >
-      <Space wrap style={{ marginBottom: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
         <Tabs
-          activeKey={status}
+          className="orders-tabs"
+          activeKey={status || 'active'}
           onChange={(key) => {
             // 处于“筛选中”时点击其他 tab：清除筛选，真正切换到该 tab
             if (filtersActive) {
@@ -608,26 +1053,28 @@ export default function Orders() {
           items={[
             { key: 'active', label: '预订' },
             { key: 'in_progress', label: '进行中' },
-            { key: '', label: '全部' },
           ]}
-          style={{ marginBottom: 0 }}
+          style={{ marginBottom: 0, flex: 1, minWidth: 0 }}
         />
         {filtersActive && (
           <Tag
             color="blue"
             closable
             onClose={clearFilter}
-            style={{ cursor: 'pointer', marginBottom: 8 }}
+            style={{ cursor: 'pointer', marginLeft: 8 }}
           >
             筛选中
           </Tag>
         )}
-      </Space>
+      </div>
       <Table
+        className="orders-table"
+        // 分隔行与其上一行去掉默认底边线，避免出现多余的两条线
+        rowClassName={(record) => (noRowBorderIds.has(record.id) ? 'orders-no-row-border' : '')}
         rowKey="id"
         loading={loading}
         columns={columns}
-        dataSource={orders}
+        dataSource={tableRows}
         tableLayout={isMobile ? 'fixed' : undefined}
         components={
           isMobile
@@ -653,8 +1100,51 @@ export default function Orders() {
             scrollToTop()
           },
         }}
-        onRow={(record) => ({ onClick: () => navigate(`/orders/${record.id}`) })}
+        onRow={(record) =>
+          // 时间分隔行不可点击、不响应悬停高亮
+          record.__divider
+            ? { style: { cursor: 'default', pointerEvents: 'none' } }
+            : {
+                onClick: () => {
+                  // 进入详情前保存列表快照（数据 + 滚动位置，按当前 URL 参数区分），返回时恢复
+                  saveSnapshot()
+                  navigate(`/orders/${record.id}`)
+                },
+              }
+        }
       />
+      <Modal
+        title="新建客户"
+        open={customerModalOpen}
+        onCancel={() => setCustomerModalOpen(false)}
+        onOk={submitCustomer}
+        destroyOnClose
+      >
+        <Form form={customerForm} layout="vertical">
+          <Form.Item label="姓名">
+            <Form.Item name="name" noStyle>
+              <Input placeholder="客户姓名" />
+            </Form.Item>
+          </Form.Item>
+          <Form.Item label="手机号">
+            <Form.Item name="phone" noStyle>
+              <Input placeholder="手机号" type="tel" inputMode="tel" />
+            </Form.Item>
+          </Form.Item>
+          <Form.Item label="性别" name="gender">
+            <GenderCheckboxes />
+          </Form.Item>
+          <Form.Item label="微信昵称" name="wechat_nickname">
+            <Input placeholder="微信昵称" />
+          </Form.Item>
+          <Form.Item label="微信ID" name="wechat_id">
+            <Input placeholder="微信ID" />
+          </Form.Item>
+          <p style={{ color: '#999', marginBottom: 0 }}>
+            至少填写姓名或微信昵称中的一项即可保存；手机号、微信ID可选填。
+          </p>
+        </Form>
+      </Modal>
     </Card>
   )
 }

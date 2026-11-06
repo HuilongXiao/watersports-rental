@@ -21,6 +21,10 @@ SESSION_SECRET = os.getenv("SESSION_SECRET") or "change-me-in-production"
 SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true"
 SESSION_MAX_AGE_SECONDS = 24 * 60 * 60
 
+# FastAPI 交互式文档 / OpenAPI：默认关闭，避免公网暴露接口结构；
+# 本地调试需要时设置 API_DOCS_ENABLED=1。
+API_DOCS_ENABLED = os.getenv("API_DOCS_ENABLED", "0").lower() in ("1", "true", "on")
+
 # Fixed business rules (not editable settings).
 BUSINESS_TIMEZONE = "Asia/Shanghai"
 ORDER_DURATION_HOURS = 2
@@ -34,3 +38,11 @@ BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 # (mounted as ./exports:/app/exports in Docker).
 AUTO_EXPORT_DIR = Path(os.getenv("AUTO_EXPORT_DIR", str(PROJECT_ROOT / "exports")))
 AUTO_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Request timing middleware (X-Server-Timing header + JSON log).
+# Default on for dev/debug; set REQUEST_TIMING=0 (or false) to disable in production.
+REQUEST_TIMING = os.getenv("REQUEST_TIMING", "1").lower() not in ("0", "false", "off")
+
+# POST /api/_trace client-side trace reporting endpoint. Default off to avoid
+# generating large amounts of logs; enable with TRACE_REPORT_ENABLED=1.
+TRACE_REPORT_ENABLED = os.getenv("TRACE_REPORT_ENABLED", "0").lower() in ("1", "true", "on")

@@ -85,7 +85,7 @@ export default function DailySummary() {
         onClick={() => navigate('/dashboard')}
         style={{ marginBottom: 16, paddingLeft: 0 }}
       >
-        ← 返回工作台
+        ← 返回概览
       </Button>
       <Card>
         <Space style={{ marginBottom: 16 }}>
@@ -105,7 +105,7 @@ export default function DailySummary() {
           />
           {summary && (
             <span style={{ color: '#999', fontSize: 12 }}>
-              {summary.is_future ? '预订订单预估' : '已完成订单'} · 共 {summary.order_count} 单
+              {summary.is_future ? '预订订单预估' : '已完成/进行中订单'} · 共 {summary.order_count} 单
             </span>
           )}
         </Space>
@@ -194,6 +194,45 @@ export default function DailySummary() {
               {canViewRevenue && (
                 <div style={{ textAlign: 'right', fontWeight: 600, fontSize: 14 }}>
                   总收款金额：¥{fenToYuan(totalAmount)}
+                </div>
+              )}
+
+              {/* 收款方式统计（最底部） */}
+              {canViewRevenue && !summary.is_future && (
+                <div>
+                  <div style={{ fontWeight: 600, marginBottom: 8 }}>收款方式</div>
+                  {summary.payment_method_totals.length > 0 ? (
+                    <Table
+                      size="small"
+                      columns={[
+                        { title: '方式', dataIndex: 'name', key: 'name' },
+                        { title: '代码', dataIndex: 'code', key: 'code', width: 100 },
+                        {
+                          title: '金额',
+                          dataIndex: 'amount_fen',
+                          key: 'amount_fen',
+                          width: 120,
+                          align: 'right' as const,
+                          render: (fen: number) => `¥${fenToYuan(fen)}`,
+                        },
+                      ]}
+                      dataSource={summary.payment_method_totals.map((p, i) => ({ ...p, key: i }))}
+                      pagination={false}
+                      summary={() => (
+                        <Table.Summary fixed>
+                          <Table.Summary.Row>
+                            <Table.Summary.Cell index={0}>合计</Table.Summary.Cell>
+                            <Table.Summary.Cell index={1} />
+                            <Table.Summary.Cell index={2} align="right">
+                              ¥{fenToYuan(summary.payment_method_totals.reduce((s, p) => s + p.amount_fen, 0))}
+                            </Table.Summary.Cell>
+                          </Table.Summary.Row>
+                        </Table.Summary>
+                      )}
+                    />
+                  ) : (
+                    <p style={{ color: '#999', margin: 0 }}>暂无收款记录</p>
+                  )}
                 </div>
               )}
             </Space>

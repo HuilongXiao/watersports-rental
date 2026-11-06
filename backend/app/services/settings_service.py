@@ -24,7 +24,7 @@ def get_settings(db: Session, group_id: str) -> Setting:
 
 def update_settings(
     db: Session, user: User, auto_return_after_minutes: int, group_id: str | None = None,
-    *, fast_customer_mode: bool = False,
+    *, fast_customer_mode: bool = False, boat_numbering_enabled: bool = False,
 ) -> Setting:
     if auto_return_after_minutes < 1:
         raise ValueError("auto_return_after_minutes must be >= 1")
@@ -34,6 +34,7 @@ def update_settings(
     setting = get_settings(db, effective_group_id)
     setting.auto_return_after_minutes = auto_return_after_minutes
     setting.fast_customer_mode = fast_customer_mode
+    setting.boat_numbering_enabled = boat_numbering_enabled
     setting.updated_by_user_id = user.id
     db.commit()
     db.refresh(setting)

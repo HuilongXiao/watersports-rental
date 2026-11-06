@@ -10,6 +10,7 @@ import Forecast from './pages/Forecast'
 import Customers from './pages/Customers'
 import CustomerDetail from './pages/CustomerDetail'
 import Orders from './pages/Orders'
+import Boats from './pages/Boats'
 import OrderForm from './pages/OrderForm'
 import OrderDetail from './pages/OrderDetail'
 import CatalogSettings from './pages/CatalogSettings'
@@ -50,6 +51,7 @@ export default function App() {
           <Route path="orders/new" element={<OrderForm />} />
           <Route path="orders/:id" element={<OrderDetail />} />
           <Route path="orders/:id/edit" element={<OrderForm />} />
+          <Route path="boats" element={<Boats />} />
           <Route path="customers" element={<Customers />} />
           <Route path="customers/:id" element={<CustomerDetail />} />
           <Route path="users" element={<Users />} />
