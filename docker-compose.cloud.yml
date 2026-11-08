@@ -1,0 +1,30 @@
+# 腾讯云生产环境（Ubuntu）：单容器部署
+# FastAPI 同时提供 API 和已编译的前端静态文件，容器内部监听 8000。
+#
+# 使用方式（在仓库根目录）：
+#   docker compose -f docker-compose.cloud.yml up -d --build
+#
+# Compose 会自动读取同目录下的 .env 文件，用于下面 ${...} 的变量替换。
+# 生产环境 .env 至少需要：SESSION_SECRET=<长随机字符串>
+# 如果之后启用 HTTPS，把 SESSION_COOKIE_SECURE 改为 true。
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.allinone
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+    image: watersports-rental:1.1.17
+    container_name: watersports-rental
+    restart: always
+    ports:
+      - "8080:8000"
+    environment:
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET 未设置，请在 .env 中配置}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      SEED_DEFAULT_DATA: ${SEED_DEFAULT_DATA:-false}
+    volumes:
+      - /home/ubuntu/docker/watersports-rental/data:/app/data
+      - /home/ubuntu/docker/watersports-rental/backups:/app/backups
+      - /home/ubuntu/docker/watersports-rental/exports:/app/exports
