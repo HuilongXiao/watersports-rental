@@ -1396,7 +1396,7 @@ function SystemTab() {
       {(settings?.payment_methods?.length ?? 0) > 0 && <PaymentSection />}
       <Divider />
       <Descriptions size="small" column={1}>
-        <Descriptions.Item label="系统版本">v1.1.17</Descriptions.Item>
+        <Descriptions.Item label="系统版本">v1.1.18</Descriptions.Item>
       </Descriptions>
       {/* 保存按钮固定放在所有设置内容之后（仅管理员可保存） */}
       {isAdmin && (
