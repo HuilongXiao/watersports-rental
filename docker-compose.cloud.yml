@@ -38,5 +38,5 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - /home/ubuntu/docker/watersports-rental/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - /home/ubuntu/docker/watersports-rental/certs:/etc/nginx/certs:ro
