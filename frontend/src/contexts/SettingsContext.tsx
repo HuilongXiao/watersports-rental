@@ -17,8 +17,11 @@ const CACHE_TTL_MS = 5 * 60 * 1000 // 5 分钟缓存失效
 // payment_methods 为空数组 = 功能未启用或降级，UI 不显示支付方式相关控件。
 const DEFAULT_SETTINGS: AppSettings = {
   auto_return_after_minutes: 120,
+  auto_return_enabled: true,
   fast_customer_mode: false,
   boat_numbering_enabled: false,
+  shop_latitude: null,
+  shop_longitude: null,
   updated_at: '',
   payment_methods: [],
   default_payment_method: null,

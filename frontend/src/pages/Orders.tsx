@@ -9,6 +9,7 @@ import { api } from '../api'
 import { useAuth } from '../auth'
 import { typeColorHex, saveOrdersSnapshot, readOrdersSnapshot, type OrdersSnapshot } from '../utils'
 import { useLayoutMode } from '../layoutMode'
+import WeeklyForecast from '../components/WeeklyForecast'
 import type { Customer, Order, OrderStatus } from '../types'
 
 // 状态展示顺序：进行中 → 预订 → 已完成 → 爽约 → 已取消（与概览“订单分布”配色一致）
@@ -489,18 +490,39 @@ export default function Orders() {
     loadSpecOptions()
   }, [loadSpecOptions])
 
-  // 点击“订单管理”菜单刷新：重置为预订 tab、清除筛选、回到顶部
+  // 决定默认展示的 tab：当日既没有「预订」、又有「进行中」订单时，直接展示「进行中」；
+  // 其余情况（有预订，或两者都没有）仍展示「预订」。
+  const resolveDefaultTab = useCallback(async (): Promise<OrderStatus> => {
+    const today = dayjs().format('YYYY-MM-DD')
+    try {
+      const [activeList, inProgressList] = await Promise.all([
+        api.get<Order[]>(`/api/orders?status=active&business_day=${today}`),
+        api.get<Order[]>(`/api/orders?status=in_progress&business_day=${today}`),
+      ])
+      return activeList.length === 0 && inProgressList.length > 0 ? 'in_progress' : 'active'
+    } catch {
+      // 接口失败时按原规则展示「预订」
+      return 'active'
+    }
+  }, [])
+
+  // 点击“订单管理”菜单刷新：重置 tab、清除筛选、回到顶部
   const prevRefreshKey = useRef(ordersRefreshKey)
   useEffect(() => {
     if (ordersRefreshKey !== prevRefreshKey.current) {
       prevRefreshKey.current = ordersRefreshKey
-      setStatus('active')
       setFilter(EMPTY_FILTER)
       setCurrentPage(1)
       setBookingDay(dayjs())
       scrollToTop()
+      resolveDefaultTab().then((tab) => setStatus(tab))
+      return
     }
-  }, [ordersRefreshKey])
+    // 首次进入且没有 URL 指定 tab / 筛选 / 列表快照时，也按同样规则决定默认 tab
+    if (!spTab && !urlFilterActive && !snapshotRef.current) {
+      resolveDefaultTab().then((tab) => setStatus(tab))
+    }
+  }, [ordersRefreshKey, resolveDefaultTab, spTab, urlFilterActive])
 
   const openFilterPopover = () => {
     setDraftStatuses(filter.statuses)
@@ -1067,6 +1089,10 @@ export default function Orders() {
           </Tag>
         )}
       </div>
+      {/* 无订单时不再显示空的表格与「暂无数据」，改为展示未来一周天气预报 */}
+      {!loading && tableRows.length === 0 ? (
+        <WeeklyForecast />
+      ) : (
       <Table
         className="orders-table"
         // 分隔行与其上一行去掉默认底边线，避免出现多余的两条线
@@ -1113,6 +1139,7 @@ export default function Orders() {
               }
         }
       />
+      )}
       <Modal
         title="新建客户"
         open={customerModalOpen}

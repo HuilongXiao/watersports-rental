@@ -722,7 +722,10 @@ def check_in(
         effective_group_id = first_group.id if first_group else None
     if effective_group_id is not None:
         settings: Setting = get_settings(db, effective_group_id)
-        auto_return_minutes = settings.auto_return_after_minutes
+        # 自动归还关闭时不写入时限，订单只有人工归还才会结束
+        auto_return_minutes = (
+            settings.auto_return_after_minutes if settings.auto_return_enabled else None
+        )
     else:
         auto_return_minutes = DEFAULT_AUTO_RETURN_MINUTES
     order.check_in_at = now
@@ -875,11 +878,19 @@ def auto_return_overdue_orders(db: Session) -> list[Order]:
         .where(Order.is_deleted.is_(False))
     )
     returned: list[Order] = []
+    # 关闭了自动归还的 Group 整体跳过
+    auto_return_disabled_groups = set(
+        db.scalars(
+            select(Setting.group_id).where(Setting.auto_return_enabled.is_(False))
+        ).all()
+    )
     # 已经操作过船只出发的订单由「船只调配」流程负责完成，不做超时自动完成
     dispatched_order_ids = set(
         db.scalars(select(BoatDispatch.order_id).distinct()).all()
     )
     for order in db.scalars(stmt).all():
+        if order.group_id in auto_return_disabled_groups:
+            continue
         if order.id in dispatched_order_ids:
             continue
         deadline = order.check_in_at + timedelta(minutes=order.auto_return_after_minutes)

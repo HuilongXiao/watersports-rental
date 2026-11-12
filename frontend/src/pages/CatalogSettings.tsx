@@ -31,7 +31,8 @@ import { useAuth } from '../auth'
 import { useSettings } from '../contexts/SettingsContext'
 import { useLayoutMode } from '../layoutMode'
 import LayoutModeSwitch from '../components/LayoutModeSwitch'
-import { fenToYuan, typeColorHex, TYPE_COLOR_OPTIONS, yuanToFen } from '../utils'
+import FloatingBackButton from '../components/FloatingBackButton'
+import { fenToYuan, formatDateTime, typeColorHex, TYPE_COLOR_OPTIONS, yuanToFen } from '../utils'
 import type {
   AppSettings,
   Catalog,
@@ -71,12 +72,25 @@ export default function CatalogSettings() {
   // 配置类入口（器材目录/系统设置）仅管理员与超级管理员可见
   const isAdmin = Boolean(user && (user.role === 'superuser' || user.role === 'admin'))
 
-  // 器材编号是否全部完成：未完成时在「器材编号」tab 上显示红色感叹号
+  // 器材目录待完善项（编号未完成 / 数量未填写）时，在「器材目录」入口显示红色感叹号
   const [numberingAllComplete, setNumberingAllComplete] = useState(true)
+  const [quantityAllComplete, setQuantityAllComplete] = useState(true)
   const refreshNumbering = useCallback(async () => {
     try {
-      const data = await api.get<{ all_complete: boolean }>('/api/boats/numbering')
-      setNumberingAllComplete(data.all_complete)
+      const [numbering, inventory, catalogData] = await Promise.all([
+        api.get<{ all_complete: boolean }>('/api/boats/numbering'),
+        api.get<InventoryRow[]>('/api/inventory'),
+        api.get<Catalog>('/api/catalog'),
+      ])
+      setNumberingAllComplete(numbering.all_complete)
+      // 启用中的器材都必须填写数量（0 视为未填写）
+      setQuantityAllComplete(
+        catalogData.equipment.every(
+          (spec) =>
+            !spec.is_active ||
+            (inventory.find((r) => r.equipment_spec_id === spec.id)?.total_quantity ?? 0) > 0,
+        ),
+      )
     } catch {
       // 降级：接口失败时不显示提醒，不阻塞页面
     }
@@ -85,84 +99,95 @@ export default function CatalogSettings() {
     refreshNumbering()
   }, [refreshNumbering])
 
-  const tabs: SettingsTabDef[] = isAdmin ? [
+  // 店铺管理：店铺设置 + 器材目录 / 类型管理 / 售卖项目
+  const storeEntries: SettingsTabDef[] = [
     {
-      key: 'sale',
-      label: '器材售卖',
-      children: (
-        <Tabs
-          items={[
-            {
-              key: 'catalog',
-              label: '器材目录',
-              children: <EquipmentTab onNumberingChanged={refreshNumbering} />,
-            },
-            { key: 'types', label: '类型管理', children: <TypeTab /> },
-            {
-              key: 'numbering',
-              label: (
-                <span>
-                  器材编号
-                  {!numberingAllComplete && (
-                    <span style={{ color: '#ff4d4f', marginLeft: 4 }}>❗</span>
-                  )}
-                </span>
-              ),
-              children: <NumberingTab onChanged={refreshNumbering} />,
-            },
-            { key: 'items', label: '售卖项目', children: <SaleTab /> },
-          ]}
-        />
-      ),
+      key: 'store-settings',
+      label: '店铺设置',
+      children: <StoreTab onNumberingChanged={refreshNumbering} />,
     },
-    { key: 'system', label: '系统设置', children: <SystemTab /> },
-    ...(canExport ? [{ key: 'export', label: '数据导出', children: <ExportTab /> }] : []),
-    ...(canBackup ? [{ key: 'backup', label: '数据备份', children: <BackupTab /> }] : []),
+    {
+      key: 'catalog',
+      label: (
+        <span>
+          器材目录
+          {!(numberingAllComplete && quantityAllComplete) && (
+            <span style={{ color: '#ff4d4f', marginLeft: 4 }}>❗</span>
+          )}
+        </span>
+      ),
+      children: <EquipmentTab onNumberingChanged={refreshNumbering} />,
+    },
+    { key: 'types', label: '类型管理', children: <TypeTab /> },
+    { key: 'items', label: '售卖项目', children: <SaleTab /> },
+  ]
+
+  // 系统设置 - 数据管理：数据导出 + 数据备份合并为一个页面（按权限显示对应卡片）
+  const dataManagement = (
+    <>
+      {canExport && <ExportTab />}
+      {canBackup && <BackupTab />}
+    </>
+  )
+
+  // 系统设置：基础设置 + 数据管理 + 用户管理 + Group 管理
+  const systemEntries: SettingsTabDef[] = [
+    { key: 'basic', label: '基础设置', children: <BasicTab /> },
+    ...(canExport || canBackup
+      ? [{ key: 'data', label: '数据管理', children: dataManagement }]
+      : []),
     ...(canManageUsers
       ? [{ key: 'users', label: '用户管理', children: <Users /> }]
       : []),
     ...(isSuperuser ? [{ key: 'groups', label: 'Group管理', children: <Groups /> }] : []),
-  ] : [
-    // 系统设置对所有用户开放：调试上报、布局切换、版本信息在此页
-    { key: 'system', label: '系统设置', children: <SystemTab /> },
-    ...(canExport ? [{ key: 'export', label: '数据导出', children: <ExportTab /> }] : []),
-    ...(canManageUsers
-      ? [{ key: 'users', label: '用户管理', children: <Users /> }]
-      : []),
   ]
+
+  // 顶层分为「店铺管理」和「系统设置」两个区域
+  const sections: { title: string; entries: SettingsTabDef[] }[] = [
+    ...(isAdmin ? [{ title: '店铺管理', entries: storeEntries }] : []),
+    { title: '系统设置', entries: systemEntries },
+  ]
+  const tabs: SettingsTabDef[] = sections.map((section) => ({
+    key: section.title,
+    label: section.title,
+    children: <Tabs items={section.entries} />,
+  }))
+  const allEntries = sections.flatMap((section) => section.entries)
 
   // 手机版：竖排菜单，点击后进入独立页面编辑
   if (isMobile) {
-    const current = tabs.find((t) => t.key === mobileActive)
+    const current = allEntries.find((t) => t.key === mobileActive)
     if (current) {
       return (
         <div>
-          <Button
-            type="link"
-            onClick={() => setMobileActive(null)}
-            style={{ marginBottom: 12, paddingLeft: 0 }}
-          >
-            ← 返回设置
-          </Button>
+          <FloatingBackButton onClick={() => setMobileActive(null)} ariaLabel="返回设置" />
           {current.children}
         </div>
       )
     }
     return (
-      <Card title="目录与设置">
-        <List
-          dataSource={tabs}
-          renderItem={(item) => (
-            <List.Item
-              style={{ cursor: 'pointer' }}
-              onClick={() => setMobileActive(item.key)}
-            >
-              <span style={{ fontWeight: 500 }}>{item.label}</span>
-              <RightOutlined style={{ color: '#bbb', fontSize: 12 }} />
-            </List.Item>
-          )}
-        />
-      </Card>
+      <div>
+        {sections.map((section) => (
+          <Card
+            key={section.title}
+            title={section.title}
+            style={{ marginBottom: 16 }}
+          >
+            <List
+              dataSource={section.entries}
+              renderItem={(item) => (
+                <List.Item
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => setMobileActive(item.key)}
+                >
+                  <span style={{ color: '#000' }}>{item.label}</span>
+                  <RightOutlined style={{ color: '#bbb', fontSize: 12 }} />
+                </List.Item>
+              )}
+            />
+          </Card>
+        ))}
+      </div>
     )
   }
 
@@ -265,7 +290,7 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
       setShowInUsage(spec.show_in_usage ?? true)
     } else {
       specForm.resetFields()
-      specForm.setFieldsValue({ quantity: 0 })
+      specForm.setFieldsValue({ quantity: 1 })
       setSpecActive(true)
       setNumberingRequired(true)
       setShowInUsage(true)
@@ -300,10 +325,23 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
       message.success('已保存')
       setSpecModal(false)
       load()
+      onNumberingChanged?.()
     } catch (error) {
       message.error(error instanceof Error ? error.message : '保存失败')
     }
   }
+
+  // 数量为必填项：启用中且总数量为 0 视为「未填写」，在表头与对应行显示红色感叹号
+  const missingQuantityIds = new Set(
+    (catalog?.equipment ?? [])
+      .filter(
+        (spec) =>
+          spec.is_active &&
+          (inventoryRows.find((r) => r.equipment_spec_id === spec.id)?.total_quantity ??
+            0) === 0,
+      )
+      .map((spec) => spec.id),
+  )
 
   const specColumns: ColumnsType<EquipmentSpec> = [
     {
@@ -334,11 +372,8 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
         <span
           style={{
             display: 'inline-block',
-            padding: '0 6px',
-            border: `1px solid ${record.is_active ? '#52c41a' : '#bfbfbf'}`,
-            borderRadius: 4,
             whiteSpace: 'nowrap',
-            // 已停用的器材金额（符号与数字）一并置灰
+            // 已停用的器材金额一并置灰
             color: record.is_active ? undefined : '#8c8c8c',
           }}
         >
@@ -364,7 +399,14 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
       ),
     },
     {
-      title: '数量',
+      title:
+        missingQuantityIds.size > 0 ? (
+          <span style={{ whiteSpace: 'nowrap' }}>
+            数量 <span style={{ color: '#ff4d4f' }}>❗</span>
+          </span>
+        ) : (
+          '数量'
+        ),
       width: isMobile ? 62 : 110,
       align: 'center',
       render: (_, record) => {
@@ -372,18 +414,23 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
         // 实线框 = 已开启器材编号；虚线框 = 未开启编号
         const dotted = record.boat_numbering_required === false
         return (
-          <span
-            style={{
-              display: 'inline-block',
-              padding: '0 6px',
-              border: `1px ${dotted ? 'dashed' : 'solid'} ${record.is_active ? '#000' : '#8c8c8c'}`,
-              borderRadius: 4,
-              whiteSpace: 'nowrap',
-              // 已停用的器材数量（框与数字）一并置灰
-              color: record.is_active ? undefined : '#8c8c8c',
-            }}
-          >
-            {row?.total_quantity ?? 0}
+          <span style={{ whiteSpace: 'nowrap' }}>
+            <span
+              style={{
+                display: 'inline-block',
+                padding: '0 6px',
+                border: `1px ${dotted ? 'dashed' : 'solid'} ${record.is_active ? '#000' : '#8c8c8c'}`,
+                borderRadius: 4,
+                whiteSpace: 'nowrap',
+                // 已停用的器材数量（框与数字）一并置灰
+                color: record.is_active ? undefined : '#8c8c8c',
+              }}
+            >
+              {row?.total_quantity ?? 0}
+            </span>
+            {missingQuantityIds.has(record.id) && (
+              <span style={{ color: '#ff4d4f', marginLeft: 4 }}>❗</span>
+            )}
           </span>
         )
       },
@@ -423,26 +470,38 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
         destroyOnClose
       >
         <Form form={specForm} layout="vertical">
-          <Form.Item
-            label="器材类型"
-            name="equipment_type_id"
-            rules={[{ required: true, message: '请选择类型' }]}
-          >
-            <Select
-              placeholder="选择器材类型"
-              options={(catalog?.equipment_types ?? [])
-                // 已停用的类型不可再用于新建规格；编辑时保留当前类型用于回显
-                .filter((t) => t.is_active || t.id === editingSpec?.equipment_type_id)
-                .map((t) => ({ value: t.id, label: t.name }))}
-            />
-          </Form.Item>
+          <div style={{ position: 'relative' }}>
+            <Form.Item
+              label="器材类型"
+              name="equipment_type_id"
+              rules={[{ required: true, message: '请选择类型' }]}
+            >
+              <Select
+                placeholder="选择器材类型"
+                options={(catalog?.equipment_types ?? [])
+                  // 已停用的类型不可再用于新建规格；编辑时保留当前类型用于回显
+                  .filter((t) => t.is_active || t.id === editingSpec?.equipment_type_id)
+                  .map((t) => ({ value: t.id, label: t.name }))}
+              />
+            </Form.Item>
+            {/* 启用状态开关：与「器材类型」标题同一行，靠最右侧 */}
+            {editingSpec && (
+              <Switch
+                checkedChildren="启用"
+                unCheckedChildren="停用"
+                checked={specActive}
+                onChange={setSpecActive}
+                style={{ position: 'absolute', top: 0, right: 0, zIndex: 1 }}
+              />
+            )}
+          </div>
           <Form.Item label="规格名称" name="name" rules={[{ required: true, message: '如：竞速皮划艇（3 座）' }]}>
             <Input />
           </Form.Item>
           <Row gutter={12}>
             <Col span={12}>
               <Form.Item
-                label="2 小时价格（元）"
+                label="售价"
                 name="price"
                 rules={[{ required: true, message: '请输入价格' }]}
               >
@@ -456,7 +515,7 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
             </Col>
             <Col span={12}>
               <Form.Item
-                label="座位数（人数）"
+                label="座位数"
                 name="capacity"
                 rules={[{ required: true, message: '请输入座位数' }]}
               >
@@ -472,17 +531,18 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
           <Form.Item
             label="数量"
             name="quantity"
-            rules={[{ required: true, message: '请输入数量' }]}
+            rules={[
+              { required: true, message: '请输入数量' },
+              { type: 'number', min: 1, message: '数量至少为 1 件' },
+            ]}
             extra={
-              !editingSpec
-                ? '该规格可投入使用的总数量，可先填 0，之后在编辑页调整。'
-                : editingOccupied > 0
-                  ? `该规格可投入使用的总数量；当前已占用 ${editingOccupied}（已签到未归还），不能低于该值。`
-                  : '该规格可投入使用的总数量。'
+              editingSpec && editingOccupied > 0
+                ? `该规格可投入使用的总数量；当前已占用 ${editingOccupied}（已签到未归还），不能低于该值。`
+                : undefined
             }
           >
             <InputNumber
-              min={editingSpec ? editingOccupied : 0}
+              min={editingSpec ? Math.max(1, editingOccupied) : 1}
               precision={0}
               inputMode="tel"
               style={{ width: '100%' }}
@@ -490,56 +550,49 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
             />
           </Form.Item>
           {editingSpec && (
-            <Form.Item
-              label={
-                <Space size={8}>
-                  <span>显示用量</span>
-                  <Switch size="small" checked={showInUsage} onChange={setShowInUsage} />
-                </Space>
-              }
-              extra="开启后该器材会出现在概览的「船只用量」区域；关闭后不展示（仅影响概览，不影响下单与调配）。"
-            >
-              <span />
+            <Form.Item extra="开启后该器材会出现在概览的「船只用量」区域；关闭后不展示（仅影响概览，不影响下单与调配）。">
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                }}
+              >
+                <span>显示用量</span>
+                <Switch
+                  checkedChildren="开"
+                  unCheckedChildren="关"
+                  checked={showInUsage}
+                  onChange={setShowInUsage}
+                />
+              </div>
             </Form.Item>
           )}
           {editingSpec && (
-            <Form.Item
-              label={
-                <Space size={8}>
+            <Form.Item extra="关闭后该器材无需编号，也不会出现在「船只」页面的出发/返还调配中；关闭保存时会清空已编好的编号。">
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                  }}
+                >
                   <span>器材编号</span>
                   <Switch
-                    size="small"
+                    checkedChildren="开"
+                    unCheckedChildren="关"
                     checked={numberingRequired}
                     onChange={setNumberingRequired}
                   />
-                </Space>
-              }
-              extra="关闭后该器材无需编号，也不会出现在「船只」页面的出发/返还调配中；关闭保存时会清空已编好的编号。"
-            >
-              <Button
-                disabled={!numberingRequired}
-                onClick={() => setNumberingSpecId(editingSpec.id)}
-              >
-                器材编号
-              </Button>
-            </Form.Item>
-          )}
-          {editingSpec && (
-            <Form.Item
-              label={
-                <Space size={8}>
-                  <span>启用状态</span>
-                  <Switch
-                    checkedChildren="启用"
-                    unCheckedChildren="停用"
-                    checked={specActive}
-                    onChange={setSpecActive}
-                  />
-                </Space>
-              }
-              extra="停用后新订单将无法选择该规格；已停用的规格可在此重新启用，历史订单不受影响。"
-            >
-              <span />
+                </div>
+                <Button
+                  disabled={!numberingRequired}
+                  onClick={() => setNumberingSpecId(editingSpec.id)}
+                >
+                  器材编号
+                </Button>
+              </div>
             </Form.Item>
           )}
         </Form>
@@ -566,19 +619,6 @@ interface SpecNumbersView {
   type_name: string
   target_quantity: number
   numbers: { id: string; number: string; in_use: boolean; order_number: string | null }[]
-}
-
-interface NumberingRow {
-  spec_id: string
-  spec_name: string
-  type_name: string
-  type_color: string
-  is_active: boolean
-  boat_numbering_required: boolean
-  target_quantity: number
-  numbered_quantity: number
-  complete: boolean
-  in_use: number
 }
 
 // 给单个规格的所有器材编号：顺延生成或逐条手动填写，必须填满且不重复。
@@ -747,102 +787,10 @@ function NumberingModal({
   )
 }
 
-function NumberingTab({ onChanged }: { onChanged: () => void }) {
-  const { message } = App.useApp()
-  const [rows, setRows] = useState<NumberingRow[]>([])
-  const [loading, setLoading] = useState(false)
-  const [editing, setEditing] = useState<NumberingRow | null>(null)
-
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const data = await api.get<{ rows: NumberingRow[] }>('/api/boats/numbering')
-      setRows(data.rows)
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '加载失败')
-    } finally {
-      setLoading(false)
-    }
-  }, [message])
-
-  useEffect(() => {
-    load()
-  }, [load])
-
-  const columns: ColumnsType<NumberingRow> = [
-    {
-      title: '器材名称',
-      dataIndex: 'spec_name',
-      align: 'center',
-      // 器材名称使用其对应船型颜色
-      render: (value: string, record) => (
-        <span style={{ color: typeColorHex(record.type_color as any) }}>{value}</span>
-      ),
-    },
-    { title: '数量', dataIndex: 'target_quantity', width: 70, align: 'center' },
-    { title: '已编号', dataIndex: 'numbered_quantity', width: 80, align: 'center' },
-    {
-      title: '状态',
-      dataIndex: 'complete',
-      width: 100,
-      align: 'center',
-      render: (_: boolean, record) =>
-        record.boat_numbering_required === false ? (
-          <Tag>无需编号</Tag>
-        ) : record.complete ? (
-          <Tag color="green">已完成</Tag>
-        ) : (
-          <Tag color="red">未完成</Tag>
-        ),
-    },
-  ]
-
-  return (
-    <Card
-      title="器材编号"
-      extra={
-        <Button onClick={load} loading={loading}>
-          刷新
-        </Button>
-      }
-    >
-      <p style={{ color: '#888', marginBottom: 12 }}>
-        点击任意一行可查看并修改该器材下所有船只的编号。数量与编号不一致的器材会显示为「未完成」；已关闭编号的器材显示「无需编号」。
-      </p>
-      <Table
-        rowKey="spec_id"
-        columns={columns}
-        dataSource={rows}
-        loading={loading}
-        pagination={false}
-        onRow={(record) => ({
-          onClick: () => {
-            if (record.boat_numbering_required === false) {
-              message.info('该器材已关闭编号，无需编号')
-              return
-            }
-            setEditing(record)
-          },
-          style: { cursor: 'pointer' },
-        })}
-      />
-      <NumberingModal
-        specId={editing?.spec_id ?? null}
-        open={Boolean(editing)}
-        onClose={() => setEditing(null)}
-        onSaved={() => {
-          setEditing(null)
-          load()
-          onChanged()
-        }}
-      />
-    </Card>
-  )
-}
-
 /* ---------------- Equipment types ---------------- */
 
 function TypeTab() {
+  const { isMobile } = useLayoutMode()
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const { message } = App.useApp()
   const [modalOpen, setModalOpen] = useState(false)
@@ -893,14 +841,26 @@ function TypeTab() {
     {
       title: '类型名称',
       dataIndex: 'name',
-      render: (value: string, record) => (
-        <span style={{ color: typeColorHex(record.color), fontWeight: 600 }}>{value}</span>
+      align: 'center',
+      // 手机版收窄列宽并用省略号，保证单行展示
+      width: isMobile ? 150 : undefined,
+      ellipsis: isMobile,
+      render: (value: string) => (
+        <span
+          style={{
+            // 类型名称固定用黑色、常规字重，不随类型设定颜色变化
+            color: '#000',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {value}
+        </span>
       ),
     },
     {
       title: '颜色',
       dataIndex: 'color',
-      width: 90,
+      width: isMobile ? 72 : 90,
       align: 'center',
       render: (value: string) => (
         <span
@@ -917,7 +877,8 @@ function TypeTab() {
     {
       title: '状态',
       dataIndex: 'is_active',
-      width: 110,
+      width: isMobile ? 84 : 110,
+      align: 'center',
       render: (v: boolean) =>
         v ? <Tag color="green">启用</Tag> : <Tag>已停用</Tag>,
     },
@@ -938,10 +899,12 @@ function TypeTab() {
       }
     >
       <Table
+        className="type-table"
         rowKey="id"
         columns={columns}
         dataSource={data}
         pagination={false}
+        tableLayout="fixed"
         onRow={(record) => ({
           onClick: () => open(record),
           style: { cursor: 'pointer' },
@@ -986,6 +949,7 @@ function TypeTab() {
 /* ---------------- Sale items ---------------- */
 
 function SaleTab() {
+  const { isMobile } = useLayoutMode()
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const { message } = App.useApp()
   const [modalOpen, setModalOpen] = useState(false)
@@ -1035,21 +999,52 @@ function SaleTab() {
       }
     >
       <Table
+        className="sale-items-table"
         rowKey="id"
         dataSource={catalog?.sale_items ?? []}
         pagination={false}
+        tableLayout="fixed"
         columns={[
-          { title: '名称', dataIndex: 'name' },
-          { title: '价格', dataIndex: 'price', align: 'right', render: (v: number) => `¥${fenToYuan(v)}` },
+          {
+            title: '名称',
+            dataIndex: 'name',
+            align: 'center',
+            // 手机版收窄列宽并用省略号，保证单行展示
+            width: isMobile ? 108 : undefined,
+            ellipsis: isMobile,
+            render: (v: string) => <span style={{ whiteSpace: 'nowrap' }}>{v}</span>,
+          },
+          {
+            title: '价格',
+            dataIndex: 'price',
+            align: 'center',
+            width: isMobile ? 84 : 120,
+            // 与器材目录一致：纯文本金额，停用后置灰
+            render: (v: number, record) => (
+              <span
+                style={{
+                  display: 'inline-block',
+                  whiteSpace: 'nowrap',
+                  color: record.is_active ? undefined : '#8c8c8c',
+                }}
+              >
+                ¥{fenToYuan(v)}
+              </span>
+            ),
+          },
           {
             title: '状态',
             dataIndex: 'is_active',
+            align: 'center',
+            width: isMobile ? 84 : 110,
             render: (v: boolean) => (v ? <Tag color="green">启用</Tag> : <Tag>已停用</Tag>),
           },
           {
             title: '操作',
+            align: 'center',
+            width: isMobile ? 56 : 90,
             render: (_, record) => (
-              <Button type="link" onClick={() => open(record)}>
+              <Button type="link" size="small" onClick={() => open(record)}>
                 编辑
               </Button>
             ),
@@ -1195,8 +1190,7 @@ function PaymentSection() {
 
   return (
     <>
-      <Divider />
-      <div style={{ maxWidth: 420 }}>
+      <div>
         <Space style={{ justifyContent: 'space-between', width: '100%', marginBottom: 8 }}>
           <strong>付款方式</strong>
           {canManage && (
@@ -1206,9 +1200,13 @@ function PaymentSection() {
           )}
         </Space>
         <List
+          className="payment-method-list"
           size="small"
           bordered
-          dataSource={methods}
+          // 默认支付方式排在第一行
+          dataSource={[...methods].sort(
+            (a, b) => Number(b.is_default) - Number(a.is_default),
+          )}
           locale={{ emptyText: '暂无启用的支付方式' }}
           renderItem={(m) => (
             <List.Item
@@ -1271,14 +1269,172 @@ function PaymentSection() {
   )
 }
 
-function SystemTab() {
-  const { user } = useAuth()
-  // 配置项（自动归还/极速客户/船只编号/保存）仅管理员与超级管理员可改
-  const isAdmin = Boolean(user && (user.role === 'superuser' || user.role === 'admin'))
+function StoreTab({ onNumberingChanged }: { onNumberingChanged?: () => void }) {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [minutes, setMinutes] = useState(120)
-  const [fastMode, setFastMode] = useState(false)
+  const [autoReturnOn, setAutoReturnOn] = useState(true)
   const [boatNumbering, setBoatNumbering] = useState(false)
+  // 店铺坐标：经度 / 纬度，均未填写时为 null
+  const [longitude, setLongitude] = useState<number | null>(null)
+  const [latitude, setLatitude] = useState<number | null>(null)
+  const [saving, setSaving] = useState(false)
+  const { message } = App.useApp()
+  // 保存成功后刷新全局 SettingsContext（更新缓存，OrderForm 等页面立即生效）
+  const { refresh: refreshGlobalSettings } = useSettings()
+
+  useEffect(() => {
+    api
+      .get<AppSettings>('/api/settings')
+      .then((data) => {
+        setSettings(data)
+        setMinutes(data.auto_return_after_minutes)
+        setAutoReturnOn(data.auto_return_enabled)
+        setBoatNumbering(data.boat_numbering_enabled)
+        setLatitude(data.shop_latitude)
+        setLongitude(data.shop_longitude)
+      })
+      .catch((error) => message.error(error.message))
+  }, [message])
+
+  const save = async () => {
+    // 经度与纬度必须同时填写（都不填表示未设置）
+    if ((latitude === null) !== (longitude === null)) {
+      message.error('店铺坐标需要同时填写经度与纬度')
+      return
+    }
+    setSaving(true)
+    try {
+      const result = await api.put<AppSettings>('/api/settings', {
+        auto_return_after_minutes: minutes,
+        auto_return_enabled: autoReturnOn,
+        fast_customer_mode: settings?.fast_customer_mode ?? false,
+        boat_numbering_enabled: boatNumbering,
+        shop_latitude: latitude,
+        shop_longitude: longitude,
+      })
+      // PUT 只返回基础设置，不包含 payment_methods；合并保留原付款方式，避免保存后付款区域消失
+      setSettings((prev) =>
+        prev
+          ? {
+              ...prev,
+              ...result,
+              payment_methods: prev.payment_methods,
+              default_payment_method: prev.default_payment_method,
+            }
+          : result,
+      )
+      refreshGlobalSettings()
+      onNumberingChanged?.()
+      message.success('设置已保存')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Card title="店铺设置">
+      <div style={{ maxWidth: 680 }}>
+        {/* 自动归还：名称与开关同一行，第二行为时限 */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <strong>自动归还</strong>
+          <Switch
+            checked={autoReturnOn}
+            onChange={setAutoReturnOn}
+            checkedChildren="开"
+            unCheckedChildren="关"
+          />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 10 }}>
+          <span>自动归还时限</span>
+          <InputNumber
+            min={1}
+            max={9999}
+            inputMode="tel"
+            value={minutes}
+            disabled={!autoReturnOn}
+            onChange={(value) => setMinutes(value ?? 120)}
+            addonAfter="分钟"
+            style={{ width: 116 }}
+          />
+        </div>
+        <Divider style={{ borderColor: '#d9d9d9', margin: '16px 0' }} />
+        {/* 船只编号 */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <strong>船只编号</strong>
+          <Switch
+            checked={boatNumbering}
+            onChange={setBoatNumbering}
+            checkedChildren="开"
+            unCheckedChildren="关"
+          />
+        </div>
+        <div style={{ color: '#888', fontSize: 12, marginTop: 4 }}>
+          开启后可在「器材编号」中为每条船只编号，并在手机版「船只」页面调配出发/返还。开启前必须先给所有器材编号完整。
+        </div>
+        <Divider style={{ borderColor: '#d9d9d9', margin: '16px 0' }} />
+        {/* 店铺坐标：每个 Group 独立，顶部天气信息按此坐标获取 */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: 8,
+          }}
+        >
+          <strong>店铺坐标</strong>
+          <Space size={8}>
+            <InputNumber
+              min={-180}
+              max={180}
+              step={0.01}
+              value={longitude}
+              onChange={(value) => setLongitude(value)}
+              addonBefore="经度"
+              placeholder="121.52"
+              style={{ width: 148 }}
+            />
+            <InputNumber
+              min={-90}
+              max={90}
+              step={0.01}
+              value={latitude}
+              onChange={(value) => setLatitude(value)}
+              addonBefore="纬度"
+              placeholder="31.33"
+              style={{ width: 140 }}
+            />
+          </Space>
+        </div>
+        <div style={{ color: '#888', fontSize: 12, marginTop: 4 }}>
+          用于顶部天气信息，按该坐标展示当地天气；经度与纬度需同时填写。
+        </div>
+        {(settings?.payment_methods?.length ?? 0) > 0 && (
+          <>
+            <Divider style={{ borderColor: '#d9d9d9', margin: '16px 0' }} />
+            <PaymentSection />
+          </>
+        )}
+        <Divider style={{ borderColor: '#d9d9d9', margin: '16px 0' }} />
+        {/* 保存按钮置于卡片右下角 */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <Button type="primary" loading={saving} onClick={save}>
+            保存设置
+          </Button>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+function BasicTab() {
+  const { user } = useAuth()
+  // 极速客户模式仅管理员与超级管理员可改
+  const isAdmin = Boolean(user && (user.role === 'superuser' || user.role === 'admin'))
+  const [settings, setSettings] = useState<AppSettings | null>(null)
+  const [fastMode, setFastMode] = useState(false)
   const [saving, setSaving] = useState(false)
   // 调试上报开关：写入当前浏览器（含 PWA 独立存储）的 localStorage，仅本机生效。
   const [tracingOn, setTracingOn] = useState<boolean>(
@@ -1300,9 +1456,7 @@ function SystemTab() {
       .get<AppSettings>('/api/settings')
       .then((data) => {
         setSettings(data)
-        setMinutes(data.auto_return_after_minutes)
         setFastMode(data.fast_customer_mode)
-        setBoatNumbering(data.boat_numbering_enabled)
       })
       .catch((error) => message.error(error.message))
   }, [message])
@@ -1311,11 +1465,13 @@ function SystemTab() {
     setSaving(true)
     try {
       const result = await api.put<AppSettings>('/api/settings', {
-        auto_return_after_minutes: minutes,
+        auto_return_after_minutes: settings?.auto_return_after_minutes ?? 120,
+        auto_return_enabled: settings?.auto_return_enabled ?? true,
         fast_customer_mode: fastMode,
-        boat_numbering_enabled: boatNumbering,
+        boat_numbering_enabled: settings?.boat_numbering_enabled ?? false,
+        shop_latitude: settings?.shop_latitude ?? null,
+        shop_longitude: settings?.shop_longitude ?? null,
       })
-      // PUT 只返回基础设置，不包含 payment_methods；合并保留原付款方式，避免保存后付款区域消失
       setSettings((prev) =>
         prev
           ? {
@@ -1336,79 +1492,82 @@ function SystemTab() {
   }
 
   return (
-    <Card title="系统设置">
+    <Card title="基础设置">
       {isAdmin && (
-      <Form layout="vertical" style={{ maxWidth: 420 }}>
-        <Form.Item
-          label="自动归还时限（分钟）"
-          extra="客户签到后经过此时长仍未人工归还的订单，将由系统任务自动归还（System User）。默认 120 分钟，修改对新签到的订单生效。"
-        >
-          <InputNumber
-            min={1}
-            inputMode="tel"
-            value={minutes}
-            onChange={(value) => setMinutes(value ?? 120)}
-            addonAfter="分钟"
-          />
-        </Form.Item>
-        <Form.Item
-          label="极速客户模式"
-          extra="开启后创建订单时只需填写客户姓名，无需搜索或新建客户。"
-        >
-          <Switch
-            checked={fastMode}
-            onChange={setFastMode}
-            checkedChildren="开"
-            unCheckedChildren="关"
-          />
-        </Form.Item>
-        <Form.Item
-          label="船只编号"
-          extra="开启后可在「器材编号」中为每条船只编号，并在手机版「船只」页面调配出发/返还。开启前必须先给所有器材编号完整。"
-        >
-          <Switch
-            checked={boatNumbering}
-            onChange={setBoatNumbering}
-            checkedChildren="开"
-            unCheckedChildren="关"
-          />
-        </Form.Item>
-      </Form>
+        <>
+          <div>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <span style={{ fontWeight: 500 }}>极速客户模式</span>
+              <Switch
+                checked={fastMode}
+                onChange={setFastMode}
+                checkedChildren="开"
+                unCheckedChildren="关"
+              />
+            </div>
+            <div style={{ color: '#888', fontSize: 12, marginTop: 4 }}>
+              开启后创建订单时只需填写客户姓名，无需搜索或新建客户。
+            </div>
+          </div>
+          <Divider />
+        </>
       )}
       {/* 调试上报开关：写入当前浏览器（含 PWA 独立存储）的 localStorage，
           开启后所有网络请求会附带一条摘要上报到后端 POST /api/_trace，
           NAS 上 ./data/logs/frontend-trace-YYYY-MM-DD.log 按天生成。 */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16, marginBottom: 12, padding: '10px 12px', background: '#fafafa', borderRadius: 6 }}>
-        <Switch checked={tracingOn} onChange={toggleTracing} />
-        <div style={{ flex: 1 }}>
+      <div>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
           <div style={{ fontWeight: 500 }}>调试上报</div>
-          <div style={{ color: '#888', fontSize: 12 }}>
-            开启后，本机所有网络请求会将耗时摘要上报到服务器的 trace 日志，便于定位卡顿。
-            仅对当前设备/浏览器生效（PWA 与 Safari 存储隔离，需在各自环境内分别开启）。
-          </div>
+          <Switch checked={tracingOn} onChange={toggleTracing} />
+        </div>
+        <div style={{ color: '#888', fontSize: 12, marginTop: 4 }}>
+          开启后，本机所有网络请求会将耗时摘要上报到服务器的 trace 日志，便于定位卡顿。
+          仅对当前设备/浏览器生效（PWA 与 Safari 存储隔离，需在各自环境内分别开启）。
         </div>
       </div>
       {/* 手动切换布局模式（手机版 / 桌面版）：仅本次会话生效，刷新后按屏幕宽度重新推导 */}
-      <div style={{ marginTop: 16 }}>
-        <LayoutModeSwitch block />
+      <Divider />
+      <div>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+          }}
+        >
+          <div style={{ fontWeight: 500 }}>页面布局</div>
+          <LayoutModeSwitch />
+        </div>
+        <div style={{ color: '#888', fontSize: 12, marginTop: 4 }}>
+          仅对当前浏览器会话生效，刷新后按屏幕宽度重新判断。
+        </div>
       </div>
-      {/* 付款区域：功能启用（payment_methods 非空）时显示，以横线与上方隔开 */}
-      {(settings?.payment_methods?.length ?? 0) > 0 && <PaymentSection />}
       <Divider />
       <Descriptions size="small" column={1}>
-        <Descriptions.Item label="系统版本">v1.1.18</Descriptions.Item>
+        <Descriptions.Item label="系统版本">v1.2.0</Descriptions.Item>
+        <Descriptions.Item label="最近更新">
+          {settings ? new Date(settings.updated_at).toLocaleDateString('zh-CN') : '—'}
+        </Descriptions.Item>
       </Descriptions>
-      {/* 保存按钮固定放在所有设置内容之后（仅管理员可保存） */}
+      {/* 保存按钮固定在内容之后、卡片右下角（仅管理员可保存） */}
       {isAdmin && (
-        <div style={{ marginTop: 16 }}>
+        <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end' }}>
           <Button type="primary" loading={saving} onClick={save}>
             保存设置
           </Button>
-          {settings && (
-            <p style={{ color: '#999', marginTop: 12 }}>
-              最近更新：{new Date(settings.updated_at).toLocaleString('zh-CN')}
-            </p>
-          )}
         </div>
       )}
     </Card>
@@ -1499,36 +1658,52 @@ function ExportTab() {
   return (
     <>
       <Card title="订单数据导出">
-        <Form layout="vertical" style={{ maxWidth: 480 }}>
-          <Form.Item label="选择时间范围" required>
-            <DatePicker.RangePicker
-              value={range}
-              onChange={(value) => setRange(value as [Dayjs, Dayjs] | null)}
-              allowClear
-            />
-          </Form.Item>
+        {/* 日期范围与导出按钮同一行，按钮靠最右 */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            marginBottom: 8,
+          }}
+        >
+          <DatePicker.RangePicker
+            value={range}
+            onChange={(value) => setRange(value as [Dayjs, Dayjs] | null)}
+            allowClear
+            style={{ flex: '1 1 auto', minWidth: 0, maxWidth: 320 }}
+          />
           <Button type="primary" loading={exporting} onClick={doExport} disabled={!canExport}>
             导出 CSV
           </Button>
-          {!canExport && <p style={{ color: '#999', marginTop: 12 }}>当前账号无导出权限。</p>}
-          <p style={{ color: '#999', marginTop: 12 }}>
-            导出选定时间范围内所有订单的 CSV（每订单按类目拆分为多行，包含使用时间、消费总额、成人、儿童、类目明细等）。文件将下载到本地下载目录，手机浏览器同样可下载。
-          </p>
-          {isSuperuser && (
-            <Form.Item
-              label="数据定期自动导出"
-              style={{ marginBottom: 0 }}
-              extra="开启后每天 00:00（Asia/Shanghai）自动导出过去 24 小时的订单数据为 CSV，仅生成订单文件，保存到服务器 exports 目录。"
+        </div>
+        {!canExport && <p style={{ color: '#999' }}>当前账号无导出权限。</p>}
+        <p style={{ color: '#999' }}>
+          导出选定时间范围内所有订单的 CSV（每订单按类目拆分为多行，包含使用时间、消费总额、成人、儿童、类目明细等）。文件将下载到本地下载目录，手机浏览器同样可下载。
+        </p>
+        {isSuperuser && (
+          <div style={{ marginTop: 12 }}>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
             >
+              <span style={{ fontWeight: 500 }}>数据定期自动导出</span>
               <Switch
                 checked={autoOrders}
                 onChange={(value) => updateAutoExport('orders', value)}
                 checkedChildren="开"
                 unCheckedChildren="关"
               />
-            </Form.Item>
-          )}
-        </Form>
+            </div>
+            <div style={{ color: '#888', fontSize: 12, marginTop: 4 }}>
+              开启后每天 00:00（Asia/Shanghai）自动导出过去 24 小时的订单数据为 CSV，仅生成订单文件，保存到服务器 exports 目录。
+            </div>
+          </div>
+        )}
       </Card>
 
       <Card title="客户数据导出" style={{ marginTop: 16 }}>
@@ -1588,18 +1763,26 @@ function ExportTab() {
           </Form.Item>
           {!canExport && <p style={{ color: '#999' }}>当前账号无导出权限。</p>}
           {isSuperuser && (
-            <Form.Item
-              label="数据定期自动导出"
-              style={{ marginBottom: 0 }}
-              extra="开启后每天 00:00（Asia/Shanghai）自动导出全量客户数据为 CSV，仅生成客户文件，保存到服务器 exports 目录。"
-            >
-              <Switch
-                checked={autoCustomers}
-                onChange={(value) => updateAutoExport('customers', value)}
-                checkedChildren="开"
-                unCheckedChildren="关"
-              />
-            </Form.Item>
+            <div>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                }}
+              >
+                <span style={{ fontWeight: 500 }}>数据定期自动导出</span>
+                <Switch
+                  checked={autoCustomers}
+                  onChange={(value) => updateAutoExport('customers', value)}
+                  checkedChildren="开"
+                  unCheckedChildren="关"
+                />
+              </div>
+              <div style={{ color: '#888', fontSize: 12 }}>
+                开启后每天 00:00（Asia/Shanghai）自动导出全量客户数据为 CSV，仅生成客户文件，保存到服务器 exports 目录。
+              </div>
+            </div>
           )}
         </Form>
       </Card>
@@ -1622,6 +1805,7 @@ function formatSize(bytes: number): string {
 }
 
 function BackupTab() {
+  const { isMobile } = useLayoutMode()
   const { message } = App.useApp()
   const [backups, setBackups] = useState<BackupFile[]>([])
   const [loading, setLoading] = useState(false)
@@ -1675,20 +1859,37 @@ function BackupTab() {
   }
 
   const columns: ColumnsType<BackupFile> = [
-    { title: '文件名', dataIndex: 'filename' },
+    {
+      title: '文件名',
+      dataIndex: 'filename',
+      align: 'center',
+      // 手机版列宽有限，文件名超长时用省略号保持单行
+      ellipsis: isMobile,
+      render: (v: string) => <span style={{ whiteSpace: 'nowrap' }}>{v}</span>,
+    },
     {
       title: '大小',
       dataIndex: 'size_bytes',
-      width: 100,
+      align: 'center',
+      width: isMobile ? 56 : 100,
       render: (v: number) => formatSize(v),
     },
-    { title: '创建时间', dataIndex: 'created_at', width: 180 },
+    {
+      title: '创建时间',
+      dataIndex: 'created_at',
+      align: 'center',
+      width: isMobile ? 104 : 180,
+      render: (v: string) => formatDateTime(v),
+    },
     {
       title: '操作',
-      width: 220,
+      align: 'center',
+      width: isMobile ? 112 : 200,
       render: (_, record) => (
-        <Space>
-          <a href={`/api/backups/${record.filename}/download`}>下载</a>
+        <Space size={4}>
+          <Button type="link" size="small" href={`/api/backups/${record.filename}/download`}>
+            下载
+          </Button>
           <Popconfirm
             title="恢复将覆盖当前数据库，确定？"
             onConfirm={() => restore(record.filename)}
@@ -1710,15 +1911,17 @@ function BackupTab() {
   return (
     <Card
       title="数据库备份与恢复"
+      style={{ marginTop: 16 }}
       extra={<Button type="primary" loading={creating} onClick={createBackup}>创建备份</Button>}
     >
       <Table
+        className="backup-table"
         rowKey="filename"
         columns={columns}
         dataSource={backups}
         loading={loading}
         pagination={false}
-        size="small"
+        tableLayout="fixed"
         locale={{ emptyText: '暂无备份文件' }}
       />
       <p style={{ color: '#999', marginTop: 12 }}>

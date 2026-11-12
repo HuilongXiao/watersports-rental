@@ -269,8 +269,11 @@ export interface PaymentMethod {
 
 export interface AppSettings {
   auto_return_after_minutes: number
+  auto_return_enabled: boolean
   fast_customer_mode: boolean
   boat_numbering_enabled: boolean
+  shop_latitude: number | null
+  shop_longitude: number | null
   updated_at: string
   payment_methods: PaymentMethod[]
   default_payment_method: string | null
@@ -302,6 +305,29 @@ export interface DailySummary {
   sale_item_usage: Array<{ name: string; quantity: number; amount_fen: number }>
   others: Array<{ note: string; quantity: number; amount_fen: number }>
   payment_method_totals: Array<{ code: string; name: string; amount_fen: number }>
+}
+
+export interface RevenueCalendarDay {
+  date: string
+  amount_fen: number
+  order_count: number
+  booking_count: number
+  walkin_count: number
+  /** 当日各船型（器材规格）的销售数量：spec_id -> 数量 */
+  spec_quantities: Record<string, number>
+}
+
+export interface RevenueCalendarSpec {
+  id: string
+  name: string
+  type_color: string | null
+}
+
+export interface RevenueCalendar {
+  month: string
+  total_fen: number
+  days: RevenueCalendarDay[]
+  specs: RevenueCalendarSpec[]
 }
 
 export interface OrderSegment {

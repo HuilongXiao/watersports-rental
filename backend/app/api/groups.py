@@ -50,7 +50,9 @@ def _group_dict(g: Group, member_count: int = 0) -> dict:
         "name": g.name,
         "is_active": g.is_active,
         "member_count": member_count,
-        "created_at": g.created_at.isoformat() + "Z" if g.created_at else None,
+        # created_at 为带时区的 UTC 时间（isoformat 已含 +00:00），不能再追加 Z，
+        # 否则会出现 "...+00:00Z" 导致前端解析成 Invalid Date。
+        "created_at": g.created_at.isoformat() if g.created_at else None,
     }
 
 

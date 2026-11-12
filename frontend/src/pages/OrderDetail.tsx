@@ -19,12 +19,13 @@ import {
   Tabs,
   Tag,
 } from 'antd'
-import { LeftOutlined, PlusOutlined } from '@ant-design/icons'
+import { PlusOutlined } from '@ant-design/icons'
 import { api } from '../api'
 import { useAuth } from '../auth'
 import { useSettings } from '../contexts/SettingsContext'
 import { fenToYuan, formatDateTime, formatDurationBetween, typeColorHex, readLatestOrdersSnapshot } from '../utils'
 import { useLayoutMode } from '../layoutMode'
+import FloatingBackButton from '../components/FloatingBackButton'
 import type { BoatUsage, Order, OrderStatus, PaymentView } from '../types'
 
 const STATUS_META: Record<OrderStatus, { label: string; color: string }> = {
@@ -333,21 +334,13 @@ export default function OrderDetail() {
   const warnings = order.inventory_warnings ?? []
 
   return (
+    <>
+    {/* 移动端浮动返回按钮（与浏览器后退等价，配合列表快照恢复；左滑手势保留） */}
+    {isMobile && <FloatingBackButton onClick={goBack} ariaLabel="返回订单列表" />}
     <Space direction="vertical" style={{ width: '100%' }} size={16}>
       <Card
         title={
           <Space>
-            {/* 移动端左上角返回按钮（与浏览器后退等价，配合列表快照恢复；左滑手势保留） */}
-            {isMobile && (
-              <Button
-                size="small"
-                type="text"
-                icon={<LeftOutlined />}
-                onClick={goBack}
-                aria-label="返回"
-                style={{ marginLeft: -8 }}
-              />
-            )}
             订单 {order.order_number}
             <Tag color={STATUS_META[order.status].color}>{STATUS_META[order.status].label}</Tag>
           </Space>
@@ -566,15 +559,15 @@ export default function OrderDetail() {
               </Descriptions.Item>
             )
           })()}
-          {/* 备注：始终独占最后一行（span=2 跨两列）；备注文字靠左，不随其他格居中 */}
-          <Descriptions.Item
-            label="备注"
-            span={2}
-            contentStyle={{ padding: '4px 4px', textAlign: 'left' }}
-          >
-            {order.note ?? ''}
-          </Descriptions.Item>
         </Descriptions>
+
+        {/* 备注：脱离信息表格单独展示（不加灰线），有内容时才出现，便于一眼注意到 */}
+        {order.note?.trim() ? (
+          <div style={{ marginTop: 12, fontSize: 13, lineHeight: 1.7 }}>
+            <span style={{ fontWeight: 600 }}>备注：</span>
+            <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{order.note}</span>
+          </div>
+        ) : null}
 
         <Divider orientation="center">订单项目</Divider>
         <Table
@@ -1041,6 +1034,7 @@ export default function OrderDetail() {
         )}
       </div>
     </Space>
+    </>
   )
 }
 

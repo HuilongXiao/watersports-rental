@@ -16,6 +16,7 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { useAuth } from '../auth'
 import { useLayoutMode } from '../layoutMode'
+import WeatherCard from './WeatherCard'
 
 const { Header, Sider, Content } = Layout
 
@@ -36,7 +37,9 @@ export default function AppLayout() {
   const [ordersRefreshKey, setOrdersRefreshKey] = useState(0)
 
   const handleNav = (key: string) => {
-    if (key === '/orders' && location.pathname.startsWith('/orders')) {
+    // 仅在订单列表页本身再次点击「订单」时刷新重置；
+    // 处于订单子页面（详情 / 新建）时点击「订单」应回到订单列表。
+    if (key === '/orders' && location.pathname === '/orders') {
       setOrdersRefreshKey((k) => k + 1)
     } else {
       navigate(key)
@@ -58,6 +61,13 @@ export default function AppLayout() {
 
   const isSuperuser = Boolean(user && user.role === 'superuser')
 
+  // 左上角标题：显示当前 Group 名称。超级管理员始终处于某个 Group 内
+  // （登录后自动选中第一个 Group，切换时也只能在 Group 之间切换）。
+  const headerTitle = useMemo(() => {
+    if (isSuperuser) return activeGroupName ?? groups[0]?.name ?? '水上器材租赁'
+    return user?.group_name ?? '水上器材租赁'
+  }, [isSuperuser, activeGroupName, groups, user?.group_name])
+
   const openGroupModal = () => {
     setPendingGroupId(activeGroup)
     setGroupOpen(true)
@@ -66,9 +76,13 @@ export default function AppLayout() {
   const handleConfirmSwitchGroup = () => {
     const id = pendingGroupId
     const found = id ? groups.find((g) => g.id === id) : null
-    setActiveGroup(id, found ? found.name : null)
+    if (!id || !found) {
+      message.warning('请选择一个 Group')
+      return
+    }
+    setActiveGroup(id, found.name)
     setGroupOpen(false)
-    message.success(id && found ? `已切换至 Group：${found.name}` : '已切换至所有 Group')
+    message.success(`已切换至 Group：${found.name}`)
   }
 
   const handleChangePassword = async () => {
@@ -181,14 +195,10 @@ export default function AppLayout() {
           </Typography.Paragraph>
           <Select
             style={{ width: '100%' }}
-            value={pendingGroupId ?? '__all__'}
-            onChange={(value: string) =>
-              setPendingGroupId(value === '__all__' ? null : value)
-            }
-            options={[
-              { value: '__all__', label: '所有Group' },
-              ...groups.map((g) => ({ value: g.id, label: g.name })),
-            ]}
+            value={pendingGroupId ?? undefined}
+            placeholder="请选择一个 Group"
+            onChange={(value: string) => setPendingGroupId(value)}
+            options={groups.map((g) => ({ value: g.id, label: g.name }))}
           />
         </div>
       </Modal>
@@ -203,8 +213,6 @@ export default function AppLayout() {
       { key: '/boats', icon: <CompassOutlined />, label: '船只' },
       { key: '/settings', icon: <SettingOutlined />, label: '设置' },
     ]
-    const headerTitle =
-      isSuperuser && activeGroupName ? activeGroupName : user?.group_name ?? '水上器材租赁'
     return (
       <Layout className="mobile-app-shell" style={mobileLayoutStyle}>
         <Header
@@ -217,9 +225,10 @@ export default function AppLayout() {
             flexShrink: 0,
           }}
         >
-          <Typography.Text strong style={{ color: '#0e7a8c' }}>
+          <Typography.Text strong style={{ color: '#0e7a8c', flexShrink: 0 }}>
             {headerTitle}
           </Typography.Text>
+          <WeatherCard />
           {userMenu}
         </Header>
         <Content style={mobileContentStyle}>
@@ -270,7 +279,7 @@ export default function AppLayout() {
             letterSpacing: 1,
           }}
         >
-          {isSuperuser && activeGroupName ? activeGroupName : user?.group_name ?? '水上器材租赁'}
+          {headerTitle}
         </div>
         <Menu
           theme="dark"
@@ -294,11 +303,13 @@ export default function AppLayout() {
           style={{
             background: '#fff',
             display: 'flex',
-            justifyContent: 'flex-end',
+            justifyContent: 'space-between',
             alignItems: 'center',
             paddingInline: 24,
+            gap: 16,
           }}
         >
+          <WeatherCard />
           {userMenu}
         </Header>
         <Content style={{ margin: 16 }}>

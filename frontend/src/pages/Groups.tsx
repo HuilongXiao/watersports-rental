@@ -14,10 +14,12 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { api } from '../api'
-import { formatDateTime } from '../utils'
+import { formatDate } from '../utils'
+import { useLayoutMode } from '../layoutMode'
 import type { Group } from '../types'
 
 export default function Groups() {
+  const { isMobile } = useLayoutMode()
   const [groups, setGroups] = useState<Group[]>([])
   const [loading, setLoading] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
@@ -89,32 +91,63 @@ export default function Groups() {
   }
 
   const columns: ColumnsType<Group> = [
-    { title: 'Group名称', dataIndex: 'name' },
-    { title: '成员数', dataIndex: 'member_count', width: 90 },
+    {
+      title: 'Group名称',
+      dataIndex: 'name',
+      align: 'center',
+      // 手机版列宽有限，超长名称用省略号保持单行
+      ellipsis: isMobile,
+      render: (v: string) => <span style={{ whiteSpace: 'nowrap' }}>{v}</span>,
+    },
+    {
+      title: '成员数',
+      dataIndex: 'member_count',
+      align: 'center',
+      width: isMobile ? 60 : 90,
+    },
     {
       title: '状态',
       dataIndex: 'is_active',
-      width: 90,
+      align: 'center',
+      width: isMobile ? 72 : 90,
       render: (v: boolean) => (v ? <Tag color="green">启用</Tag> : <Tag>停用</Tag>),
     },
-    {
-      title: '创建时间',
-      dataIndex: 'created_at',
-      width: 180,
-      render: (v: string | null) => (v ? formatDateTime(v) : '-'),
-    },
+    // 手机版不展示创建时间，避免五列挤压导致换行
+    ...(isMobile
+      ? []
+      : [
+          {
+            title: '创建日期',
+            dataIndex: 'created_at',
+            width: 110,
+            align: 'center' as const,
+            render: (v: string | null) => (v ? formatDate(v) : '-'),
+          },
+        ]),
     {
       title: '操作',
-      width: 200,
+      align: 'center',
+      width: isMobile ? 116 : 200,
       render: (_, record) => (
-        <Space>
-          <Button type="link" onClick={() => { setManagerFor(record); managerForm.resetFields() }}>
+        <Space size={4}>
+          <Button
+            type="link"
+            size="small"
+            onClick={() => {
+              setManagerFor(record)
+              managerForm.resetFields()
+            }}
+          >
             创建管理员
           </Button>
-          <Button type="link" onClick={() => {
-            setEditing(record)
-            editForm.setFieldsValue({ name: record.name, is_active: record.is_active })
-          }}>
+          <Button
+            type="link"
+            size="small"
+            onClick={() => {
+              setEditing(record)
+              editForm.setFieldsValue({ name: record.name, is_active: record.is_active })
+            }}
+          >
             编辑
           </Button>
         </Space>
@@ -131,7 +164,15 @@ export default function Groups() {
         </Button>
       }
     >
-      <Table rowKey="id" loading={loading} columns={columns} dataSource={groups} pagination={{ pageSize: 20 }} />
+      <Table
+        className="groups-table"
+        rowKey="id"
+        loading={loading}
+        columns={columns}
+        dataSource={groups}
+        pagination={{ pageSize: 20 }}
+        tableLayout="fixed"
+      />
 
       <Modal title="新建Group" open={createOpen} onCancel={() => setCreateOpen(false)} onOk={submitCreate} destroyOnClose>
         <Form form={createForm} layout="vertical">
@@ -149,6 +190,12 @@ export default function Groups() {
           <Form.Item label="状态" name="is_active" valuePropName="checked">
             <Switch checkedChildren="启用" unCheckedChildren="停用" />
           </Form.Item>
+          {/* 手机版列表不展示创建时间，改在编辑弹窗中显示 */}
+          {isMobile && (
+            <Form.Item label="创建日期">
+              <span>{editing?.created_at ? formatDate(editing.created_at) : '-'}</span>
+            </Form.Item>
+          )}
         </Form>
       </Modal>
 

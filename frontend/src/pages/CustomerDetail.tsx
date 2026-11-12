@@ -20,6 +20,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { api } from '../api'
 import { useAuth } from '../auth'
 import { fenToYuan, formatDateTime, typeColorHex } from '../utils'
+import FloatingBackButton from '../components/FloatingBackButton'
 import { GenderCheckboxes } from './Customers'
 import type { Customer, CustomerStats, Order } from '../types'
 
@@ -231,9 +232,7 @@ export default function CustomerDetail() {
 
   return (
     <div>
-      <Button type="link" onClick={() => navigate('/customers')} style={{ marginBottom: 16, paddingLeft: 0 }}>
-        ← 返回客户列表
-      </Button>
+      <FloatingBackButton onClick={() => navigate('/customers')} ariaLabel="返回客户列表" />
       <Card
         loading={loading}
         title="客户详情"
@@ -267,6 +266,7 @@ export default function CustomerDetail() {
         }
       >
         <Descriptions column={{ xs: 1, sm: 2, md: 3 }}>
+          <Descriptions.Item label="客户ID">{customer?.id ?? ''}</Descriptions.Item>
           <Descriptions.Item label="姓名">{customer?.name ?? ''}</Descriptions.Item>
           <Descriptions.Item label="性别">{customer?.gender ?? ''}</Descriptions.Item>
           <Descriptions.Item label="微信昵称">{customer?.wechat_nickname ?? ''}</Descriptions.Item>

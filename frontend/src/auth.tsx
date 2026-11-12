@@ -49,6 +49,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   // When the user becomes a superuser, fetch the groups list for the switcher.
+  // 规则：超级管理员必须始终处于某个 Group 内，不存在「未选中 Group」的状态，
+  // 因此进入系统后若尚未选择，自动选中第一个 Group。
   useEffect(() => {
     if (user?.role !== 'superuser') {
       return
@@ -57,8 +59,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     api
       .get<Group[]>('/api/groups')
       .then((list) => {
-        if (!cancelled) {
-          setGroups(list)
+        if (cancelled) return
+        setGroups(list)
+        if (!activeGroup && list.length > 0) {
+          handleSetActiveGroup(list[0].id, list[0].name)
         }
       })
       .catch(() => {
@@ -69,7 +73,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true
     }
-  }, [user?.role])
+  }, [user?.role, activeGroup])
 
   const handleSetActiveGroup = (id: string | null, name: string | null) => {
     setActiveGroup(id)

@@ -4,6 +4,7 @@ import { Button, Card, DatePicker, Space } from 'antd'
 import { LeftOutlined, RightOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import { api } from '../api'
+import FloatingBackButton from '../components/FloatingBackButton'
 import { OrderDistributionChart } from './Dashboard'
 import type { Order } from '../types'
 
@@ -39,13 +40,7 @@ export default function OrderDistributionDetail() {
 
   return (
     <div>
-      <Button
-        type="link"
-        onClick={() => navigate('/dashboard')}
-        style={{ marginBottom: 16, paddingLeft: 0 }}
-      >
-        ← 返回概览
-      </Button>
+      <FloatingBackButton onClick={() => navigate('/dashboard')} ariaLabel="返回概览" />
       <Card title="当日订单分布" style={{ marginBottom: 16 }}>
         <Space style={{ marginBottom: 16 }}>
           <Button

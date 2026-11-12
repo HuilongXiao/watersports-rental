@@ -351,6 +351,125 @@ def inventory_forecast(
     return {"date": target.isoformat(), "slots": slots, "equipment": equipment}
 
 
+@router.get("/revenue-calendar")
+def revenue_calendar(
+    month: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    active_group_id: str | None = Depends(get_active_group_id),
+):
+    """按月统计每日销售额（已完成 + 进行中订单）。
+
+    返回该月每天的销售额与订单数，以及整月合计。
+    金额口径与「日常汇总」一致：订单项目金额 + 支付调整项（含退款负金额）。
+    无查看营收权限时所有金额返回 0。
+    """
+    today = business_date(utc_now())
+    if month:
+        y, m = map(int, month.split("-"))
+        target = date_type(y, m, 1)
+    else:
+        target = today.replace(day=1)
+
+    month_start = datetime.combine(target, time.min).replace(tzinfo=BUSINESS_TZ).astimezone(timezone.utc)
+    next_month_day = (target.replace(day=28) + timedelta(days=4)).replace(day=1)
+    month_end = datetime.combine(next_month_day, time.min).replace(tzinfo=BUSINESS_TZ).astimezone(timezone.utc)
+
+    order_stmt = select(Order).where(
+        Order.is_deleted.is_(False),
+        Order.status.in_(["completed", "in_progress"]),
+        Order.start_at >= month_start,
+        Order.start_at < month_end,
+    )
+    if active_group_id is not None:
+        order_stmt = order_stmt.where(Order.group_id == active_group_id)
+    orders = list(db.scalars(order_stmt).all())
+    order_ids = [o.id for o in orders]
+
+    items_by_order: dict[str, int] = {}
+    adjust_by_order: dict[str, int] = {}
+    # 每条订单各船型的数量：order_id -> {spec_id: 数量}
+    spec_qty_by_order: dict[str, dict[str, int]] = {}
+    if order_ids:
+        for oid, total in db.execute(
+            select(
+                OrderItem.order_id,
+                func.coalesce(func.sum(OrderItem.quantity * OrderItem.unit_price), 0),
+            )
+            .where(OrderItem.order_id.in_(order_ids))
+            .group_by(OrderItem.order_id)
+        ).all():
+            items_by_order[oid] = int(total)
+        for oid, total in db.execute(
+            select(Payment.order_id, func.coalesce(func.sum(PaymentItem.amount), 0))
+            .join(Payment, Payment.id == PaymentItem.payment_id)
+            .where(Payment.order_id.in_(order_ids))
+            .group_by(Payment.order_id)
+        ).all():
+            adjust_by_order[oid] = int(total)
+        for oid, spec_id, qty in db.execute(
+            select(OrderItem.order_id, OrderItem.equipment_spec_id, OrderItem.quantity)
+            .where(
+                OrderItem.order_id.in_(order_ids),
+                OrderItem.equipment_spec_id.is_not(None),
+            )
+        ).all():
+            bucket = spec_qty_by_order.setdefault(oid, {})
+            bucket[spec_id] = bucket.get(spec_id, 0) + int(qty)
+
+    day_amount: dict[str, int] = {}
+    day_count: dict[str, int] = {}
+    day_booking: dict[str, int] = {}
+    day_walkin: dict[str, int] = {}
+    day_specs: dict[str, dict[str, int]] = {}
+    for order in orders:
+        key = business_date(order.start_at).isoformat()
+        day_amount[key] = day_amount.get(key, 0) + items_by_order.get(order.id, 0) + adjust_by_order.get(order.id, 0)
+        day_count[key] = day_count.get(key, 0) + 1
+        if order.is_walk_in:
+            day_walkin[key] = day_walkin.get(key, 0) + 1
+        else:
+            day_booking[key] = day_booking.get(key, 0) + 1
+        spec_bucket = day_specs.setdefault(key, {})
+        for spec_id, qty in spec_qty_by_order.get(order.id, {}).items():
+            spec_bucket[spec_id] = spec_bucket.get(spec_id, 0) + qty
+
+    # 可选的船型列表（启用中的器材规格），用于日历的「按船型看数量」
+    spec_stmt = (
+        select(EquipmentSpec, EquipmentType)
+        .join(EquipmentType, EquipmentType.id == EquipmentSpec.equipment_type_id)
+        .where(EquipmentSpec.is_active.is_(True))
+        .order_by(EquipmentSpec.sort_order, EquipmentSpec.name)
+    )
+    if active_group_id is not None:
+        spec_stmt = spec_stmt.where(EquipmentSpec.group_id == active_group_id)
+    specs = [
+        {"id": spec.id, "name": spec.name, "type_color": etype.color}
+        for spec, etype in db.execute(spec_stmt).all()
+    ]
+
+    revenue_allowed = can_view_revenue(user)
+    days = [
+        {
+            "date": key,
+            "amount_fen": amount if revenue_allowed else 0,
+            "order_count": day_count.get(key, 0),
+            "booking_count": day_booking.get(key, 0),
+            "walkin_count": day_walkin.get(key, 0),
+            "spec_quantities": day_specs.get(key, {}),
+        }
+        for key, amount in sorted(day_amount.items())
+    ]
+    total_fen = sum(d["amount_fen"] for d in days)
+
+    return {
+        "month": target.strftime("%Y-%m"),
+        "total_fen": total_fen,
+        "days": days,
+        "specs": specs,
+    }
+
+
 @router.get("/daily-summary")
 def daily_summary(
     date: str | None = None,

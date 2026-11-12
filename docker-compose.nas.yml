@@ -12,7 +12,7 @@
 
 services:
   app:
-    image: watersports-rental:1.1.17
+    image: watersports-rental:1.2.0
     container_name: rental-app
     restart: unless-stopped
     ports:

@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Integer, String
+from sqlalchemy import Boolean, CheckConstraint, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -39,6 +39,13 @@ class Setting(Base):
     boat_numbering_enabled: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
+    # 自动归还总开关：关闭后签到不再写入自动归还时限，后台任务也不再自动完成
+    auto_return_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    # 店铺坐标：用于顶部天气信息（每个 Group 独立）
+    shop_latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    shop_longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     updated_by_user_id: Mapped[str] = mapped_column(String(36), nullable=False)
     updated_at: Mapped[object] = mapped_column(UtcDateTime(), default=utc_now, onupdate=utc_now, nullable=False)
 

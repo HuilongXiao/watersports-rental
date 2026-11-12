@@ -112,3 +112,53 @@ body {
 .order-detail-info .ant-descriptions-row > th {
   width: 74px;
 }
+
+/* 付款方式列表：操作项（设为默认 / 重命名 / 停用）彼此间距缩小 33%。
+   AntD 默认为 .ant-list-item-action > li { padding: 0 8px }，相邻两项间距约 16px；
+   改为 5.33px 后约 10.67px，正好减少 33%。 */
+.payment-method-list .ant-list-item-action > li {
+  padding: 0 5.33px;
+}
+
+/* iPhone 等窄屏（≤576px）：AntD 会把 .ant-list-item 设为 flex-wrap: wrap，
+   操作区整体放不下时就会换到第二行。这里在缩小 33% 的基础上继续压缩
+   主内容间距与按钮自身的内边距/字号，让 6 个元素能排在同一行。 */
+@media screen and (max-width: 576px) {
+  .payment-method-list .ant-space {
+    column-gap: 4px;
+  }
+  .payment-method-list .ant-list-item-action {
+    margin-inline-start: 4px;
+  }
+  .payment-method-list .ant-list-item-action > li {
+    padding: 0 4px;
+  }
+  .payment-method-list .ant-list-item-action .ant-btn {
+    padding-inline: 2px;
+    font-size: 13px;
+  }
+}
+
+/* 售卖项目 / 类型管理 / 备份 / Group管理表格：所有单元格强制单行，不换行（含手机版） */
+.sale-items-table .ant-table-cell,
+.type-table .ant-table-cell,
+.backup-table .ant-table-cell,
+.groups-table .ant-table-cell {
+  white-space: nowrap !important;
+}
+
+/* 窄屏：收紧单元格左右内边距，保证各列都能完整显示 */
+@media screen and (max-width: 576px) {
+  .sale-items-table .ant-table-cell,
+  .type-table .ant-table-cell,
+  .backup-table .ant-table-cell,
+  .groups-table .ant-table-cell {
+    padding: 8px 2px !important;
+  }
+  /* 备份 / Group管理表格操作列按钮在窄屏下收紧，避免挤压名称列 */
+  .backup-table .ant-btn,
+  .groups-table .ant-btn {
+    padding-inline: 2px;
+    font-size: 12px;
+  }
+}

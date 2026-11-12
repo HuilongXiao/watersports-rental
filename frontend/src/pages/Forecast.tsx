@@ -6,13 +6,15 @@ import dayjs, { type Dayjs } from 'dayjs'
 import { api } from '../api'
 import { typeColorHex } from '../utils'
 import { useLayoutMode } from '../layoutMode'
+import FloatingBackButton from '../components/FloatingBackButton'
 import type { ForecastEquipment, InventoryForecast } from '../types'
 
 const FALLBACK_COLOR = '#0e7a8c'
 const ROW_HEIGHT = 26
 const BAR_HEIGHT = 16
 const TIME_GUTTER = 44
-const CHART_HEIGHT = 480
+// 图表可视高度：每行 30 分钟，最多同时展示 5 小时（10 行），其余靠右侧滚动条查看
+const CHART_HEIGHT = ROW_HEIGHT * 10
 
 function lightenHex(hex: string, ratio = 0.55): string {
   const n = parseInt(hex.slice(1), 16)
@@ -30,13 +32,7 @@ export default function Forecast() {
 
   return (
     <div>
-      <Button
-        type="link"
-        onClick={() => navigate('/dashboard')}
-        style={{ marginBottom: 16, paddingLeft: 0 }}
-      >
-        ← 返回概览
-      </Button>
+      <FloatingBackButton onClick={() => navigate('/dashboard')} ariaLabel="返回概览" />
       <Card title="船只用量" style={{ marginBottom: 16 }}>
         <Space style={{ marginBottom: 12 }}>
           <Button icon={<LeftOutlined />} onClick={() => setDate(date.subtract(1, 'day'))} />
@@ -142,11 +138,15 @@ function SpecSelector({
   selectedId: string | null
   onChange: (id: string) => void
 }) {
+  const { isMobile } = useLayoutMode()
   return (
     <div
       style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))',
+        // 手机版每行 4 个，电脑版自适应
+        gridTemplateColumns: isMobile
+          ? 'repeat(4, 1fr)'
+          : 'repeat(auto-fill, minmax(140px, 1fr))',
         gap: 8,
         marginBottom: 12,
       }}
@@ -160,28 +160,40 @@ function SpecSelector({
             onClick={() => onChange(eq.spec_id)}
             style={{
               cursor: 'pointer',
-              padding: '8px 10px',
+              padding: isMobile ? '8px 4px' : '8px 10px',
               borderRadius: 4,
               border: active ? `2px solid ${hex}` : '1px solid #d9d9d9',
               background: active ? `${hex}14` : '#fff',
               display: 'flex',
               alignItems: 'center',
+              justifyContent: isMobile ? 'center' : 'flex-start',
               gap: 6,
-              fontSize: 13,
+              fontSize: isMobile ? 12 : 13,
               fontWeight: active ? 600 : 400,
+              minWidth: 0,
             }}
           >
+            {!isMobile && (
+              <span
+                style={{
+                  display: 'inline-block',
+                  width: 10,
+                  height: 10,
+                  borderRadius: 2,
+                  background: hex,
+                  flexShrink: 0,
+                }}
+              />
+            )}
             <span
               style={{
-                display: 'inline-block',
-                width: 10,
-                height: 10,
-                borderRadius: 2,
-                background: hex,
-                flexShrink: 0,
+                // 手机版去掉色块，用文字颜色表示船型颜色
+                color: isMobile ? hex : undefined,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
               }}
-            />
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            >
               {eq.name}
             </span>
           </button>

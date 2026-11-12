@@ -132,8 +132,27 @@ export default function OrderForm() {
     }
   }, [])
 
+  // 目录加载状态：超时或失败时，项目下拉框给出“点击重试”，避免无限转圈
+  const [catalogLoading, setCatalogLoading] = useState(true)
+  const [catalogFailed, setCatalogFailed] = useState(false)
+  const loadCatalog = useCallback(() => {
+    setCatalogLoading(true)
+    setCatalogFailed(false)
+    api
+      .get<Catalog>('/api/catalog')
+      .then((data) => {
+        setCatalog(data)
+        setCatalogFailed(false)
+      })
+      .catch(() => {
+        setCatalogFailed(true)
+        message.error('目录加载失败，请检查网络后重试')
+      })
+      .finally(() => setCatalogLoading(false))
+  }, [message])
+
   useEffect(() => {
-    api.get<Catalog>('/api/catalog').then(setCatalog).catch(() => message.error('目录加载失败'))
+    loadCatalog()
     if (id) {
       api
         .get<Order>(`/api/orders/${id}`)
@@ -678,7 +697,19 @@ export default function OrderForm() {
       render: (_: unknown, record: DraftItem) => (
         <Select
           style={{ width: '100%' }}
-          placeholder="选择项目"
+          placeholder={catalogFailed ? '目录加载失败' : '选择项目'}
+          loading={catalogLoading}
+          notFoundContent={
+            catalogFailed ? (
+              <div style={{ padding: 4 }}>
+                目录加载失败，<a onClick={loadCatalog}>点击重试</a>
+              </div>
+            ) : catalogLoading ? (
+              '加载中…'
+            ) : (
+              '暂无可选项目'
+            )
+          }
           value={record.item_id}
           disabled={rowDisabled(record)}
           onChange={(value) => {

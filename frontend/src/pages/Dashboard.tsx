@@ -51,9 +51,9 @@ export default function Dashboard() {
           <ForecastPanel dateStr={data?.today ?? new Date().toISOString().slice(0, 10)} />
         </Card>
 
-        {/* 订单分布 + 今日订单统计（右上角）+ 概况入口 */}
+        {/* 看板 + 今日订单统计（右上角）+ 更多入口 */}
         <Card
-          title="订单分布"
+          title="看板"
           extra={
             <Space size="middle">
               {data && (
@@ -62,7 +62,7 @@ export default function Dashboard() {
                 </span>
               )}
               <Button type="link" onClick={() => navigate('/dashboard/daily-summary')}>
-                概况
+                更多
               </Button>
             </Space>
           }
