@@ -31,7 +31,8 @@ ENV TZ=Asia/Shanghai \
     REQUEST_TIMING=1 \
     TRACE_REPORT_ENABLED=1 \
     SESSION_COOKIE_SECURE=false \
-    SEED_DEFAULT_DATA=false
+    SEED_DEFAULT_DATA=false \
+    QWEATHER_PRIVATE_KEY_PATH=/app/data/secrets/qweather_private.pem
 
 # 部署时唯一需要用户填写的变量：会话密钥（名称预填、值留空）。
 # 留空时回退到内置默认值（见 backend/app/core/config.py）。

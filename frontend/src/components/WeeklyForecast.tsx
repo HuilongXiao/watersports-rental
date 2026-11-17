@@ -2,25 +2,18 @@ import { useEffect, useState } from 'react'
 import dayjs from 'dayjs'
 import { useSettings } from '../contexts/SettingsContext'
 import {
-  buildDailyUrl,
+  buildWeatherUrl,
   DEFAULT_LATITUDE,
   DEFAULT_LONGITUDE,
-  weatherLabel,
+  fetchWeatherJson,
+  type WeatherDay,
+  type WeatherSummary,
 } from '../weather'
 
 // 未来一周天气预报：订单列表为空时替代「暂无数据」展示。
 // 坐标与顶部天气卡片一致，取当前 Group 的店铺坐标。
 
 const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
-
-interface DailyResponse {
-  daily: {
-    time: string[]
-    weather_code: number[]
-    temperature_2m_max: number[]
-    temperature_2m_min: number[]
-  }
-}
 
 const wrapStyle = {
   padding: '24px 8px',
@@ -38,32 +31,26 @@ const textStyle = {
 
 // 未来 7 天天气当天不会有大变化：按「日期 + 坐标」缓存，
 // 同一天内反复切换「预订 / 进行中」tab 时直接复用，不再重复请求。
-type Daily = DailyResponse['daily']
-
-const dailyCache = new Map<string, Daily>()
-const dailyRequests = new Map<string, Promise<Daily>>()
+const dailyCache = new Map<string, WeatherDay[]>()
+const dailyRequests = new Map<string, Promise<WeatherDay[]>>()
 
 function cacheKey(latitude: number, longitude: number): string {
   return `${dayjs().format('YYYY-MM-DD')}|${latitude}|${longitude}`
 }
 
-function getCached(latitude: number, longitude: number): Daily | null {
+function getCached(latitude: number, longitude: number): WeatherDay[] | null {
   return dailyCache.get(cacheKey(latitude, longitude)) ?? null
 }
 
-function fetchDaily(latitude: number, longitude: number): Promise<Daily> {
+function fetchDaily(latitude: number, longitude: number): Promise<WeatherDay[]> {
   const key = cacheKey(latitude, longitude)
   const pending = dailyRequests.get(key)
   if (pending) return pending
-  const request = fetch(buildDailyUrl(latitude, longitude, 7))
-    .then((res) => {
-      if (!res.ok) throw new Error(`天气请求失败：${res.status}`)
-      return res.json() as Promise<DailyResponse>
-    })
-    .then((raw) => {
-      dailyCache.set(key, raw.daily)
+  const request = fetchWeatherJson<WeatherSummary>(buildWeatherUrl(latitude, longitude, 8))
+    .then((summary) => {
+      dailyCache.set(key, summary.daily)
       dailyRequests.delete(key)
-      return raw.daily
+      return summary.daily
     })
     .catch((error) => {
       dailyRequests.delete(key)
@@ -79,7 +66,9 @@ export default function WeeklyForecast() {
   const longitude = settings.shop_longitude ?? DEFAULT_LONGITUDE
 
   // 重新挂载（如切换 tab）时优先用当天已缓存的数据，直接展示、不再出现加载态
-  const [daily, setDaily] = useState<Daily | null>(() => getCached(latitude, longitude))
+  const [daily, setDaily] = useState<WeatherDay[] | null>(() =>
+    getCached(latitude, longitude),
+  )
   const [failed, setFailed] = useState(false)
 
   useEffect(() => {
@@ -123,15 +112,14 @@ export default function WeeklyForecast() {
     <div style={wrapStyle}>
       {/* 整体居中，但每行以「周X，」后的逗号对齐：左段定宽右对齐，右段左对齐 */}
       <div style={{ display: 'inline-block', textAlign: 'left' }}>
-        {daily.time.map((date, index) => (
-          <div key={date} style={{ ...textStyle, display: 'flex' }}>
+        {/* 从明天开始展示 7 天（跳过今天） */}
+        {daily.slice(1, 8).map((day) => (
+          <div key={day.date} style={{ ...textStyle, display: 'flex' }}>
             <span style={{ width: 112, textAlign: 'right', whiteSpace: 'nowrap' }}>
-              {dayjs(date).format('M月D日')}，{WEEKDAYS[dayjs(date).day()]}，
+              {dayjs(day.date).format('M月D日')}，{WEEKDAYS[dayjs(day.date).day()]}，
             </span>
             <span style={{ whiteSpace: 'nowrap' }}>
-              {weatherLabel(daily.weather_code[index])}，
-              {Math.round(daily.temperature_2m_min[index])}℃~
-              {Math.round(daily.temperature_2m_max[index])}℃
+              {day.text}，{Math.round(day.temp_min)}℃~{Math.round(day.temp_max)}℃
             </span>
           </div>
         ))}

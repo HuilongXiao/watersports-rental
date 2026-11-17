@@ -7,75 +7,13 @@ import {
   buildWeatherUrl,
   DEFAULT_LATITUDE,
   DEFAULT_LONGITUDE,
-  weatherLabel,
+  fetchWeatherJson,
+  type WeatherDay,
+  type WeatherSummary,
 } from '../weather'
 
-// 顶部天气信息：数据来自 Open-Meteo 免费接口（无需 API Key）
+// 顶部天气信息：数据由后端代理和风天气（JWT 认证），密钥不出后端。
 // 坐标取当前 Group 在「店铺设置」中填写的店铺坐标；未填写时用默认值
-
-interface OpenMeteoResponse {
-  current: {
-    temperature_2m: number
-    apparent_temperature: number
-    weather_code: number
-    wind_speed_10m: number
-    wind_direction_10m: number
-  }
-  hourly: {
-    time: string[]
-    temperature_2m: number[]
-    precipitation: number[]
-    weather_code: number[]
-  }
-  daily: {
-    time: string[]
-    weather_code: number[]
-    temperature_2m_max: number[]
-    temperature_2m_min: number[]
-    precipitation_sum: number[]
-  }
-}
-
-interface HourItem {
-  time: string
-  temp: number
-  precipitation: number
-  code: number
-}
-
-interface WeatherData {
-  currentTemp: number
-  currentCode: number
-  feelsLike: number
-  windSpeed: number
-  windDirection: number
-  hours: HourItem[]
-  // 今日逐小时降水量，用于描述降雨时段
-  todayHours: { time: string; precipitation: number }[]
-  daily: {
-    date: string
-    code: number
-    max: number
-    min: number
-    precipitation: number
-  }[]
-}
-
-// 风向角度 → 方位
-function windDirectionLabel(degree: number): string {
-  const directions = ['北', '东北', '东', '东南', '南', '西南', '西', '西北']
-  const index = Math.round(((degree % 360) / 45)) % 8
-  return `${directions[index]}风`
-}
-
-// 风速（km/h）→ 蒲福风力等级
-function windLevel(speed: number): number {
-  const thresholds = [1, 6, 12, 20, 29, 39, 50, 62, 75, 89, 103, 118]
-  for (let i = 0; i < thresholds.length; i += 1) {
-    if (speed < thresholds[i]) return i
-  }
-  return 12
-}
 
 // 降水总量展示：无降水时写“无降水”
 function formatPrecipitation(mm: number): string {
@@ -84,19 +22,19 @@ function formatPrecipitation(mm: number): string {
 
 // 今日降雨时段：把连续有降水的小时合并成时段，
 // 如「14:00–16:00 降水 1.2 mm」，多个时段用「；」连接
-function rainIntervals(hours: { time: string; precipitation: number }[]): string[] {
+function rainIntervals(hours: { time: string; precip: number }[]): string[] {
   const parts: string[] = []
   let start = -1
   let total = 0
 
   hours.forEach((hour, index) => {
-    const raining = hour.precipitation > 0
+    const raining = hour.precip > 0
     if (raining) {
       if (start < 0) {
         start = index
         total = 0
       }
-      total += hour.precipitation
+      total += hour.precip
     }
     const isLast = index === hours.length - 1
     if (start >= 0 && (!raining || isLast)) {
@@ -116,43 +54,6 @@ function rainIntervals(hours: { time: string; precipitation: number }[]): string
   return parts
 }
 
-function parseWeather(raw: OpenMeteoResponse): WeatherData {
-  // 找到当前时间所在的整点，从该条开始取 4 条
-  const nowHour = dayjs().format('YYYY-MM-DDTHH:00')
-  let start = raw.hourly.time.findIndex((t) => t >= nowHour)
-  if (start < 0) start = 0
-  const hours: HourItem[] = raw.hourly.time
-    .slice(start, start + 4)
-    .map((time, offset) => ({
-      time,
-      temp: raw.hourly.temperature_2m[start + offset],
-      precipitation: raw.hourly.precipitation[start + offset] ?? 0,
-      code: raw.hourly.weather_code[start + offset],
-    }))
-
-  return {
-    currentTemp: raw.current.temperature_2m,
-    currentCode: raw.current.weather_code,
-    feelsLike: raw.current.apparent_temperature,
-    windSpeed: raw.current.wind_speed_10m,
-    windDirection: raw.current.wind_direction_10m,
-    hours,
-    todayHours: raw.hourly.time
-      .map((time, index) => ({
-        time,
-        precipitation: raw.hourly.precipitation[index] ?? 0,
-      }))
-      .filter((hour) => hour.time.startsWith(dayjs().format('YYYY-MM-DD'))),
-    daily: raw.daily.time.map((date, index) => ({
-      date,
-      code: raw.daily.weather_code[index],
-      max: raw.daily.temperature_2m_max[index],
-      min: raw.daily.temperature_2m_min[index],
-      precipitation: raw.daily.precipitation_sum[index] ?? 0,
-    })),
-  }
-}
-
 // 一行：左侧灰色标签，右侧数值
 function WeatherRow({ label, value }: { label: string; value: string }) {
   return (
@@ -170,36 +71,72 @@ const triggerStyle: CSSProperties = {
   whiteSpace: 'nowrap',
 }
 
+// 最近一次成功获取的天气缓存：登录后先用旧数据展示，避免网络抖动时一片空白
+const WEATHER_CACHE_KEY = 'weather_cache_v2'
+const WEATHER_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000
+
+interface WeatherCacheEntry {
+  latitude: number
+  longitude: number
+  data: WeatherSummary
+  ts: number
+}
+
+function readWeatherCache(latitude: number, longitude: number): WeatherSummary | null {
+  try {
+    const raw = localStorage.getItem(WEATHER_CACHE_KEY)
+    if (!raw) return null
+    const entry = JSON.parse(raw) as WeatherCacheEntry
+    if (entry.latitude !== latitude || entry.longitude !== longitude) return null
+    if (Date.now() - entry.ts > WEATHER_CACHE_MAX_AGE_MS) return null
+    return entry.data
+  } catch {
+    return null
+  }
+}
+
+function writeWeatherCache(latitude: number, longitude: number, data: WeatherSummary) {
+  try {
+    const entry: WeatherCacheEntry = { latitude, longitude, data, ts: Date.now() }
+    localStorage.setItem(WEATHER_CACHE_KEY, JSON.stringify(entry))
+  } catch {
+    // localStorage 不可用时静默忽略
+  }
+}
+
 export default function WeatherCard() {
   const { settings } = useSettings()
-  const [data, setData] = useState<WeatherData | null>(null)
-  const [failed, setFailed] = useState(false)
-  // 最近一次成功获取的时间，用于判断是否已满 1 小时
-  const lastFetchedRef = useRef(0)
-  const dataRef = useRef<WeatherData | null>(null)
-  dataRef.current = data
 
   // 坐标来自当前 Group 的店铺设置；切换 Group 或保存新坐标后自动重新请求
   const latitude = settings.shop_latitude ?? DEFAULT_LATITUDE
   const longitude = settings.shop_longitude ?? DEFAULT_LONGITUDE
+
+  const [data, setData] = useState<WeatherSummary | null>(() =>
+    readWeatherCache(latitude, longitude),
+  )
+  const [failed, setFailed] = useState(false)
+  // 最近一次成功获取的时间，用于判断是否已满 1 小时
+  const lastFetchedRef = useRef(0)
+  const dataRef = useRef<WeatherSummary | null>(null)
+  dataRef.current = data
+
   const weatherUrl = useMemo(
-    () => buildWeatherUrl(latitude, longitude),
+    () => buildWeatherUrl(latitude, longitude, 8),
     [latitude, longitude],
   )
 
   const loadWeather = useCallback(async () => {
     try {
-      const res = await fetch(weatherUrl)
-      if (!res.ok) throw new Error(`天气请求失败：${res.status}`)
-      const raw = (await res.json()) as OpenMeteoResponse
-      setData(parseWeather(raw))
+      const summary = await fetchWeatherJson<WeatherSummary>(weatherUrl)
+      setData(summary)
       setFailed(false)
       lastFetchedRef.current = Date.now()
+      writeWeatherCache(latitude, longitude, summary)
     } catch {
-      // 已有数据时保留旧数据，仅在首次加载失败时显示失败提示
+      // 已有数据（含本地缓存）时保留旧数据，仅在完全无数据时显示失败提示
       if (!dataRef.current) setFailed(true)
     }
-  }, [weatherUrl])
+  }, [weatherUrl, latitude, longitude])
 
   // 自动刷新：每小时一次；20:00–06:00 不自动刷新；回到前台且已过期时补一次
   useEffect(() => {
@@ -227,33 +164,46 @@ export default function WeatherCard() {
 
   // 顶部摘要：当前温度~4 小时后温度，当前天气[转变化后的天气]
   const summary = useMemo(() => {
-    if (!data || data.hours.length === 0) return ''
-    const last = data.hours[data.hours.length - 1]
-    const currentLabel = weatherLabel(data.currentCode)
-    const lastLabel = weatherLabel(last.code)
-    const changed = lastLabel !== currentLabel ? `转${lastLabel}` : ''
-    return `${Math.round(data.currentTemp)}℃~${Math.round(last.temp)}℃，${currentLabel}${changed}`
+    if (!data || data.hourly.length === 0) return ''
+    const hours = data.hourly.slice(0, 4)
+    const last = hours[hours.length - 1]
+    const changed = last.text !== data.current.text ? `转${last.text}` : ''
+    return `${Math.round(data.current.temp)}℃~${Math.round(last.temp)}℃，${data.current.text}${changed}`
   }, [data])
 
   if (failed) {
-    return <span style={{ ...triggerStyle, color: '#bfbfbf' }}>天气加载失败</span>
+    return (
+      <span
+        onClick={() => {
+          setFailed(false)
+          loadWeather()
+        }}
+        style={{ ...triggerStyle, color: '#bfbfbf', cursor: 'pointer' }}
+      >
+        天气加载失败，点击重试
+      </span>
+    )
   }
   if (!data) {
     return <span style={{ ...triggerStyle, color: '#bfbfbf' }}>天气加载中…</span>
   }
 
-  const hours = data.hours
+  // 和风逐小时数据从当前整点开始，取前 4 条即「未来 4 小时」
+  const hours = data.hourly.slice(0, 4)
   const nextHoursTemp =
     hours.length > 0
-      ? `${Math.round(data.currentTemp)}℃~${Math.round(hours[hours.length - 1].temp)}℃`
+      ? `${Math.round(data.current.temp)}℃~${Math.round(hours[hours.length - 1].temp)}℃`
       : '—'
-  const nextHoursPrecip = hours.reduce((sum, h) => sum + h.precipitation, 0)
-  const nextHoursLabel = hours.length > 0 ? weatherLabel(hours[hours.length - 1].code) : '—'
-  const currentLabel = weatherLabel(data.currentCode)
+  const nextHoursPrecip = hours.reduce((sum, h) => sum + h.precip, 0)
+  const nextHoursLabel = hours.length > 0 ? hours[hours.length - 1].text : '—'
+  const currentLabel = data.current.text
 
-  const today = data.daily[0]
-  // 今日降雨时段明细（几点到几点、降水量）
-  const todayRain = rainIntervals(data.todayHours)
+  const today: WeatherDay | undefined = data.daily[0]
+  // 今日降雨时段明细：只统计当前小时及之后（已过去的时段不再显示）
+  const nowHour = dayjs().startOf('hour')
+  const todayRain = rainIntervals(
+    data.hourly.filter((h) => !dayjs(h.time).isBefore(nowHour)),
+  )
   const nextDays = data.daily.slice(1, 4)
 
   const content = (
@@ -270,22 +220,22 @@ export default function WeatherCard() {
       <div style={{ fontWeight: 600, marginBottom: 2 }}>今日天气</div>
       <WeatherRow
         label="气温"
-        value={today ? `${Math.round(today.min)}℃~${Math.round(today.max)}℃` : '—'}
+        value={today ? `${Math.round(today.temp_min)}℃~${Math.round(today.temp_max)}℃` : '—'}
       />
       <WeatherRow
         label="天气"
         value={
           today
-            ? `${weatherLabel(today.code)}，${
+            ? `${today.text_night && today.text_night !== today.text ? `${today.text}转${today.text_night}` : today.text}，${
                 todayRain.length > 0 ? todayRain.join('；') : '无降水'
               }`
             : '—'
         }
       />
-      <WeatherRow label="体感温度" value={`${Math.round(data.feelsLike)}℃`} />
+      <WeatherRow label="体感温度" value={`${Math.round(data.current.feels_like)}℃`} />
       <WeatherRow
         label="风力"
-        value={`${windDirectionLabel(data.windDirection)} ${windLevel(data.windSpeed)} 级`}
+        value={`${data.current.wind_dir} ${data.current.wind_scale} 级`}
       />
 
       <div style={{ borderTop: '1px solid #f0f0f0', margin: '8px 0' }} />
@@ -295,7 +245,7 @@ export default function WeatherCard() {
         <WeatherRow
           key={day.date}
           label={dayjs(day.date).format('M月D日')}
-          value={`${weatherLabel(day.code)} ${Math.round(day.min)}℃~${Math.round(day.max)}℃`}
+          value={`${day.text} ${Math.round(day.temp_min)}℃~${Math.round(day.temp_max)}℃`}
         />
       ))}
 

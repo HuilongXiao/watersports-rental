@@ -46,3 +46,17 @@ REQUEST_TIMING = os.getenv("REQUEST_TIMING", "1").lower() not in ("0", "false", 
 # POST /api/_trace client-side trace reporting endpoint. Default off to avoid
 # generating large amounts of logs; enable with TRACE_REPORT_ENABLED=1.
 TRACE_REPORT_ENABLED = os.getenv("TRACE_REPORT_ENABLED", "0").lower() in ("1", "true", "on")
+
+# 和风天气（JWT 认证）：接口由后端代理，私钥只保存在服务器上。
+# 私钥放在持久化的 data 目录，Docker 内路径为 /app/data/secrets/qweather_private.pem
+# （已在各 Dockerfile / compose 中通过 QWEATHER_PRIVATE_KEY_PATH 指定）。
+QWEATHER_API_HOST = os.getenv("QWEATHER_API_HOST") or "mq487vqkdf.re.qweatherapi.com"
+QWEATHER_PROJECT_ID = os.getenv("QWEATHER_PROJECT_ID") or "4GTJK46JVF"
+QWEATHER_CREDENTIAL_ID = os.getenv("QWEATHER_CREDENTIAL_ID") or "T85DGF76B6"
+QWEATHER_DEVELOPER_ID = os.getenv("QWEATHER_DEVELOPER_ID") or "Q161A601AC"
+QWEATHER_PRIVATE_KEY_PATH = Path(
+    os.getenv(
+        "QWEATHER_PRIVATE_KEY_PATH",
+        str(PROJECT_ROOT / "data" / "secrets" / "qweather_private.pem"),
+    )
+)

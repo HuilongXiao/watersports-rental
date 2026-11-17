@@ -2,6 +2,24 @@
 
 本项目版本按 `1.x.y` 递增，最新版本排在最前面。
 
+## v1.2.1 — 2026-11-17
+
+### 天气：数据源切换为和风天气
+
+- 天气数据源由 Open-Meteo 切换为和风天气（QWeather），改为后端代理 `GET /api/weather` 统一取数，前端不再直连第三方；离线或跨境网络不佳时的加载失败问题随之解决。
+- 后端使用 JWT（EdDSA / Ed25519）认证签发访问令牌，私钥仅保存在服务器 `/app/data/secrets/qweather_private.pem`，不会下发到前端。
+- 使用和风旧版 `/v7/weather/now、24h、10d` 接口：实时天气、逐小时 24 条、逐天 8 天（含今天），接口返回时间已是北京时间。
+- 店铺坐标按「经度,纬度」两位小数传给和风；未填写时仍使用默认坐标（31.33 / 121.52）。
+- 今日天气的降雨时段只统计当前小时及之后，已过去的时段不再展示。
+- 订单列表为空时展示的未来一周预报，改为从明天开始连续 7 天。
+- 天气结果按坐标缓存 10 分钟，减少重复请求与额度消耗。
+
+### 部署
+
+- `backend/Dockerfile`、`Dockerfile.allinone` 增加 `QWEATHER_PRIVATE_KEY_PATH=/app/data/secrets/qweather_private.pem`；云端与 NAS 部署需把私钥放到映射至 `/app/data` 的 `secrets/qweather_private.pem`（`data/` 已在 .gitignore 中，不入库）。
+- backend 依赖新增 `cryptography`。
+- 版本号更新为 1.2.1。
+
 ## v1.2.0 — 2026-11-12
 
 ### 新增：天气信息

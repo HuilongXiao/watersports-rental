@@ -1557,7 +1557,7 @@ function BasicTab() {
       </div>
       <Divider />
       <Descriptions size="small" column={1}>
-        <Descriptions.Item label="系统版本">v1.2.0</Descriptions.Item>
+        <Descriptions.Item label="系统版本">v1.2.1</Descriptions.Item>
         <Descriptions.Item label="最近更新">
           {settings ? new Date(settings.updated_at).toLocaleDateString('zh-CN') : '—'}
         </Descriptions.Item>

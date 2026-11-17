@@ -25,6 +25,7 @@ from app.api.payment_methods import router as payment_methods_router
 from app.api.payments import router as payments_router
 from app.api.settings import router as settings_router
 from app.api.users import router as users_router
+from app.api.weather import router as weather_router
 from app.api.reports import router as reports_router
 from app.core.config import API_DOCS_ENABLED, SESSION_SECRET, TRACE_REPORT_ENABLED
 from app.db.init_db import check_database_connection, initialize_database
@@ -148,6 +149,7 @@ app.include_router(users_router)
 app.include_router(reports_router)
 app.include_router(backups_router)
 app.include_router(auto_exports_router)
+app.include_router(weather_router)
 
 
 @app.get("/api/health")
