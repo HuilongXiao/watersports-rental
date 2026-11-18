@@ -217,7 +217,7 @@ export default function AppLayout() {
       <Layout className="mobile-app-shell" style={mobileLayoutStyle}>
         <Header
           style={{
-            background: '#fff',
+            background: 'rgba(255,255,255,.94)',
             padding: '0 16px',
             display: 'flex',
             justifyContent: 'space-between',
@@ -225,7 +225,10 @@ export default function AppLayout() {
             flexShrink: 0,
           }}
         >
-          <Typography.Text strong style={{ color: '#0e7a8c', flexShrink: 0 }}>
+          <Typography.Text
+            strong
+            style={{ color: '#16262e', flexShrink: 0, fontSize: 16, fontWeight: 700, letterSpacing: '.02em' }}
+          >
             {headerTitle}
           </Typography.Text>
           <WeatherCard />
@@ -266,23 +269,28 @@ export default function AppLayout() {
   // Desktop layout
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <Sider theme="dark" breakpoint="lg" collapsedWidth="0">
+      <Sider
+        theme="light"
+        breakpoint="lg"
+        collapsedWidth="0"
+        style={{ borderRight: '1px solid #d3dde0' }}
+      >
         <div
           style={{
             height: 56,
             margin: 12,
-            color: '#fff',
+            color: '#2f6474',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            fontWeight: 600,
+            fontWeight: 700,
             letterSpacing: 1,
           }}
         >
           {headerTitle}
         </div>
         <Menu
-          theme="dark"
+          theme="light"
           mode="inline"
           selectedKeys={[selectedKey]}
           items={[
@@ -344,20 +352,20 @@ const mobileContentStyle: React.CSSProperties = {
   WebkitOverflowScrolling: 'touch',
   // Stop scroll chaining to the body at the rubber-band boundaries.
   overscrollBehavior: 'contain',
-  padding: 12,
+  padding: 16,
 }
 
 const tabBarStyle: React.CSSProperties = {
   // In-flow (not fixed): flex sibling of the scrolling Content, so it stays
   // locked at the bottom. Extra bottom padding clears the iPhone home indicator.
   flexShrink: 0,
-  paddingTop: 4,
-  paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 6px)',
-  background: '#fff',
-  borderTop: '1px solid #f0f0f0',
+  paddingTop: 0,
+  paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 4px)',
+  background: 'rgba(255,255,255,.96)',
+  borderTop: '1px solid #d3dde0',
   display: 'flex',
   justifyContent: 'space-around',
-  alignItems: 'center',
+  alignItems: 'stretch',
   zIndex: 100,
 }
 
@@ -365,13 +373,14 @@ const addButtonStyle: React.CSSProperties = {
   width: 52,
   height: 52,
   borderRadius: '50%',
-  background: '#0e7a8c',
+  background: '#2f6474',
   color: '#fff',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
   marginTop: -20,
-  boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+  alignSelf: 'center',
+  boxShadow: '0 6px 16px rgba(47,100,116,.32)',
   cursor: 'pointer',
 }
 
@@ -393,9 +402,13 @@ function TabButton({
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        color: active ? '#0e7a8c' : '#999',
+        gap: 2,
+        color: active ? '#2f6474' : '#4e636d',
+        boxShadow: active ? 'inset 0 3px 0 #2f6474' : 'none',
         cursor: 'pointer',
         fontSize: 12,
+        fontWeight: 600,
+        letterSpacing: '.02em',
       }}
     >
       <span style={{ fontSize: 18 }}>{item.icon}</span>

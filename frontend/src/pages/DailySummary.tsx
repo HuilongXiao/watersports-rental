@@ -90,20 +90,20 @@ export default function DailySummary() {
       if (!canViewRevenue) return null
       if (amount === 0) return dash
       return (
-        <span style={{ fontSize: 11, fontWeight: 600, color: '#389e0d' }}>
+        <span style={{ fontSize: 11, fontWeight: 600, color: '#1f7a5c' }}>
           {formatThousands(amount)}
         </span>
       )
     }
     if (metric === 'orders') {
       if (orderCount === 0) return dash
-      return <span style={{ fontSize: 11, fontWeight: 600, color: '#1677ff' }}>{orderCount}</span>
+      return <span style={{ fontSize: 11, fontWeight: 600, color: '#2f6474' }}>{orderCount}</span>
     }
     if (metric === 'booking') {
       if (bookingCount === 0 && walkinCount === 0) return dash
       // 预订/散客：只显示两个数字，没有的用 - 代替（如 57/-、68/31）
       return (
-        <span style={{ fontSize: 11, fontWeight: 600, color: '#1677ff', whiteSpace: 'nowrap' }}>
+        <span style={{ fontSize: 11, fontWeight: 600, color: '#2f6474', whiteSpace: 'nowrap' }}>
           {bookingCount === 0 ? '-' : bookingCount}/{walkinCount === 0 ? '-' : walkinCount}
         </span>
       )
@@ -112,7 +112,7 @@ export default function DailySummary() {
       const qty = dayData?.spec_quantities[metric.slice(5)] ?? 0
       if (qty === 0) return dash
       // 船型数量也是个数，用蓝色
-      return <span style={{ fontSize: 11, fontWeight: 600, color: '#1677ff' }}>{qty}</span>
+      return <span style={{ fontSize: 11, fontWeight: 600, color: '#2f6474' }}>{qty}</span>
     }
     return null
   }
@@ -362,7 +362,7 @@ export default function DailySummary() {
           </Space>
         }
       >
-        <div style={{ marginBottom: 8, fontSize: 13, color: '#333' }}>
+        <div style={{ marginBottom: 8, fontSize: 13, color: '#4e636d' }}>
           本月销售额：
           {canViewRevenue ? (
             <strong>¥{formatThousands(revenue?.total_fen ?? 0)}</strong>
@@ -380,7 +380,7 @@ export default function DailySummary() {
             }}
           >
             {['一', '二', '三', '四', '五', '六', '日'].map((w) => (
-              <div key={w} style={{ fontSize: 12, color: '#999', padding: '2px 0' }}>
+              <div key={w} style={{ fontSize: 12, color: '#4e636d', fontWeight: 600, padding: '2px 0' }}>
                 {w}
               </div>
             ))}
@@ -396,8 +396,8 @@ export default function DailySummary() {
                     minHeight: 44,
                     padding: '3px 2px',
                     borderRadius: 4,
-                    border: isToday ? '1px solid #1677ff' : '1px solid #f0f0f0',
-                    background: isToday ? '#f0f7ff' : '#fff',
+                    border: isToday ? '1px solid #c96f4a' : '1px solid #e4ecee',
+                    background: isToday ? '#fbeee8' : '#fff',
                     display: 'flex',
                     flexDirection: 'column',
                     alignItems: 'center',
@@ -405,7 +405,7 @@ export default function DailySummary() {
                     gap: 1,
                   }}
                 >
-                  <span style={{ fontSize: 12, color: isToday ? '#1677ff' : '#666' }}>{day}</span>
+                  <span style={{ fontSize: 12, color: isToday ? '#c96f4a' : '#4e636d', fontWeight: isToday ? 700 : 500 }}>{day}</span>
                   {renderCellValue(dayData)}
                 </div>
               )

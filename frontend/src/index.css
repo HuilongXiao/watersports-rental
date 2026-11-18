@@ -162,3 +162,104 @@ body {
     font-size: 12px;
   }
 }
+
+/* =========================================================================
+   「J · 岸雾暖光」视觉主题（纯样式，不含任何业务逻辑）
+   主色青灰蓝 #2f6474、单一暖色陶土橙 #c96f4a、正文近黑 #16262e。
+   主题 token 定义在 src/main.tsx 的 ConfigProvider；此处只补全局质感。
+   ========================================================================= */
+:root {
+  --j-page: #e9eef0;
+  --j-ink: #16262e;
+  --j-sub: #4e636d;
+  --j-teal: #2f6474;
+  --j-teal-deep: #23505d;
+  --j-warm: #c96f4a;
+  --j-ok: #1f7a5c;
+  --j-line: #d3dde0;
+  --j-soft: #f2f6f7;
+}
+
+body {
+  color: var(--j-ink);
+  font-weight: 500;
+  -webkit-font-smoothing: antialiased;
+  background-color: var(--j-page);
+  background-image:
+    radial-gradient(circle at 12% 6%, rgba(174, 214, 220, 0.55) 0%, transparent 40%),
+    radial-gradient(circle at 96% 30%, rgba(248, 214, 198, 0.38) 0%, transparent 42%),
+    linear-gradient(180deg, #eef3f4 0%, #e7edef 100%);
+  background-attachment: fixed;
+}
+
+/* 让页面级的冷色光晕从 Layout 里透出来 */
+.ant-layout {
+  background: transparent;
+}
+
+/* 卡片：实心白底 + 发丝边框 + 极轻投影 */
+.ant-card {
+  border-color: var(--j-line);
+  box-shadow: 0 6px 16px rgba(47, 100, 116, 0.05);
+}
+.ant-card-head {
+  border-bottom-color: #e4ecee;
+}
+.ant-card-head-title {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+/* 表格：圆角容器、表头加粗、数字等宽对齐 */
+.ant-table-wrapper .ant-table {
+  border-radius: 12px;
+}
+.ant-table-thead > tr > th {
+  font-weight: 700 !important;
+  letter-spacing: 0.02em;
+}
+.ant-table,
+.ant-statistic-content,
+.ant-descriptions-item-content {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 标题与正文整体加粗一档，提升内部管理场景下的可读性 */
+.ant-typography,
+.ant-card-body,
+.ant-form-item-label > label,
+.ant-descriptions-item-label,
+.ant-descriptions-item-content,
+.ant-list-item,
+.ant-menu {
+  font-weight: 500;
+}
+h1.ant-typography,
+h2.ant-typography,
+h3.ant-typography,
+h4.ant-typography,
+h5.ant-typography {
+  font-weight: 700;
+  color: var(--j-ink);
+}
+.ant-form-item-label > label {
+  font-weight: 600;
+}
+
+/* 按钮、标签文字略加粗 */
+.ant-btn {
+  font-weight: 600;
+}
+.ant-tag {
+  font-weight: 600;
+}
+
+/* 次要说明文字统一使用主题次要色 */
+.ant-empty-description {
+  color: var(--j-sub);
+}
+
+/* 顶栏：白底 + 细线分隔（移动端与桌面端共用） */
+.ant-layout-header {
+  border-bottom: 1px solid var(--j-line);
+}
