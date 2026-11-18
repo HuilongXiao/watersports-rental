@@ -1530,7 +1530,12 @@ function BasicTab() {
           }}
         >
           <div style={{ fontWeight: 500 }}>调试上报</div>
-          <Switch checked={tracingOn} onChange={toggleTracing} />
+          <Switch
+            checked={tracingOn}
+            onChange={toggleTracing}
+            checkedChildren="开"
+            unCheckedChildren="关"
+          />
         </div>
         <div style={{ color: '#888', fontSize: 12, marginTop: 4 }}>
           开启后，本机所有网络请求会将耗时摘要上报到服务器的 trace 日志，便于定位卡顿。
