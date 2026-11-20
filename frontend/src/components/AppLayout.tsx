@@ -320,56 +320,6 @@ export default function AppLayout() {
             ]}
             onClick={({ key }) => handleNav(key)}
           />
-          {/* 创建订单快捷按钮：位于订单管理与船只调配之间，点击后弹出气泡表单 */}
-          <Popover
-            trigger="click"
-            placement="rightTop"
-            open={quickCreateOpen}
-            onOpenChange={handleQuickCreateOpenChange}
-            destroyTooltipOnHide
-            overlayInnerStyle={{ padding: 12 }}
-            content={
-              <div
-                style={{
-                  width: 720,
-                  maxWidth: 'calc(100vw - 280px)',
-                  maxHeight: 'calc(100vh - 160px)',
-                  overflowY: 'auto',
-                }}
-              >
-                <OrderForm
-                  embedded
-                  onDone={(order) => {
-                    setQuickCreateOpen(false)
-                    if (order) setOrdersRefreshKey((k) => k + 1)
-                  }}
-                />
-              </div>
-            }
-          >
-            <button
-              type="button"
-              style={{
-                margin: '4px 8px',
-                height: 40,
-                border: 'none',
-                borderRadius: 8,
-                background: '#2f6474',
-                color: '#fff',
-                fontSize: 14,
-                letterSpacing: 1,
-                cursor: 'pointer',
-                flexShrink: 0,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 6,
-              }}
-            >
-              <PlusOutlined style={{ color: '#fff', fontSize: 14 }} />
-              创建订单
-            </button>
-          </Popover>
           <Menu
             theme="light"
             mode="inline"
@@ -403,7 +353,59 @@ export default function AppLayout() {
             gap: 16,
           }}
         >
-          <WeatherCard />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16, minWidth: 0 }}>
+            {/* 创建订单快捷按钮：位于顶部白色区域最左侧，点击后弹出气泡表单 */}
+            <Popover
+              trigger="click"
+              placement="bottomLeft"
+              open={quickCreateOpen}
+              onOpenChange={handleQuickCreateOpenChange}
+              destroyTooltipOnHide
+              overlayInnerStyle={{ padding: 12 }}
+              content={
+                <div
+                  style={{
+                    width: 720,
+                    maxWidth: 'calc(100vw - 280px)',
+                    maxHeight: 'calc(100vh - 160px)',
+                    overflowY: 'auto',
+                  }}
+                >
+                  <OrderForm
+                    embedded
+                    onDone={(order) => {
+                      setQuickCreateOpen(false)
+                      if (order) setOrdersRefreshKey((k) => k + 1)
+                    }}
+                  />
+                </div>
+              }
+            >
+              <button
+                type="button"
+                style={{
+                  height: 36,
+                  padding: '0 16px',
+                  border: 'none',
+                  borderRadius: 8,
+                  background: '#2f6474',
+                  color: '#fff',
+                  fontSize: 14,
+                  letterSpacing: 1,
+                  cursor: 'pointer',
+                  flexShrink: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                }}
+              >
+                <PlusOutlined style={{ color: '#fff', fontSize: 14 }} />
+                创建订单
+              </button>
+            </Popover>
+            <WeatherCard />
+          </div>
           {userMenu}
         </Header>
         <Content style={{ margin: 16 }}>

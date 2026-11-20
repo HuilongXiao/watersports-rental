@@ -359,8 +359,8 @@ export default function OrderDetail({
 
   return (
     <>
-    {/* 移动端浮动返回按钮（与浏览器后退等价，配合列表快照恢复；左滑手势保留） */}
-    {isMobile && !embedded && <FloatingBackButton onClick={goBack} ariaLabel="返回订单列表" />}
+    {/* 浮动返回按钮：回到进入本页之前的页面（与浏览器后退等价，配合列表快照恢复） */}
+    {!embedded && <FloatingBackButton onClick={goBack} ariaLabel="返回订单列表" />}
     <Space direction="vertical" style={{ width: '100%' }} size={16}>
       <Card
         title={
@@ -370,12 +370,8 @@ export default function OrderDetail({
           </Space>
         }
         extra={
-          // 气泡内嵌时显示「关闭」，普通页面显示「返回列表」
-          embedded ? (
-            <Button onClick={onClose}>关闭</Button>
-          ) : isDesktop ? (
-            <Button onClick={goBack}>返回列表</Button>
-          ) : undefined
+          // 气泡内嵌时显示「关闭」，普通页面统一用左上角浮动返回按钮
+          embedded ? <Button onClick={onClose}>关闭</Button> : undefined
         }
       >
         {warnings.length > 0 && (
