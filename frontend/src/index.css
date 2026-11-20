@@ -259,6 +259,16 @@ h5.ant-typography {
   color: var(--j-sub);
 }
 
+/* 侧栏菜单：图标统一占 14px 宽（与 AntD 原生图标一致），
+   让自绘的 Lucide / Tabler SVG 与文字的距离和「概览」等原生图标项保持一致 */
+.ant-layout-sider .ant-menu-inline .ant-menu-item > .ant-menu-item-icon {
+  width: 14px;
+  min-width: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 /* 顶栏：白底 + 细线分隔（移动端与桌面端共用） */
 .ant-layout-header {
   border-bottom: 1px solid var(--j-line);

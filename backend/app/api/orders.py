@@ -40,6 +40,10 @@ class OrderInput(BaseModel):
     # customer_name is kept for backward compatibility with older clients.
     customer_name: str | None = None
     customer_wechat_nickname: str | None = None
+    # 极速建档：可选补充手机号 / 微信ID / 性别，仅在按昵称/姓名匹配不到客户时用于新建
+    customer_phone: str | None = None
+    customer_wechat_id: str | None = None
+    customer_gender: str | None = None
     start_at: datetime
     adult_count: int = Field(ge=0)
     child_count: int = Field(ge=0)

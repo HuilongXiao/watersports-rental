@@ -6,6 +6,8 @@ import { api } from '../api'
 import { useAuth } from '../auth'
 import { fenToYuan, typeColorHex } from '../utils'
 import { ForecastPanel } from './Forecast'
+import DailySummary from './DailySummary'
+import { useLayoutMode } from '../layoutMode'
 import type { Catalog, DashboardData, OrderDistribution } from '../types'
 
 const STATUS_OPTIONS: { key: string; label: string; color: string }[] = [
@@ -20,6 +22,7 @@ export default function Dashboard() {
   const navigate = useNavigate()
   const { user } = useAuth()
   const { message } = App.useApp()
+  const { isDesktop } = useLayoutMode()
   const [data, setData] = useState<DashboardData | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -36,6 +39,61 @@ export default function Dashboard() {
       .finally(() => setLoading(false))
   }, [message])
 
+  // 看板卡片：手机版独立展示；电脑网页版放进当日总结右侧列（宽度与销售日历一致）
+  const boardCard = (width?: number) => (
+    <Card
+      title="看板"
+      style={width ? { width, boxSizing: 'border-box' } : undefined}
+      extra={
+        <Space size="middle">
+          {data && (
+            <span style={{ fontSize: 13, color: '#333' }}>
+              今日订单：<strong style={{ fontSize: 15 }}>{data.today_orders}</strong>
+            </span>
+          )}
+          {/* 电脑网页版没有「更多」入口，手机版保留 */}
+          {!isDesktop && (
+            <Button type="link" onClick={() => navigate('/dashboard/daily-summary')}>
+              更多
+            </Button>
+          )}
+        </Space>
+      }
+    >
+      {data ? (
+        <Space direction="vertical" style={{ display: 'flex' }}>
+          {STATUS_OPTIONS.map((s) => {
+            const count = data.status_counts[s.key as keyof typeof data.status_counts] ?? 0
+            const amount = data.status_amounts_fen[s.key as keyof typeof data.status_amounts_fen] ?? 0
+            return (
+              <div
+                key={s.key}
+                style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer' }}
+                onClick={() => {
+                  navigate(`/orders?status=${s.key}&day=${data.today}`)
+                }}
+              >
+                <div style={{ width: 64, flexShrink: 0, textAlign: 'center' }}>
+                  <Tag color={s.color}>{s.label}</Tag>
+                </div>
+                <div style={{ flex: 1, textAlign: 'center', fontWeight: 600 }}>{count}</div>
+                <div style={{ width: 96, textAlign: 'right', fontWeight: 600 }}>
+                  {canViewRevenue ? (
+                    `¥${fenToYuan(amount)}`
+                  ) : (
+                    <span style={{ visibility: 'hidden' }}>¥0</span>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </Space>
+      ) : (
+        <p style={{ color: '#999' }}>暂无数据</p>
+      )}
+    </Card>
+  )
+
   return (
     <Spin spinning={loading}>
       <Space direction="vertical" style={{ display: 'flex' }} size="middle">
@@ -51,54 +109,12 @@ export default function Dashboard() {
           <ForecastPanel dateStr={data?.today ?? new Date().toISOString().slice(0, 10)} />
         </Card>
 
-        {/* 看板 + 今日订单统计（右上角）+ 更多入口 */}
-        <Card
-          title="看板"
-          extra={
-            <Space size="middle">
-              {data && (
-                <span style={{ fontSize: 13, color: '#333' }}>
-                  今日订单：<strong style={{ fontSize: 15 }}>{data.today_orders}</strong>
-                </span>
-              )}
-              <Button type="link" onClick={() => navigate('/dashboard/daily-summary')}>
-                更多
-              </Button>
-            </Space>
-          }
-        >
-          {data ? (
-            <Space direction="vertical" style={{ display: 'flex' }}>
-              {STATUS_OPTIONS.map((s) => {
-                const count = data.status_counts[s.key as keyof typeof data.status_counts] ?? 0
-                const amount = data.status_amounts_fen[s.key as keyof typeof data.status_amounts_fen] ?? 0
-                return (
-                  <div
-                    key={s.key}
-                    style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer' }}
-                    onClick={() => {
-                      navigate(`/orders?status=${s.key}&day=${data.today}`)
-                    }}
-                  >
-                    <div style={{ width: 64, flexShrink: 0 }}>
-                      <Tag color={s.color}>{s.label}</Tag>
-                    </div>
-                    <div style={{ flex: 1, textAlign: 'center', fontWeight: 600 }}>{count}</div>
-                    <div style={{ width: 96, textAlign: 'right', fontWeight: 600 }}>
-                      {canViewRevenue ? (
-                        `¥${fenToYuan(amount)}`
-                      ) : (
-                        <span style={{ visibility: 'hidden' }}>¥0</span>
-                      )}
-                    </div>
-                  </div>
-                )
-              })}
-            </Space>
-          ) : (
-            <p style={{ color: '#999' }}>暂无数据</p>
-          )}
-        </Card>
+        {/* 电脑网页版：左侧当日总结，右侧上为看板、下为销售日历；区域不强制占满宽度 */}
+        {isDesktop ? (
+          <DailySummary embedded rightTop={boardCard(460)} />
+        ) : (
+          boardCard()
+        )}
       </Space>
     </Spin>
   )

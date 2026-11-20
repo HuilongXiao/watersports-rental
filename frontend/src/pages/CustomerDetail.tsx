@@ -11,17 +11,22 @@ import {
   Input,
   Modal,
   Popconfirm,
+  Popover,
   Row,
   Space,
   Statistic,
   Table,
+  Tag,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import { UserOutlined } from '@ant-design/icons'
 import { api } from '../api'
 import { useAuth } from '../auth'
 import { fenToYuan, formatDateTime, typeColorHex } from '../utils'
+import { useLayoutMode } from '../layoutMode'
 import FloatingBackButton from '../components/FloatingBackButton'
 import { GenderCheckboxes } from './Customers'
+import OrderForm from './OrderForm'
 import type { Customer, CustomerStats, Order } from '../types'
 
 interface EditFormValues {
@@ -55,6 +60,7 @@ export default function CustomerDetail() {
   const { message } = App.useApp()
   const { user } = useAuth()
   const isSuperuser = user?.role === 'superuser'
+  const { isMobile } = useLayoutMode()
   const [deleting, setDeleting] = useState(false)
   const [customer, setCustomer] = useState<Customer | null>(null)
   const [stats, setStats] = useState<CustomerStats | null>(null)
@@ -68,6 +74,23 @@ export default function CustomerDetail() {
   const [editOpen, setEditOpen] = useState(false)
   const [editSaving, setEditSaving] = useState(false)
   const [editForm] = Form.useForm<EditFormValues>()
+  // 客户详情内「创建订单」气泡
+  const [createOrderOpen, setCreateOrderOpen] = useState(false)
+
+  // 气泡内的日期/时间/新建客户等浮层点击时不应关闭气泡
+  const handleCreateOrderOpenChange = (next: boolean) => {
+    if (next) {
+      setCreateOrderOpen(true)
+      return
+    }
+    const hasOpenPortal = Array.from(
+      document.querySelectorAll('.ant-select-dropdown, .ant-picker-dropdown, .ant-modal-wrap'),
+    ).some((el) => {
+      const style = window.getComputedStyle(el)
+      return style.display !== 'none' && style.visibility !== 'hidden'
+    })
+    if (!hasOpenPortal) setCreateOrderOpen(false)
+  }
 
   const load = useCallback(async () => {
     if (!id) return
@@ -175,35 +198,46 @@ export default function CustomerDetail() {
     }
   }
 
-  const centerHeader = () => ({ style: { textAlign: 'center' as const } })
-
   const orderColumns: ColumnsType<Order> = [
     {
       title: '开始时间',
       dataIndex: 'start_at',
-      width: 200,
-      onHeaderCell: centerHeader,
-      render: (v: string, record: Order) => (
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <span
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: '50%',
-              background: STATUS_DOT_COLOR[record.status] ?? '#bfbfbf',
-              display: 'inline-block',
-              flexShrink: 0,
-            }}
-            title={STATUS_LABELS[record.status] ?? record.status}
-          />
-          {formatDateTime(record.check_in_at ?? v)}
-        </span>
-      ),
+      // 手机端不固定列宽，把空间让给内容，避免横向溢出
+      width: isMobile ? undefined : 200,
+      align: 'center',
+      render: (v: string, record: Order) => {
+        const text = formatDateTime(record.check_in_at ?? v)
+        const [datePart, timePart] = text.split(' ')
+        return (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: '50%',
+                background: STATUS_DOT_COLOR[record.status] ?? '#bfbfbf',
+                display: 'inline-block',
+                flexShrink: 0,
+              }}
+              title={STATUS_LABELS[record.status] ?? record.status}
+            />
+            {/* 手机端日期与时间分两行且各自居中 */}
+            {isMobile ? (
+              <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.4 }}>
+                <span>{datePart}</span>
+                <span>{timePart ?? ''}</span>
+              </span>
+            ) : (
+              text
+            )}
+          </span>
+        )
+      },
     },
     {
       title: '器材',
-      width: 160,
-      onHeaderCell: centerHeader,
+      width: isMobile ? undefined : 160,
+      align: 'center',
       render: (_: unknown, record: Order) => (
         <div>
           {record.items.map((item, i) => {
@@ -224,9 +258,10 @@ export default function CustomerDetail() {
     {
       title: '金额',
       dataIndex: 'total_amount_fen',
-      width: 100,
-      onHeaderCell: centerHeader,
-      render: (v: number) => `¥${fenToYuan(v)}`,
+      width: isMobile ? undefined : 100,
+      align: 'center',
+      // 金额尽量保持一行，避免窄屏折行
+      render: (v: number) => <span style={{ whiteSpace: 'nowrap' }}>{`¥${fenToYuan(v)}`}</span>,
     },
   ]
 
@@ -243,9 +278,36 @@ export default function CustomerDetail() {
               <>
                 {/* 创建订单：预填当前客户信息（通过 URL query 传递 customerId，OrderForm 自动识别） */}
                 {customer.is_active !== false && (
-                  <Button type="primary" onClick={() => navigate(`/orders/new?customerId=${customer.id}`)}>
-                    创建订单
-                  </Button>
+                  <Popover
+                    trigger="click"
+                    placement="bottomRight"
+                    open={createOrderOpen}
+                    onOpenChange={handleCreateOrderOpenChange}
+                    destroyTooltipOnHide
+                    overlayInnerStyle={{ padding: 12 }}
+                    content={
+                      <div
+                        style={{
+                          width: 720,
+                          maxWidth: 'calc(100vw - 48px)',
+                          maxHeight: 'calc(100vh - 160px)',
+                          overflowY: 'auto',
+                        }}
+                      >
+                        <OrderForm
+                          embedded
+                          presetCustomerId={customer.id}
+                          onDone={(order) => {
+                            setCreateOrderOpen(false)
+                            // 新建订单时可能补填了客户资料，重新拉取详情
+                            if (order) load()
+                          }}
+                        />
+                      </div>
+                    }
+                  >
+                    <Button type="primary">创建订单</Button>
+                  </Popover>
                 )}
                 <Button onClick={openEdit}>编辑</Button>
               </>
@@ -268,12 +330,30 @@ export default function CustomerDetail() {
         <Descriptions column={{ xs: 1, sm: 2, md: 3 }}>
           <Descriptions.Item label="客户ID">{customer?.id ?? ''}</Descriptions.Item>
           <Descriptions.Item label="姓名">{customer?.name ?? ''}</Descriptions.Item>
-          <Descriptions.Item label="性别">{customer?.gender ?? ''}</Descriptions.Item>
+          <Descriptions.Item label="性别">
+            {customer?.gender ? (
+              <Space size={4}>
+                <UserOutlined
+                  style={{ color: customer.gender === '女士' ? '#f5222d' : '#1677ff' }}
+                />
+                {customer.gender}
+              </Space>
+            ) : (
+              <UserOutlined style={{ color: '#bfbfbf' }} />
+            )}
+          </Descriptions.Item>
           <Descriptions.Item label="微信昵称">{customer?.wechat_nickname ?? ''}</Descriptions.Item>
           <Descriptions.Item label="微信ID">{customer?.wechat_id ?? ''}</Descriptions.Item>
           <Descriptions.Item label="手机号">{customer?.phone ?? ''}</Descriptions.Item>
           <Descriptions.Item label="状态">
-            {customer ? (customer.is_active === false ? '已停用' : '启用') : ''}
+            {customer ? (
+              // 与概览看板一致：启用用绿色标签、停用用红色标签
+              <Tag color={customer.is_active === false ? 'red' : 'green'}>
+                {customer.is_active === false ? '已停用' : '启用'}
+              </Tag>
+            ) : (
+              ''
+            )}
           </Descriptions.Item>
         </Descriptions>
       </Card>

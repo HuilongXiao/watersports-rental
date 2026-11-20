@@ -13,7 +13,9 @@ import {
 } from 'antd'
 import dayjs from 'dayjs'
 import { api } from '../api'
+import { useLayoutMode } from '../layoutMode'
 import { useSettings } from '../contexts/SettingsContext'
+import WeeklyForecast from '../components/WeeklyForecast'
 import { formatDurationBetween, typeColorHex } from '../utils'
 
 interface BoardAssigned {
@@ -173,6 +175,7 @@ function BoatNumberInput({
 export default function Boats() {
   const { message } = App.useApp()
   const { settings } = useSettings()
+  const { isDesktop } = useLayoutMode()
   const [board, setBoard] = useState<BoardData | null>(null)
   const [loading, setLoading] = useState(false)
   const [tab, setTab] = useState<'depart' | 'return'>('depart')
@@ -354,9 +357,16 @@ export default function Boats() {
   const departContent = (
     <Spin spinning={loading}>
       {departCards.length === 0 ? (
-        <Empty description="暂无进行中的订单" />
+        // 与订单管理页一致：无进行中订单时展示未来一周天气预报
+        <WeeklyForecast />
       ) : (
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+            gap: 12,
+          }}
+        >
           {departCards.map(({ order, lines }) => (
             <Card key={order.order_id} size="small">
               {renderCustomerLine(order)}
@@ -422,7 +432,7 @@ export default function Boats() {
               })}
             </Card>
           ))}
-        </Space>
+        </div>
       )}
     </Spin>
   )
@@ -455,7 +465,13 @@ export default function Boats() {
       {returnCards.length === 0 ? (
         <Empty description="暂无已安排船只的订单" />
       ) : (
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+            gap: 12,
+          }}
+        >
           {returnCards.map(({ order, lines }) => (
             <Card key={order.order_id} size="small">
               {renderCustomerLine(order)}
@@ -558,7 +574,7 @@ export default function Boats() {
               })}
             </Card>
           ))}
-        </Space>
+        </div>
       )}
     </Spin>
   )
@@ -576,7 +592,7 @@ export default function Boats() {
       <Card
         title="船只调配"
         extra={
-          <Space size={8}>
+          <Space>
             <Select
               size="small"
               style={{ width: 120 }}
@@ -584,21 +600,56 @@ export default function Boats() {
               options={typeOptions}
               onChange={changeTypeFilter}
             />
-            <Button size="small" onClick={load} loading={loading}>
+            {/* 刷新按钮：从页面中间移到右上角筛选框右侧 */}
+            <Button size="small" loading={loading} onClick={load}>
               刷新
             </Button>
           </Space>
         }
       >
-        <Tabs
-          className="boats-tabs"
-          activeKey={tab}
-          onChange={(key) => setTab(key as 'depart' | 'return')}
-          items={[
-            { key: 'depart', label: '出发', children: departContent },
-            { key: 'return', label: '返还', children: returnContent },
-          ]}
-        />
+        {isDesktop ? (
+          // 电脑网页版：出发 / 返还左右并排，各占一半宽度，标题同一行
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'flex-start', gap: 16 }}>
+            <div style={{ flex: '1 1 0', minWidth: 0 }}>
+              <div
+                style={{
+                  fontSize: 15,
+                  fontWeight: 600,
+                  textAlign: 'center',
+                  marginBottom: 10,
+                  letterSpacing: 1,
+                }}
+              >
+                出发
+              </div>
+              {departContent}
+            </div>
+            <div style={{ flex: '1 1 0', minWidth: 0 }}>
+              <div
+                style={{
+                  fontSize: 15,
+                  fontWeight: 600,
+                  textAlign: 'center',
+                  marginBottom: 10,
+                  letterSpacing: 1,
+                }}
+              >
+                返还
+              </div>
+              {returnContent}
+            </div>
+          </div>
+        ) : (
+          <Tabs
+            className="boats-tabs"
+            activeKey={tab}
+            onChange={(key) => setTab(key as 'depart' | 'return')}
+            items={[
+              { key: 'depart', label: '出发', children: departContent },
+              { key: 'return', label: '返还', children: returnContent },
+            ]}
+          />
+        )}
       </Card>
       {renderReturnModal()}
     </>

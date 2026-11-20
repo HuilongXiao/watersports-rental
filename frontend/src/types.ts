@@ -61,6 +61,8 @@ export interface Customer {
   note?: string | null
   remind?: boolean
   total_orders?: number
+  completed_orders?: number
+  no_show_orders?: number
   total_spending_fen?: number
   created_at?: string
   updated_at?: string

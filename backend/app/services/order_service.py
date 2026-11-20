@@ -163,6 +163,9 @@ def _resolve_fast_customer(
     group_id = active_group_id or user.group_id
     nickname = (payload.customer_wechat_nickname or "").strip() or None
     name = (payload.customer_name or "").strip() or None
+    phone = (payload.customer_phone or "").strip() or None
+    wechat_id = (payload.customer_wechat_id or "").strip() or None
+    gender = (getattr(payload, "customer_gender", None) or "").strip() or None
 
     if group_id is None and (nickname or name):
         value = nickname or name
@@ -203,10 +206,10 @@ def _resolve_fast_customer(
         customer = Customer(
             id=str(uuid4()),
             name=None if nickname else name,
-            gender=None,
+            gender=gender,
             wechat_nickname=nickname,
-            wechat_id=None,
-            phone=None,
+            wechat_id=wechat_id,
+            phone=phone,
             is_system=False,
             group_id=fallback_group_id,
             created_by_user_id=system.id if system else user.id,
@@ -234,11 +237,11 @@ def _resolve_fast_customer(
         system = db.scalar(select(User).where(User.is_system.is_(True)))
         customer = Customer(
             id=str(uuid4()),
-            name=None,
-            gender=None,
+            name=name,
+            gender=gender,
             wechat_nickname=nickname,
-            wechat_id=None,
-            phone=None,
+            wechat_id=wechat_id,
+            phone=phone,
             is_system=False,
             group_id=group_id,
             created_by_user_id=system.id if system else user.id,
@@ -265,10 +268,10 @@ def _resolve_fast_customer(
         customer = Customer(
             id=str(uuid4()),
             name=name,
-            gender=None,
+            gender=gender,
             wechat_nickname=None,
-            wechat_id=None,
-            phone=None,
+            wechat_id=wechat_id,
+            phone=phone,
             is_system=False,
             group_id=group_id,
             created_by_user_id=system.id if system else user.id,
@@ -278,7 +281,7 @@ def _resolve_fast_customer(
         db.flush()
         return customer
 
-    raise HTTPException(status_code=422, detail="请提供客户微信昵称")
+    raise HTTPException(status_code=422, detail="请提供客户微信昵称或姓名")
 
 
 def _resolve_payment_method_code(
@@ -302,6 +305,38 @@ def _resolve_payment_method_code(
     return code
 
 
+def _fill_customer_missing_fields(db: Session, customer: Customer, payload) -> None:
+    """用订单表单里补填的资料，回填客户档案中仍为空的字段。
+
+    仅补空值，不覆盖已有资料；微信昵称/姓名仍需满足 Group 内唯一。
+    """
+    updates = {
+        "wechat_nickname": ((getattr(payload, "customer_wechat_nickname", None) or "").strip() or None, "微信昵称"),
+        "name": ((getattr(payload, "customer_name", None) or "").strip() or None, "姓名"),
+        "phone": ((getattr(payload, "customer_phone", None) or "").strip() or None, "手机号"),
+        "wechat_id": ((getattr(payload, "customer_wechat_id", None) or "").strip() or None, "微信ID"),
+        "gender": ((getattr(payload, "customer_gender", None) or "").strip() or None, "性别"),
+    }
+    for field, (value, label) in updates.items():
+        if not value or getattr(customer, field):
+            continue
+        if field in ("wechat_nickname", "name"):
+            conflict = db.scalar(
+                select(Customer.id).where(
+                    Customer.group_id == customer.group_id,
+                    getattr(Customer, field) == value,
+                    Customer.is_active.is_(True),
+                    Customer.id != customer.id,
+                )
+            )
+            if conflict:
+                raise HTTPException(
+                    status_code=422, detail=f"客户{label} '{value}' 已被其他客户使用"
+                )
+        setattr(customer, field, value)
+    db.flush()
+
+
 def create_order(db: Session, user: User, payload, active_group_id: str | None = None) -> Order:
     if not payload.customer_id:
         customer = _resolve_fast_customer(db, user, payload, active_group_id)
@@ -311,6 +346,8 @@ def create_order(db: Session, user: User, payload, active_group_id: str | None =
             raise HTTPException(status_code=404, detail="客户不存在")
         if not customer.is_active:
             raise HTTPException(status_code=422, detail="该客户已停用，无法创建订单")
+        # 从客户详情创建订单时，表单里补填的缺项资料直接回填到客户档案
+        _fill_customer_missing_fields(db, customer, payload)
 
     # Group ownership: non-superuser must own the customer.
     if (
@@ -791,7 +828,17 @@ def return_order(
     order = get_order(db, order_id, user, active_group_id)
     if order.status not in ("active", "in_progress"):
         raise HTTPException(status_code=409, detail="只有进行中或预订的订单可以归还")
-    _assert_order_business_day(order)
+    # 完成订单：只要求完成日期不早于订单日期（当天或之后都可以），不要求签到
+    today_date = business_date(utc_now())
+    order_date = business_date(order.start_at)
+    if today_date < order_date:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "只能完成订单日期当天及之后的订单"
+                f"（订单日期 {order_date.isoformat()}，今天 {today_date.isoformat()}）"
+            ),
+        )
 
     now = utc_now()
     system_user = None
@@ -806,10 +853,6 @@ def return_order(
         if order.check_in_at is not None:
             if now <= order.check_in_at:
                 raise HTTPException(status_code=409, detail="归还时间必须晚于签到时间")
-        else:
-            # Direct return without check-in.
-            if now < order.start_at + timedelta(minutes=1):
-                raise HTTPException(status_code=409, detail="直接归还时间至少为开始时间后 1 分钟")
 
     # 订单完成时，仍未操作返还的出发船只一并标记返还（释放库存并记录返还时间）
     outstanding = list(

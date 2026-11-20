@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { App, Button, Card, DatePicker, Select, Spin, Space, Table } from 'antd'
 import { LeftOutlined, RightOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import { api } from '../api'
 import { useAuth } from '../auth'
-import { fenToYuan } from '../utils'
+import { fenToYuan, typeColorHex } from '../utils'
 import FloatingBackButton from '../components/FloatingBackButton'
+import { useLayoutMode } from '../layoutMode'
 import type {
   DailySummary as DailySummaryData,
   Order,
@@ -14,7 +15,14 @@ import type {
   RevenueCalendarDay,
 } from '../types'
 
-export default function DailySummary() {
+export default function DailySummary({
+  embedded = false,
+  rightTop = null,
+}: {
+  embedded?: boolean
+  /** 桌面端右列上方插入的内容（如概览页的看板卡片） */
+  rightTop?: ReactNode
+}) {
   const [date, setDate] = useState<Dayjs>(dayjs())
   // 销售额日历：当前查看的月份（每月 1 日）及该月每日销售额
   const [month, setMonth] = useState<Dayjs>(dayjs().startOf('month'))
@@ -24,6 +32,7 @@ export default function DailySummary() {
   const [orderDates, setOrderDates] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
+  const { isMobile } = useLayoutMode()
   const { message } = App.useApp()
   const { user } = useAuth()
   const canViewRevenue = Boolean(
@@ -54,7 +63,7 @@ export default function DailySummary() {
     () => [
       { value: 'revenue', label: '销售额' },
       { value: 'orders', label: '订单数' },
-      { value: 'booking', label: '预订/散客' },
+      { value: 'booking', label: '预/散' },
       ...(revenue?.specs ?? []).map((s) => ({ value: `spec:${s.id}`, label: s.name })),
     ],
     [revenue],
@@ -109,10 +118,12 @@ export default function DailySummary() {
       )
     }
     if (metric.startsWith('spec:')) {
-      const qty = dayData?.spec_quantities[metric.slice(5)] ?? 0
+      const specId = metric.slice(5)
+      const qty = dayData?.spec_quantities[specId] ?? 0
       if (qty === 0) return dash
-      // 船型数量也是个数，用蓝色
-      return <span style={{ fontSize: 11, fontWeight: 600, color: '#2f6474' }}>{qty}</span>
+      // 数量使用该船型预设的颜色，未配置颜色时回退主题蓝
+      const specColor = typeColorHex(revenue?.specs.find((s) => s.id === specId)?.type_color) ?? '#2f6474'
+      return <span style={{ fontSize: 11, fontWeight: 600, color: specColor }}>{qty}</span>
     }
     return null
   }
@@ -148,24 +159,42 @@ export default function DailySummary() {
     return prev ? dayjs(prev) : null
   }, [orderDates, date])
 
+  // 表头文字居中，数据列仍保持原有对齐方式
+  const centerHeaderCell = () => ({ style: { textAlign: 'center' as const } })
+
   const amountCol = {
     title: '金额',
     dataIndex: 'amount_fen',
     key: 'amount_fen',
     width: 100,
     align: 'right' as const,
+    onHeaderCell: centerHeaderCell,
     render: (fen: number) => (canViewRevenue ? `¥${fenToYuan(fen)}` : '—'),
   }
 
   const usageColumns = [
-    { title: '名称', dataIndex: 'name', key: 'name' },
-    { title: '数量', dataIndex: 'quantity', key: 'quantity', width: 80, align: 'right' as const },
+    { title: '名称', dataIndex: 'name', key: 'name', onHeaderCell: centerHeaderCell },
+    {
+      title: '数量',
+      dataIndex: 'quantity',
+      key: 'quantity',
+      width: 80,
+      align: 'right' as const,
+      onHeaderCell: centerHeaderCell,
+    },
     amountCol,
   ]
 
   const othersColumns = [
-    { title: '备注', dataIndex: 'note', key: 'note' },
-    { title: '数量', dataIndex: 'quantity', key: 'quantity', width: 80, align: 'right' as const },
+    { title: '备注', dataIndex: 'note', key: 'note', onHeaderCell: centerHeaderCell },
+    {
+      title: '数量',
+      dataIndex: 'quantity',
+      key: 'quantity',
+      width: 80,
+      align: 'right' as const,
+      onHeaderCell: centerHeaderCell,
+    },
     amountCol,
   ]
 
@@ -176,8 +205,26 @@ export default function DailySummary() {
 
   return (
     <div>
-      <FloatingBackButton onClick={() => navigate('/dashboard')} ariaLabel="返回概览" />
-      <Card title="当日总结" style={{ marginBottom: 16 }}>
+      {!embedded && (
+        <FloatingBackButton onClick={() => navigate('/dashboard')} ariaLabel="返回概览" />
+      )}
+      {/* 桌面端左右并排：当日总结够宽即可，销售日历移到右侧；手机端仍上下堆叠 */}
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: 16,
+          alignItems: 'flex-start',
+        }}
+      >
+      <Card
+        title="当日总结"
+        style={{
+          width: isMobile ? '100%' : 720,
+          boxSizing: 'border-box',
+          marginBottom: isMobile ? 16 : 0,
+        }}
+      >
         <Space style={{ marginBottom: 16 }}>
           <Button
             icon={<LeftOutlined />}
@@ -207,6 +254,7 @@ export default function DailySummary() {
                 <div style={{ fontWeight: 600, marginBottom: 8 }}>船型使用</div>
                 <Table
                   size="small"
+                  tableLayout="fixed"
                   columns={usageColumns}
                   dataSource={summary.equipment_usage.map((e, i) => ({ ...e, key: i }))}
                   pagination={false}
@@ -232,6 +280,7 @@ export default function DailySummary() {
                 <div style={{ fontWeight: 600, marginBottom: 8 }}>销售项目</div>
                 <Table
                   size="small"
+                  tableLayout="fixed"
                   columns={usageColumns}
                   dataSource={summary.sale_item_usage.map((e, i) => ({ ...e, key: i }))}
                   pagination={false}
@@ -259,6 +308,7 @@ export default function DailySummary() {
                 </div>
                 <Table
                   size="small"
+                  tableLayout="fixed"
                   columns={othersColumns}
                   dataSource={summary.others.map((e, i) => ({ ...e, key: i }))}
                   pagination={false}
@@ -294,15 +344,23 @@ export default function DailySummary() {
                   {summary.payment_method_totals.length > 0 ? (
                     <Table
                       size="small"
+                      tableLayout="fixed"
                       columns={[
-                        { title: '方式', dataIndex: 'name', key: 'name' },
-                        { title: '代码', dataIndex: 'code', key: 'code', width: 100 },
+                        { title: '方式', dataIndex: 'name', key: 'name', onHeaderCell: centerHeaderCell },
+                        {
+                          title: '代码',
+                          dataIndex: 'code',
+                          key: 'code',
+                          width: 80,
+                          onHeaderCell: centerHeaderCell,
+                        },
                         {
                           title: '金额',
                           dataIndex: 'amount_fen',
                           key: 'amount_fen',
-                          width: 120,
+                          width: 100,
                           align: 'right' as const,
+                          onHeaderCell: centerHeaderCell,
                           render: (fen: number) => `¥${fenToYuan(fen)}`,
                         },
                       ]}
@@ -332,10 +390,17 @@ export default function DailySummary() {
         </Spin>
       </Card>
 
+      {/* 桌面端右列：上方可插入其他卡片（如看板），下方固定销售日历 */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {rightTop}
       {/* 销售日历：按月展示每日销售额 */}
       <Card
         title="销售日历"
-        style={{ marginBottom: 16 }}
+        style={{
+          width: isMobile ? '100%' : 460,
+          boxSizing: 'border-box',
+          marginBottom: isMobile ? 16 : 0,
+        }}
         extra={
           <Space size={4}>
             <Button
@@ -413,6 +478,8 @@ export default function DailySummary() {
           </div>
         </Spin>
       </Card>
+      </div>
+      </div>
     </div>
   )
 }

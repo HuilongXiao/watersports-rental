@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom'
 import { App, Button, Card, Checkbox, DatePicker, Form, Input, Modal, Popover, Select, Space, Table, Tabs, Tag } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { FilterOutlined } from '@ant-design/icons'
+import { FilterOutlined, UserOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
 import { api } from '../api'
@@ -10,6 +10,7 @@ import { useAuth } from '../auth'
 import { typeColorHex, saveOrdersSnapshot, readOrdersSnapshot, type OrdersSnapshot } from '../utils'
 import { useLayoutMode } from '../layoutMode'
 import WeeklyForecast from '../components/WeeklyForecast'
+import OrderDetail from './OrderDetail'
 import type { Customer, Order, OrderStatus } from '../types'
 
 // 状态展示顺序：进行中 → 预订 → 已完成 → 爽约 → 已取消（与概览“订单分布”配色一致）
@@ -74,12 +75,14 @@ function GenderCheckboxes({
         checked={value === '先生'}
         onChange={(e) => onChange?.(e.target.checked ? '先生' : null)}
       >
+        <UserOutlined style={{ color: '#1677ff', marginRight: 4 }} />
         先生
       </Checkbox>
       <Checkbox
         checked={value === '女士'}
         onChange={(e) => onChange?.(e.target.checked ? '女士' : null)}
       >
+        <UserOutlined style={{ color: '#f5222d', marginRight: 4 }} />
         女士
       </Checkbox>
     </Space>
@@ -122,6 +125,30 @@ export default function Orders() {
   const { isMobile, isDesktop } = useLayoutMode()
   const canCreateOrder = Boolean(user?.permissions.create_order)
   const canAddCustomer = canCreateOrder || Boolean(user?.permissions.edit_order)
+  // 电脑版：点击左/右栏任意订单行，不再跳转详情，而是在对侧栏位浮出订单详情气泡
+  const [peekOrderId, setPeekOrderId] = useState<string | null>(null)
+  const [peekFrom, setPeekFrom] = useState<'left' | 'right' | null>(null)
+  const peekRef = useRef<HTMLDivElement>(null)
+
+  const closePeek = () => {
+    setPeekOrderId(null)
+    setPeekFrom(null)
+  }
+
+  // 点击气泡（含确认气泡、弹窗）以外的区域时自动关闭
+  useEffect(() => {
+    if (!peekOrderId) return
+    const handler = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null
+      if (!target) return
+      if (peekRef.current?.contains(target)) return
+      if (target.closest('.ant-popover, .ant-modal-wrap, .ant-modal-root')) return
+      setPeekOrderId(null)
+      setPeekFrom(null)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [peekOrderId])
   const [customerModalOpen, setCustomerModalOpen] = useState(false)
   const [customerForm] = Form.useForm<CustomerFormValues>()
 
@@ -177,10 +204,10 @@ export default function Orders() {
   }
   const restoredScroll = useRef<OrdersSnapshot | null>(snapshotRef.current)
 
-  const saveSnapshot = () => {
+  const saveSnapshot = (list: Order[] = orders) => {
     const content = document.querySelector('.ant-layout-content')
     // 仅保存列表渲染所需的最小字段，避免快照过大
-    const items = orders.map((o) => ({
+    const items = list.map((o) => ({
       id: o.id,
       order_number: o.order_number,
       status: o.status,
@@ -221,6 +248,10 @@ export default function Orders() {
     () => (snapshotRef.current?.items as Order[] | undefined) ?? [],
   )
   const [loading, setLoading] = useState(false)
+  // 桌面端右侧「进行中」栏：独立数据、加载态与分页
+  const [inProgressOrders, setInProgressOrders] = useState<Order[]>([])
+  const [inProgressLoading, setInProgressLoading] = useState(false)
+  const [inProgressPage, setInProgressPage] = useState(1)
   // 首次数据加载完成标记：确保滚动在列表有高度后才恢复
   const firstLoadDone = useRef(false)
   // 并发请求序号：仅最新一次请求的结果/loading 才会生效，避免过期响应覆盖新数据
@@ -331,6 +362,8 @@ export default function Orders() {
   }, [loading])
 
   const load = useCallback(async () => {
+    // 桌面端左右两栏并排：左栏固定为「预订」，右栏固定为「进行中」
+    const leftStatus: OrderStatus | '' = isDesktop ? 'active' : status
     // 并发保护：记录本次请求序号，只有最新请求才会写入结果与 loading 状态
     const reqId = ++loadSeq.current
     // 快照已命中且 orders 有数据时，静默后台刷新——不遮罩已渲染的列表
@@ -350,8 +383,8 @@ export default function Orders() {
         // 注意：两个 tab 的“默认订单库”仍只加载预订+进行中，见下方 else 分支。
         if (filter.statuses.length > 0) params.set('statuses', filter.statuses.join(','))
       } else {
-        params.set('status', status || 'active')
-        if (status === 'in_progress') {
+        params.set('status', leftStatus || 'active')
+        if (leftStatus === 'in_progress') {
           // 进行中 tab 只显示今天的订单
           params.set('business_day', dayjs().format('YYYY-MM-DD'))
         } else {
@@ -398,13 +431,35 @@ export default function Orders() {
             )
           }
         }
-      } else if (status === 'in_progress') {
+      } else if (leftStatus === 'in_progress') {
         // “进行中”tab 按签到时间先后排序（无签到时间回退开始时间），早的在前
         result = result.sort(
           (a, b) => dayjs(a.check_in_at ?? a.start_at).valueOf() - dayjs(b.check_in_at ?? b.start_at).valueOf(),
         )
       }
       setOrders(result)
+
+      // 桌面端右栏「进行中」：固定展示今天进行中的订单，不受筛选条件影响
+      if (isDesktop) {
+        setInProgressLoading(true)
+        try {
+          const p2 = new URLSearchParams()
+          p2.set('status', 'in_progress')
+          p2.set('business_day', dayjs().format('YYYY-MM-DD'))
+          let result2 = await api.get<Order[]>(`/api/orders?${p2.toString()}`)
+          // 并发保护：过期响应直接丢弃
+          if (reqId !== loadSeq.current) return
+          // 按签到时间先后排序（无签到时间回退开始时间）
+          result2 = result2.sort(
+            (a, b) => dayjs(a.check_in_at ?? a.start_at).valueOf() - dayjs(b.check_in_at ?? b.start_at).valueOf(),
+          )
+          setInProgressOrders(result2)
+        } catch {
+          // 右栏加载失败不影响左栏，保留原有内容
+        } finally {
+          if (reqId === loadSeq.current) setInProgressLoading(false)
+        }
+      }
     } catch (error) {
       // 过期请求的错误同样忽略（例如被后续请求取代）
       if (reqId !== loadSeq.current) return
@@ -416,7 +471,7 @@ export default function Orders() {
         setLoading(false)
       }
     }
-  }, [status, filter, filtersActive, bookingDay, message])
+  }, [status, filter, filtersActive, bookingDay, message, isDesktop])
 
   const searchCustomers = useCallback(async (q: string) => {
     const params = new URLSearchParams()
@@ -615,8 +670,9 @@ export default function Orders() {
 
   // 手机端行最大行数 = max(时间列行数, 项目列船型数, 1)
   // "全部"Tab（含筛选）时间列双行 → 2；其余Tab单行 → 1
-  const timeLines = filtersActive || status === '' ? 2 : 1
-  const getRowMaxLines = (record: Order) => {
+  const getRowMaxLines = (record: Order, paneStatus: OrderStatus | '') => {
+    // "全部"Tab（含筛选）时间列双行 → 2；其余Tab单行 → 1
+    const timeLines = filtersActive || paneStatus === '' ? 2 : 1
     const eqCount = record.items.filter((i) => i.equipment_spec_name).length
     return Math.max(timeLines, eqCount, 1)
   }
@@ -658,18 +714,17 @@ export default function Orders() {
     )
   }
 
-  // 预订 tab：按开始时间向下取整到半小时刻度，刻度变化处插入时间分隔行（仅展示用，不改订单顺序）
-  const withTimeDividers = !filtersActive && status === 'active'
-  const { tableRows, noRowBorderIds } = useMemo(() => {
-    if (!withTimeDividers) {
-      return { tableRows: orders as OrderRow[], noRowBorderIds: new Set<string>() }
+  // 预订栏：按开始时间向下取整到半小时刻度，刻度变化处插入时间分隔行（仅展示用，不改订单顺序）
+  const buildRows = (list: Order[], withDividers: boolean) => {
+    if (!withDividers) {
+      return { tableRows: list as OrderRow[], noRowBorderIds: new Set<string>() }
     }
     const rows: OrderRow[] = []
     // 分隔行及它上面那一行都要去掉表格默认的底边线，只留分隔行自己的时间线
     const noRowBorderIds = new Set<string>()
     let prev = ''
     let prevOrderId = ''
-    orders.forEach((o) => {
+    list.forEach((o) => {
       const d = dayjs(o.start_at)
       // 向下取整：12:29 → 12:00，12:31 → 12:30
       const label = (d.minute() < 30 ? d.minute(0) : d.minute(30)).format('HH:mm')
@@ -684,11 +739,15 @@ export default function Orders() {
       rows.push(o)
     })
     return { tableRows: rows, noRowBorderIds }
-  }, [orders, withTimeDividers])
+  }
 
-  const columns: ColumnsType<OrderRow> = [
+  // 列定义按栏位参数化：预订栏显示日期切换表头，进行中栏显示签到时间
+  const buildColumns = (paneStatus: OrderStatus | ''): ColumnsType<OrderRow> => [
     {
       title: '客户',
+      // 表头居中，内容仍靠左
+      onHeaderCell: () => ({ style: { textAlign: 'center' as const } }),
+      width: isMobile ? undefined : '50%',
       render: (_, record) => {
         // 时间分隔行：colSpan 铺满整行，只在本列渲染
         if (record.__divider) {
@@ -706,7 +765,7 @@ export default function Orders() {
         )
         if (!isMobile) return content
         // 手机版：CSS line-clamp 截断至行高允许的最大行数，点击复制
-        const maxLines = getRowMaxLines(record)
+        const maxLines = getRowMaxLines(record, paneStatus)
         return (
           <div
             onClick={(e) => {
@@ -729,17 +788,18 @@ export default function Orders() {
     },
     {
       title:
-        !filtersActive && status === 'in_progress'
+        !filtersActive && paneStatus === 'in_progress'
           ? '签到时间'
-          : !filtersActive && status === 'active'
+          : !filtersActive && paneStatus === 'active'
             ? bookingHeader(isMobile)
             : '开始时间',
       dataIndex: 'start_at',
-      width: isMobile ? 92 : undefined,
+      align: 'center',
+      width: isMobile ? 92 : '22%',
       render: (value: string, record) => {
         // 时间分隔行已由首列铺满，本列不再渲染
         if (record.__divider) return { children: null, props: { colSpan: 0 } }
-        const isTodayTab = status === 'active' || status === 'in_progress'
+        const isTodayTab = paneStatus === 'active' || paneStatus === 'in_progress'
         const source = record.check_in_at ?? value
         // 预订订单迟到 30 分钟以上 → 时间标红
         const isLate =
@@ -766,7 +826,7 @@ export default function Orders() {
 
         // --- 手机端 ---
         // "全部"Tab（含筛选）：双行（日期 / 时间），筛选时附状态圆点
-        if (filtersActive || status === '') {
+        if (filtersActive || paneStatus === '') {
           const dateStr = dayjs(source).format('MM-DD')
           const timeStr = dayjs(source).format('HH:mm')
           return (
@@ -797,7 +857,8 @@ export default function Orders() {
     },
     {
       title: '项目',
-      width: isMobile ? 68 : undefined,
+      align: 'center',
+      width: isMobile ? 68 : '28%',
       render: (_, record) => {
         // 时间分隔行已由首列铺满，本列不再渲染
         if (record.__divider) return { children: null, props: { colSpan: 0 } }
@@ -833,6 +894,17 @@ export default function Orders() {
       },
     },
   ]
+
+  // 左栏：桌面端固定为「预订」，手机版跟随 Tabs 的当前状态
+  const paneStatus: OrderStatus | '' = isDesktop ? 'active' : status
+  const leftColumns = buildColumns(paneStatus)
+  const {
+    tableRows,
+    noRowBorderIds,
+  } = buildRows(orders, !filtersActive && paneStatus === 'active')
+  // 右栏：桌面端「进行中」，不插入时间分隔行
+  const rightColumns = buildColumns('in_progress')
+  const rightRows = buildRows(inProgressOrders, false).tableRows
 
   const filterContent = (
     // 宽度随屏幕收缩（气泡右对齐按钮，过宽会让左侧超出手机屏幕）
@@ -1012,7 +1084,19 @@ export default function Orders() {
                   navigate(`/customers/${c.id}`)
                 }}
               >
-                <div style={{ fontWeight: 500 }}>{primary}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <UserOutlined
+                    style={{
+                      color:
+                        c.gender === '先生'
+                          ? '#1677ff'
+                          : c.gender === '女士'
+                            ? '#f5222d'
+                            : '#bfbfbf',
+                    }}
+                  />
+                  <div style={{ fontWeight: 500 }}>{primary}</div>
+                </div>
                 {secondary && (
                   <div style={{ fontSize: 12, color: '#888' }}>{secondary}</div>
                 )}
@@ -1029,6 +1113,19 @@ export default function Orders() {
       title="订单管理"
       extra={
         <Space wrap>
+          {/* 电脑版：刷新按钮移到右上角（原中线的刷新按钮已移除） */}
+          {isDesktop && (
+            <Button
+              loading={loading || inProgressLoading}
+              onClick={() => {
+                setCurrentPage(1)
+                setInProgressPage(1)
+                load()
+              }}
+            >
+              刷新
+            </Button>
+          )}
           <Popover
             content={customerSearchContent}
             trigger="click"
@@ -1059,6 +1156,132 @@ export default function Orders() {
         </Space>
       }
     >
+      {filtersActive && isDesktop && (
+        <Tag
+          color="blue"
+          closable
+          onClose={clearFilter}
+          style={{ cursor: 'pointer', marginBottom: 8 }}
+        >
+          筛选中
+        </Tag>
+      )}
+      {isDesktop ? (
+        // 电脑网页版：预订 / 进行中左右并排，各占一半宽度，表头处于同一行
+        <div style={{ position: 'relative', display: 'flex', alignItems: 'flex-start', gap: 16 }}>
+          <div style={{ flex: '1 1 0', minWidth: 0 }}>
+            <div
+              style={{
+                fontSize: 15,
+                fontWeight: 600,
+                textAlign: 'center',
+                marginBottom: 10,
+                letterSpacing: 1,
+              }}
+            >
+              预订
+            </div>
+            <Table
+              className="orders-table"
+              rowClassName={(record) =>
+                noRowBorderIds.has(record.id) ? 'orders-no-row-border' : ''
+              }
+              rowKey="id"
+              loading={loading}
+              columns={leftColumns}
+              dataSource={tableRows}
+              locale={{ emptyText: loading ? null : <WeeklyForecast /> }}
+              tableLayout="fixed"
+              pagination={{
+                pageSize: 20,
+                current: currentPage,
+                onChange: (page) => {
+                  setCurrentPage(page)
+                  scrollToTop()
+                },
+              }}
+              onRow={(record) =>
+                record.__divider
+                  ? { style: { cursor: 'default', pointerEvents: 'none' } }
+                  : {
+                      onClick: () => {
+                        // 不跳转详情：在对侧（进行中）区域浮出订单详情气泡
+                        setPeekOrderId(record.id)
+                        setPeekFrom('left')
+                      },
+                    }
+              }
+            />
+          </div>
+          <div style={{ flex: '1 1 0', minWidth: 0 }}>
+            <div
+              style={{
+                fontSize: 15,
+                fontWeight: 600,
+                textAlign: 'center',
+                marginBottom: 10,
+                letterSpacing: 1,
+              }}
+            >
+              进行中
+            </div>
+            <Table
+              className="orders-table"
+              rowKey="id"
+              loading={inProgressLoading}
+              columns={rightColumns}
+              dataSource={rightRows}
+              locale={{ emptyText: inProgressLoading ? null : <WeeklyForecast /> }}
+              tableLayout="fixed"
+              pagination={{
+                pageSize: 20,
+                current: inProgressPage,
+                onChange: (page) => setInProgressPage(page),
+              }}
+              onRow={(record) => ({
+                onClick: () => {
+                  // 不跳转详情：在对侧（预订）区域浮出订单详情气泡
+                  setPeekOrderId(record.id)
+                  setPeekFrom('right')
+                },
+              })}
+            />
+          </div>
+          {peekOrderId && peekFrom && (
+            <div
+              ref={peekRef}
+              style={{
+                position: 'absolute',
+                top: 0,
+                ...(peekFrom === 'left' ? { right: 0 } : { left: 0 }),
+                width: 'calc(50% - 8px)',
+                background: '#f5f5f5',
+                border: '1px solid #f0f0f0',
+                borderRadius: 8,
+                boxShadow:
+                  '0 6px 16px 0 rgba(0,0,0,0.08), 0 3px 6px -4px rgba(0,0,0,0.12), 0 9px 28px 8px rgba(0,0,0,0.05)',
+                zIndex: 3,
+                maxHeight: 'calc(100vh - 200px)',
+                // 外层不滚动、裁切，操作栏绝对定位于此，始终浮在底部
+                overflow: 'hidden',
+                display: 'flex',
+                flexDirection: 'column',
+              }}
+            >
+              <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '12px 12px 88px' }}>
+                {/* 直接复用订单详情页组件，保证样式与内容一致 */}
+                <OrderDetail
+                  embedded
+                  orderId={peekOrderId}
+                  onClose={closePeek}
+                  onChanged={() => load()}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <>
       <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
         <Tabs
           className="orders-tabs"
@@ -1089,19 +1312,20 @@ export default function Orders() {
           </Tag>
         )}
       </div>
-      {/* 无订单时不再显示空的表格与「暂无数据」，改为展示未来一周天气预报 */}
-      {!loading && tableRows.length === 0 ? (
-        <WeeklyForecast />
-      ) : (
+      {/* 无订单时保留表头，表格内用未来一周天气预报代替「暂无数据」 */}
       <Table
         className="orders-table"
         // 分隔行与其上一行去掉默认底边线，避免出现多余的两条线
-        rowClassName={(record) => (noRowBorderIds.has(record.id) ? 'orders-no-row-border' : '')}
+        rowClassName={(record) =>
+          noRowBorderIds.has(record.id) ? 'orders-no-row-border' : ''
+        }
         rowKey="id"
         loading={loading}
-        columns={columns}
+        columns={leftColumns}
         dataSource={tableRows}
-        tableLayout={isMobile ? 'fixed' : undefined}
+        locale={{ emptyText: loading ? null : <WeeklyForecast /> }}
+        // 固定布局：列宽不随订单有无、内容长短变化，表头位置始终一致
+        tableLayout="fixed"
         components={
           isMobile
             ? {
@@ -1139,6 +1363,7 @@ export default function Orders() {
               }
         }
       />
+        </>
       )}
       <Modal
         title="新建客户"

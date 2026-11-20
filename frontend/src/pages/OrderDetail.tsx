@@ -114,8 +114,21 @@ function BoatUsageDetail({ usage }: { usage: BoatUsage[] }) {
   )
 }
 
-export default function OrderDetail() {
-  const { id } = useParams<{ id: string }>()
+export default function OrderDetail({
+  embedded = false,
+  orderId,
+  onClose,
+  onChanged,
+}: {
+  /** 嵌入订单管理页气泡时使用：不自带返回按钮与固定底部操作栏 */
+  embedded?: boolean
+  orderId?: string
+  onClose?: () => void
+  /** 订单发生变化（签到/完成/取消等）后通知外层刷新列表 */
+  onChanged?: () => void
+} = {}) {
+  const { id: routeId } = useParams<{ id: string }>()
+  const id = embedded ? orderId : routeId
   const navigate = useNavigate()
   const { message } = App.useApp()
   const { user } = useAuth()
@@ -234,6 +247,7 @@ export default function OrderDetail() {
         .get<PaymentView>(`/api/orders/${id}/payment`)
         .catch(() => null)
       setPayment(paymentData)
+      onChanged?.()
     } catch (error) {
       message.error(error instanceof Error ? error.message : '操作失败')
     }
@@ -248,6 +262,7 @@ export default function OrderDetail() {
       await api.post(path)
       message.success(successText)
       await load()
+      onChanged?.()
     } catch (error) {
       message.error(error instanceof Error ? error.message : '操作失败')
     }
@@ -261,6 +276,7 @@ export default function OrderDetail() {
       message.success('已完成')
       setCompleteOpen(false)
       await load()
+      onChanged?.()
     } catch (error) {
       message.error(error instanceof Error ? error.message : '操作失败')
     } finally {
@@ -301,6 +317,7 @@ export default function OrderDetail() {
       await load().catch(() => {
         message.warning('调整已保存，但页面刷新失败，请手动下拉刷新')
       })
+      onChanged?.()
     } catch (error) {
       // 仅 POST 本身失败才走到这里（后端校验未通过等），提示真实错误
       message.error(error instanceof Error ? error.message : '添加失败')
@@ -321,7 +338,12 @@ export default function OrderDetail() {
     try {
       await api.del(`/api/orders/${id}`)
       message.success('订单已删除')
-      navigate('/orders')
+      if (embedded) {
+        onChanged?.()
+        onClose?.()
+      } else {
+        navigate('/orders')
+      }
     } catch (error) {
       message.error(error instanceof Error ? error.message : '删除失败')
       setDeleting(false)
@@ -331,12 +353,14 @@ export default function OrderDetail() {
   if (!order) return null
 
   const today = formatDateTime(order.start_at).slice(0, 10) === dayjsToday()
+  // 完成订单：订单日期当天或之后的日期都可以操作，且不要求签到
+  const canCompleteByDate = dayjsToday() >= formatDateTime(order.start_at).slice(0, 10)
   const warnings = order.inventory_warnings ?? []
 
   return (
     <>
     {/* 移动端浮动返回按钮（与浏览器后退等价，配合列表快照恢复；左滑手势保留） */}
-    {isMobile && <FloatingBackButton onClick={goBack} ariaLabel="返回订单列表" />}
+    {isMobile && !embedded && <FloatingBackButton onClick={goBack} ariaLabel="返回订单列表" />}
     <Space direction="vertical" style={{ width: '100%' }} size={16}>
       <Card
         title={
@@ -346,8 +370,12 @@ export default function OrderDetail() {
           </Space>
         }
         extra={
-          // 返回上一页（订单列表），保留列表 URL 的筛选/分页参数以恢复状态与滚动位置
-          isDesktop ? <Button onClick={goBack}>返回列表</Button> : undefined
+          // 气泡内嵌时显示「关闭」，普通页面显示「返回列表」
+          embedded ? (
+            <Button onClick={onClose}>关闭</Button>
+          ) : isDesktop ? (
+            <Button onClick={goBack}>返回列表</Button>
+          ) : undefined
         }
       >
         {warnings.length > 0 && (
@@ -437,8 +465,14 @@ export default function OrderDetail() {
             const d = dayjs(order.start_at)
             return (
               <Descriptions.Item label="开始时间">
-                <div>{d.format('YYYY-MM-DD')}</div>
-                <div style={{ color: '#888' }}>{d.format('HH:mm')}</div>
+                {isDesktop ? (
+                  d.format('YYYY-MM-DD HH:mm')
+                ) : (
+                  <>
+                    <div>{d.format('YYYY-MM-DD')}</div>
+                    <div style={{ color: '#888' }}>{d.format('HH:mm')}</div>
+                  </>
+                )}
               </Descriptions.Item>
             )
           })()}
@@ -448,10 +482,16 @@ export default function OrderDetail() {
             const by = order.check_in_by_user_code ?? order.check_in_by_user_name
             return (
               <Descriptions.Item label="签到时间">
-                <div>{d.format('YYYY-MM-DD')}</div>
-                <div style={{ color: '#888' }}>
-                  {d.format('HH:mm')}{by ? `（${by}）` : ''}
-                </div>
+                {isDesktop ? (
+                  `${d.format('YYYY-MM-DD HH:mm')}${by ? `（${by}）` : ''}`
+                ) : (
+                  <>
+                    <div>{d.format('YYYY-MM-DD')}</div>
+                    <div style={{ color: '#888' }}>
+                      {d.format('HH:mm')}{by ? `（${by}）` : ''}
+                    </div>
+                  </>
+                )}
               </Descriptions.Item>
             )
           })()}
@@ -468,15 +508,21 @@ export default function OrderDetail() {
             const d = dayjs(order.boat_departed_at)
             return (
               <Descriptions.Item label="出发时间">
-                <div>{d.format('YYYY-MM-DD')}</div>
-                <div style={{ color: '#888' }}>
-                  {d.format('HH:mm')}
-                  {(() => {
-                    const operator =
-                      order.boat_departed_by_user_code ?? order.boat_departed_by_user_name
-                    return operator ? `（${operator}）` : ''
-                  })()}
-                </div>
+                {(() => {
+                  const operator =
+                    order.boat_departed_by_user_code ?? order.boat_departed_by_user_name
+                  return isDesktop ? (
+                    `${d.format('YYYY-MM-DD HH:mm')}${operator ? `（${operator}）` : ''}`
+                  ) : (
+                    <>
+                      <div>{d.format('YYYY-MM-DD')}</div>
+                      <div style={{ color: '#888' }}>
+                        {d.format('HH:mm')}
+                        {operator ? `（${operator}）` : ''}
+                      </div>
+                    </>
+                  )
+                })()}
               </Descriptions.Item>
             )
           })()}
@@ -493,15 +539,21 @@ export default function OrderDetail() {
             const d = dayjs(order.boat_returned_at)
             return (
               <Descriptions.Item label="返还时间">
-                <div>{d.format('YYYY-MM-DD')}</div>
-                <div style={{ color: '#888' }}>
-                  {d.format('HH:mm')}
-                  {(() => {
-                    const operator =
-                      order.boat_returned_by_user_code ?? order.boat_returned_by_user_name
-                    return operator ? `（${operator}）` : ''
-                  })()}
-                </div>
+                {(() => {
+                  const operator =
+                    order.boat_returned_by_user_code ?? order.boat_returned_by_user_name
+                  return isDesktop ? (
+                    `${d.format('YYYY-MM-DD HH:mm')}${operator ? `（${operator}）` : ''}`
+                  ) : (
+                    <>
+                      <div>{d.format('YYYY-MM-DD')}</div>
+                      <div style={{ color: '#888' }}>
+                        {d.format('HH:mm')}
+                        {operator ? `（${operator}）` : ''}
+                      </div>
+                    </>
+                  )
+                })()}
               </Descriptions.Item>
             )
           })()}
@@ -513,10 +565,16 @@ export default function OrderDetail() {
               : (order.return_by_user_code ?? order.return_by_user_name ?? '')
             return (
               <Descriptions.Item label="完成时间">
-                <div>{d.format('YYYY-MM-DD')}</div>
-                <div style={{ color: '#888' }}>
-                  {d.format('HH:mm')}{by ? `（${by}）` : ''}
-                </div>
+                {isDesktop ? (
+                  `${d.format('YYYY-MM-DD HH:mm')}${by ? `（${by}）` : ''}`
+                ) : (
+                  <>
+                    <div>{d.format('YYYY-MM-DD')}</div>
+                    <div style={{ color: '#888' }}>
+                      {d.format('HH:mm')}{by ? `（${by}）` : ''}
+                    </div>
+                  </>
+                )}
               </Descriptions.Item>
             )
           })()}
@@ -540,10 +598,16 @@ export default function OrderDetail() {
             const by = order.created_by_user_code ?? order.created_by_user_name
             return (
               <Descriptions.Item label="创建时间">
-                <div>{d.format('YYYY-MM-DD')}</div>
-                <div style={{ color: '#888' }}>
-                  {d.format('HH:mm')}{by ? `（${by}）` : ''}
-                </div>
+                {isDesktop ? (
+                  `${d.format('YYYY-MM-DD HH:mm')}${by ? `（${by}）` : ''}`
+                ) : (
+                  <>
+                    <div>{d.format('YYYY-MM-DD')}</div>
+                    <div style={{ color: '#888' }}>
+                      {d.format('HH:mm')}{by ? `（${by}）` : ''}
+                    </div>
+                  </>
+                )}
               </Descriptions.Item>
             )
           })()}
@@ -552,10 +616,16 @@ export default function OrderDetail() {
             const by = order.updated_by_user_code ?? order.updated_by_user_name
             return (
               <Descriptions.Item label="最后改动">
-                <div>{d.format('YYYY-MM-DD')}</div>
-                <div style={{ color: '#888' }}>
-                  {d.format('HH:mm')}{by ? `（${by}）` : ''}
-                </div>
+                {isDesktop ? (
+                  `${d.format('YYYY-MM-DD HH:mm')}${by ? `（${by}）` : ''}`
+                ) : (
+                  <>
+                    <div>{d.format('YYYY-MM-DD')}</div>
+                    <div style={{ color: '#888' }}>
+                      {d.format('HH:mm')}{by ? `（${by}）` : ''}
+                    </div>
+                  </>
+                )}
               </Descriptions.Item>
             )
           })()}
@@ -928,24 +998,45 @@ export default function OrderDetail() {
         </div>
       </Modal>
 
-      <div style={{ height: isDesktop ? 48 : 'calc(72px + env(safe-area-inset-bottom, 0px))' }} />
+      {!embedded && (
+        <div style={{ height: isDesktop ? 48 : 'calc(72px + env(safe-area-inset-bottom, 0px))' }} />
+      )}
       <div
-        style={{
-          position: 'fixed',
-          bottom: isDesktop ? 16 : 'calc(56px + env(safe-area-inset-bottom, 0px))',
-          left: isDesktop ? 'auto' : 0,
-          right: isDesktop ? 16 : 0,
-          zIndex: 100,
-          background: '#fff',
-          padding: '8px 12px',
-          borderTop: isDesktop ? 'none' : '1px solid #f0f0f0',
-          borderRadius: isDesktop ? 8 : 0,
-          boxShadow: '0 -2px 8px rgba(0,0,0,0.06)',
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: 8,
-          justifyContent: 'center',
-        }}
+        style={
+          embedded
+            ? {
+                // 气泡内：操作栏浮在气泡可视区域底部（不随内容滚动），随时可点
+                position: 'absolute',
+                left: 0,
+                right: 0,
+                bottom: 0,
+                zIndex: 2,
+                background: '#fff',
+                borderTop: '1px solid #f0f0f0',
+                borderRadius: '0 0 8px 8px',
+                padding: '8px 12px',
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 8,
+                justifyContent: 'center',
+              }
+            : {
+                position: 'fixed',
+                bottom: isDesktop ? 16 : 'calc(56px + env(safe-area-inset-bottom, 0px))',
+                left: isDesktop ? 'auto' : 0,
+                right: isDesktop ? 16 : 0,
+                zIndex: 100,
+                background: '#fff',
+                padding: '8px 12px',
+                borderTop: isDesktop ? 'none' : '1px solid #f0f0f0',
+                borderRadius: isDesktop ? 8 : 0,
+                boxShadow: '0 -2px 8px rgba(0,0,0,0.06)',
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 8,
+                justifyContent: 'center',
+              }
+        }
       >
         {(order.editable || order.status === 'in_progress') && canEditOrder && (
           <Button onClick={() => navigate(`/orders/${order.id}/edit`)}>编辑</Button>
@@ -974,7 +1065,7 @@ export default function OrderDetail() {
           </Popconfirm>
         )}
         {canEditOrder && (order.status === 'active' || order.status === 'in_progress') && (
-          today ? (
+          canCompleteByDate ? (
             outstandingBoats.length > 0 ? (
               <Button type="primary" ghost onClick={() => setCompleteOpen(true)}>
                 完成
@@ -988,7 +1079,7 @@ export default function OrderDetail() {
               </Popconfirm>
             )
           ) : (
-            <Button disabled title="仅当天订单可归还">完成</Button>
+            <Button disabled title="订单日期当天及之后可完成">完成</Button>
           )
         )}
         {canEditOrder && order.returned && (

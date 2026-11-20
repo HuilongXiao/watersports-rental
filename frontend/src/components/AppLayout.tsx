@@ -1,22 +1,20 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { App, Layout, Menu, Dropdown, Typography, Modal, Input, Select, Tag } from 'antd'
+import { App, Layout, Menu, Dropdown, Typography, Modal, Input, Select, Tag, Popover } from 'antd'
 import {
   DashboardOutlined,
-  ShoppingOutlined,
   TeamOutlined,
   SettingOutlined,
-  UserOutlined,
   LogoutOutlined,
   PlusOutlined,
   KeyOutlined,
   SwapOutlined,
-  CompassOutlined,
 } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { useAuth } from '../auth'
 import { useLayoutMode } from '../layoutMode'
 import WeatherCard from './WeatherCard'
+import OrderForm from '../pages/OrderForm'
 
 const { Header, Sider, Content } = Layout
 
@@ -35,6 +33,24 @@ export default function AppLayout() {
   const [pendingGroupId, setPendingGroupId] = useState<string | null>(activeGroup)
   // 点击“订单管理”菜单时，若已在订单页则递增此值，通知 Orders 组件重置为预订 tab 并回到顶部
   const [ordersRefreshKey, setOrdersRefreshKey] = useState(0)
+  // 桌面侧栏「创建订单」气泡
+  const [quickCreateOpen, setQuickCreateOpen] = useState(false)
+
+  // 气泡内可能打开 Select / 日期 / 弹窗（都渲染在 body 上的独立浮层），
+  // 点击这些浮层时不应把创建订单气泡一起关掉
+  const handleQuickCreateOpenChange = (next: boolean) => {
+    if (next) {
+      setQuickCreateOpen(true)
+      return
+    }
+    const hasOpenPortal = Array.from(
+      document.querySelectorAll('.ant-select-dropdown, .ant-picker-dropdown, .ant-modal-wrap'),
+    ).some((el) => {
+      const style = window.getComputedStyle(el)
+      return style.display !== 'none' && style.visibility !== 'hidden'
+    })
+    if (!hasOpenPortal) setQuickCreateOpen(false)
+  }
 
   const handleNav = (key: string) => {
     // 仅在订单列表页本身再次点击「订单」时刷新重置；
@@ -54,10 +70,6 @@ export default function AppLayout() {
     if (location.pathname.startsWith('/settings')) return '/settings'
     return '/dashboard'
   }, [location.pathname])
-
-  const canManageUsers = Boolean(
-    user && (user.role === 'superuser' || user.role === 'admin'),
-  )
 
   const isSuperuser = Boolean(user && user.role === 'superuser')
 
@@ -148,7 +160,7 @@ export default function AppLayout() {
         }}
       >
         <Typography.Text style={{ cursor: 'pointer' }}>
-          <UserOutlined /> {user?.display_name}（{user?.username}）
+          <UserShieldIcon /> {user?.display_name}（{user?.username}）
           {isSuperuser && activeGroupName ? (
             <Tag color="blue" style={{ marginLeft: 8 }}>
               {activeGroupName}
@@ -209,8 +221,8 @@ export default function AppLayout() {
   if (isMobile) {
     const tabs: TabItem[] = [
       { key: '/dashboard', icon: <DashboardOutlined />, label: '概览' },
-      { key: '/orders', icon: <ShoppingOutlined />, label: '订单' },
-      { key: '/boats', icon: <CompassOutlined />, label: '船只' },
+      { key: '/orders', icon: <SquareChevronsRightIcon />, label: '订单' },
+      { key: '/boats', icon: <KayakIcon />, label: '船只' },
       { key: '/settings', icon: <SettingOutlined />, label: '设置' },
     ]
     return (
@@ -273,38 +285,112 @@ export default function AppLayout() {
         theme="light"
         breakpoint="lg"
         collapsedWidth="0"
-        style={{ borderRight: '1px solid #d3dde0' }}
+        style={{
+          borderRight: '1px solid #d3dde0',
+          // 侧栏固定在视口高度，右侧内容再长也不会把侧栏拉长，滚动时保持不动
+          position: 'sticky',
+          top: 0,
+          height: '100vh',
+          overflowY: 'auto',
+        }}
       >
-        <div
-          style={{
-            height: 56,
-            margin: 12,
-            color: '#2f6474',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontWeight: 700,
-            letterSpacing: 1,
-          }}
-        >
-          {headerTitle}
+        <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+          <div
+            style={{
+              height: 56,
+              margin: 12,
+              color: '#2f6474',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontWeight: 700,
+              letterSpacing: 1,
+              flexShrink: 0,
+            }}
+          >
+            {headerTitle}
+          </div>
+          <Menu
+            theme="light"
+            mode="inline"
+            selectedKeys={[selectedKey]}
+            items={[
+              { key: '/dashboard', icon: <DashboardOutlined />, label: '概览' },
+              { key: '/orders', icon: <SquareChevronsRightIcon />, label: '订单管理' },
+            ]}
+            onClick={({ key }) => handleNav(key)}
+          />
+          {/* 创建订单快捷按钮：位于订单管理与船只调配之间，点击后弹出气泡表单 */}
+          <Popover
+            trigger="click"
+            placement="rightTop"
+            open={quickCreateOpen}
+            onOpenChange={handleQuickCreateOpenChange}
+            destroyTooltipOnHide
+            overlayInnerStyle={{ padding: 12 }}
+            content={
+              <div
+                style={{
+                  width: 720,
+                  maxWidth: 'calc(100vw - 280px)',
+                  maxHeight: 'calc(100vh - 160px)',
+                  overflowY: 'auto',
+                }}
+              >
+                <OrderForm
+                  embedded
+                  onDone={(order) => {
+                    setQuickCreateOpen(false)
+                    if (order) setOrdersRefreshKey((k) => k + 1)
+                  }}
+                />
+              </div>
+            }
+          >
+            <button
+              type="button"
+              style={{
+                margin: '4px 8px',
+                height: 40,
+                border: 'none',
+                borderRadius: 8,
+                background: '#2f6474',
+                color: '#fff',
+                fontSize: 14,
+                letterSpacing: 1,
+                cursor: 'pointer',
+                flexShrink: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 6,
+              }}
+            >
+              <PlusOutlined style={{ color: '#fff', fontSize: 14 }} />
+              创建订单
+            </button>
+          </Popover>
+          <Menu
+            theme="light"
+            mode="inline"
+            selectedKeys={[selectedKey]}
+            items={[
+              { key: '/boats', icon: <KayakIcon />, label: '船只调配' },
+              { key: '/customers', icon: <TeamOutlined />, label: '客户管理' },
+            ]}
+            onClick={({ key }) => handleNav(key)}
+          />
+          {/* 目录与设置固定贴在侧栏底部 */}
+          <div style={{ flex: 1 }} />
+          <Menu
+            theme="light"
+            mode="inline"
+            selectedKeys={[selectedKey]}
+            items={[{ key: '/settings', icon: <SettingOutlined />, label: '目录与设置' }]}
+            onClick={({ key }) => handleNav(key)}
+            style={{ borderTop: '1px solid #eef2f4', flexShrink: 0 }}
+          />
         </div>
-        <Menu
-          theme="light"
-          mode="inline"
-          selectedKeys={[selectedKey]}
-          items={[
-            { key: '/dashboard', icon: <DashboardOutlined />, label: '概览' },
-            { key: '/orders', icon: <ShoppingOutlined />, label: '订单管理' },
-            { key: '/boats', icon: <CompassOutlined />, label: '船只调配' },
-            { key: '/customers', icon: <TeamOutlined />, label: '客户管理' },
-            ...(canManageUsers
-              ? [{ key: '/users', icon: <UserOutlined />, label: '用户管理' }]
-              : []),
-            { key: '/settings', icon: <SettingOutlined />, label: '目录与设置' },
-          ]}
-          onClick={({ key }) => handleNav(key)}
-        />
       </Sider>
       <Layout>
         <Header
@@ -357,16 +443,90 @@ const mobileContentStyle: React.CSSProperties = {
 
 const tabBarStyle: React.CSSProperties = {
   // In-flow (not fixed): flex sibling of the scrolling Content, so it stays
-  // locked at the bottom. Extra bottom padding clears the iPhone home indicator.
+  // locked at the bottom. 保留安全区避让 Home 指示条，但设上限：
+  // 从主屏图标/书签独立窗口打开时 inset 为 34px，不设上限会让按钮下方多出
+  // 一大段空白、整体视觉上移，这里最多保留 20px。
   flexShrink: 0,
   paddingTop: 0,
-  paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 4px)',
+  paddingBottom: 'min(calc(env(safe-area-inset-bottom, 0px) + 4px), 20px)',
   background: 'rgba(255,255,255,.96)',
   borderTop: '1px solid #d3dde0',
   display: 'flex',
   justifyContent: 'space-around',
   alignItems: 'stretch',
   zIndex: 100,
+}
+
+// 用户管理图标：Lucide「user-shield」（ISC），使用 1em 尺寸以跟随菜单字号
+function UserShieldIcon() {
+  return (
+    <span className="anticon" role="img" aria-hidden="true">
+    <svg
+      viewBox="0 0 24 24"
+      width="1em"
+      height="1em"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      focusable="false"
+    >
+      <path d="M10 15H6a4 4 0 0 0-4 4v2" />
+      <path d="M22 17.5c0 2.499-1.75 3.749-3.83 4.474a.5.5 0 0 1-.335-.005c-2.085-.72-3.835-1.97-3.835-4.47V14a.5.5 0 0 1 .5-.499c1 0 2.25-.6 3.12-1.36a.6.6 0 0 1 .76-.001c.875.765 2.12 1.36 3.12 1.36a.5.5 0 0 1 .5.5z" />
+      <circle cx="9" cy="7" r="4" />
+    </svg>
+    </span>
+  )
+}
+
+// 订单导航图标：Lucide「square-chevrons-right」（ISC），使用 1em 尺寸以跟随菜单字号
+function SquareChevronsRightIcon() {
+  return (
+    <span className="anticon" role="img" aria-hidden="true">
+    <svg
+      viewBox="0 0 24 24"
+      width="1em"
+      height="1em"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      focusable="false"
+    >
+      <rect width="18" height="18" x="3" y="3" rx="2" />
+      <path d="m9 8 4 4-4 4" />
+      <path d="m13 8 4 4-4 4" />
+    </svg>
+    </span>
+  )
+}
+
+// 船只导航图标：Tabler Icons「kayak」（MIT），使用 1em 尺寸以跟随菜单字号
+function KayakIcon() {
+  return (
+    <span className="anticon" role="img" aria-hidden="true">
+    <svg
+      viewBox="0 0 24 24"
+      width="1em"
+      height="1em"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      focusable="false"
+    >
+      <path d="M6.414 6.414a2 2 0 0 0 0 -2.828l-1.414 -1.414l-2.828 2.828l1.414 1.414a2 2 0 0 0 2.828 0" />
+      <path d="M17.586 17.586a2 2 0 0 0 0 2.828l1.414 1.414l2.828 -2.828l-1.414 -1.414a2 2 0 0 0 -2.828 0" />
+      <path d="M6.5 6.5l11 11" />
+      <path d="M22 2.5c-9.983 2.601 -17.627 7.952 -20 19.5c9.983 -2.601 17.627 -7.952 20 -19.5" />
+      <path d="M6.5 12.5l5 5" />
+      <path d="M12.5 6.5l5 5" />
+    </svg>
+    </span>
+  )
 }
 
 const addButtonStyle: React.CSSProperties = {
@@ -404,7 +564,6 @@ function TabButton({
         justifyContent: 'center',
         gap: 2,
         color: active ? '#2f6474' : '#4e636d',
-        boxShadow: active ? 'inset 0 3px 0 #2f6474' : 'none',
         cursor: 'pointer',
         fontSize: 12,
         fontWeight: 600,

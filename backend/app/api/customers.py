@@ -43,8 +43,12 @@ def list_customers(
     result = []
     for c in customers:
         item = customer_dict(c)
-        total_orders, total_spending_fen = stats.get(c.id, (0, 0))
+        total_orders, total_spending_fen, completed_orders, no_show_orders = stats.get(
+            c.id, (0, 0, 0, 0)
+        )
         item["total_orders"] = total_orders
+        item["completed_orders"] = completed_orders
+        item["no_show_orders"] = no_show_orders
         # 无「查看营收」权限时不返回消费总额
         item["total_spending_fen"] = total_spending_fen if revenue_allowed else 0
         result.append(item)

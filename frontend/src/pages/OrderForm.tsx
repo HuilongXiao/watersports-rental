@@ -17,7 +17,7 @@ import {
   Table,
   Tag,
 } from 'antd'
-import { DeleteOutlined, MinusOutlined, PlusOutlined, SnippetsOutlined } from '@ant-design/icons'
+import { DeleteOutlined, MinusOutlined, PlusOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { api } from '../api'
 import { useAuth } from '../auth'
@@ -39,8 +39,21 @@ interface DraftItem {
   isOriginal?: boolean
 }
 
-export default function OrderForm() {
-  const { id } = useParams()
+export default function OrderForm({
+  embedded = false,
+  onDone,
+  presetCustomerId,
+}: {
+  /** 嵌入气泡/弹窗时使用：不跳转页面，保存或取消后回调 */
+  embedded?: boolean
+  onDone?: (order?: Order) => void
+  /** 从客户详情创建订单：预填该客户资料，空项可编辑并回填档案 */
+  presetCustomerId?: string
+} = {}) {
+  // 气泡内嵌表单忽略当前路由的 :id（如客户详情页 /customers/:id），始终按新建订单处理，
+  // 否则会把客户 ID 当成订单 ID 去查询，出现“订单不存在”
+  const { id: routeId } = useParams()
+  const id = embedded ? undefined : routeId
   const editing = Boolean(id)
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
@@ -61,6 +74,19 @@ export default function OrderForm() {
   const { settings } = useSettings()
   const fastMode = settings.fast_customer_mode
   const [customerWechatNickname, setCustomerWechatNickname] = useState('')
+  // 极速模式下直接登记的客户信息（微信昵称/姓名/手机号/微信ID）+ 性别
+  const [customerName, setCustomerName] = useState('')
+  const [customerPhone, setCustomerPhone] = useState('')
+  const [customerWechatId, setCustomerWechatId] = useState('')
+  const [customerGender, setCustomerGender] = useState<string | null>(null)
+  // 从客户详情带入的已有资料：这些项锁定只读，仅空项允许补填
+  const [presetFilled, setPresetFilled] = useState({
+    nickname: false,
+    name: false,
+    phone: false,
+    wechatId: false,
+    gender: false,
+  })
   // 从客户详细页「创建订单」进入：客户信息取自该客户 profile，只读展示；
   // 提交时按 customer_id 关联该客户（而非把展示文本当昵称去匹配/新建），保证订单归属原客户。
   const [fromCustomerProfile, setFromCustomerProfile] = useState(false)
@@ -87,8 +113,6 @@ export default function OrderForm() {
   const [payEditOpen, setPayEditOpen] = useState(false)
   // 用户手动改过支付方式后不再自动填默认值
   const pmTouched = useRef(false)
-  // http 局域网环境无法直接读取剪贴板时，用弹窗捕获用户手动粘贴的内容
-  const [pasteFallbackOpen, setPasteFallbackOpen] = useState(false)
   // 开始日期日历弹窗
   const [datePickerOpen, setDatePickerOpen] = useState(false)
   const peopleTouched = useRef(false)
@@ -183,6 +207,9 @@ export default function OrderForm() {
           setNote(order.note ?? '')
           setPaymentCode(order.payment_method_code ?? null)
           setCustomerWechatNickname(order.customer_wechat_nickname ?? '')
+          setCustomerName(order.customer_name ?? '')
+          setCustomerPhone(order.customer_phone ?? '')
+          setCustomerWechatId(order.customer_wechat_id ?? '')
           setItems(
             order.items.map((item) => ({
               key: item.id,
@@ -193,6 +220,28 @@ export default function OrderForm() {
             })),
           )
           peopleTouched.current = true
+        })
+        .catch((error) => message.error(error.message))
+    } else if (presetCustomerId) {
+      // 从客户详情弹窗创建订单：带入该客户资料，已有项锁定只读，空项可补填并回填档案
+      api
+        .get<Customer>(`/api/customers/${presetCustomerId}`)
+        .then((c) => {
+          setCustomerId(c.id)
+          setCustomerOptions([c])
+          setWalkIn(false)
+          setCustomerWechatNickname(c.wechat_nickname ?? '')
+          setCustomerName(c.name ?? '')
+          setCustomerPhone(c.phone ?? '')
+          setCustomerWechatId(c.wechat_id ?? '')
+          setCustomerGender(c.gender ?? null)
+          setPresetFilled({
+            nickname: Boolean(c.wechat_nickname?.trim()),
+            name: Boolean(c.name?.trim()),
+            phone: Boolean(c.phone?.trim()),
+            wechatId: Boolean(c.wechat_id?.trim()),
+            gender: Boolean(c.gender?.trim()),
+          })
         })
         .catch((error) => message.error(error.message))
     } else {
@@ -211,6 +260,10 @@ export default function OrderForm() {
             setCustomerWechatNickname(
               c.wechat_nickname?.trim() || `${c.name ?? ''}${c.gender ?? ''}`,
             )
+            setCustomerName(c.name ?? '')
+            setCustomerPhone(c.phone ?? '')
+            setCustomerWechatId(c.wechat_id ?? '')
+            setCustomerGender(c.gender ?? null)
           })
           .catch(() => {
             // 预填失败时回退到游客
@@ -364,17 +417,24 @@ export default function OrderForm() {
   const [conflicts, setConflicts] = useState<InventoryConflict[]>([])
   const [checkingConflicts, setCheckingConflicts] = useState(false)
 
+  // 客户四项资料的只读状态：客户详情带入的已有资料锁定，仅空项可补填
+  const lockCustomerNickname = isEdit || fromCustomerProfile || presetFilled.nickname
+  const lockCustomerName = isEdit || fromCustomerProfile || presetFilled.name
+  const lockCustomerPhone = isEdit || fromCustomerProfile || presetFilled.phone
+  const lockCustomerWechatId = isEdit || fromCustomerProfile || presetFilled.wechatId
+  const lockCustomerGender = isEdit || fromCustomerProfile || presetFilled.gender
+
   // 校验并组装订单提交体；不通过时给出提示并返回 null
   const buildOrderBody = (): Record<string, unknown> | null => {
     if (fastMode) {
-      if (fromCustomerProfile) {
-        // 客户由 profile 带入，无需昵称校验；仅在客户 ID 缺失时提示
+      if (fromCustomerProfile || presetCustomerId) {
+        // 客户由详情页带入，无需昵称校验；仅在客户 ID 缺失时提示
         if (!customerId) {
-          message.warning('客户信息缺失，请返回客户页重新创建')
+          message.warning('客户信息加载中，请稍候再保存')
           return null
         }
-      } else if (!customerWechatNickname.trim()) {
-        message.warning('请填写客户微信昵称')
+      } else if (!customerWechatNickname.trim() && !customerName.trim()) {
+        message.warning('请至少填写客户微信昵称或姓名')
         return null
       }
     } else if (!customerId) {
@@ -394,9 +454,33 @@ export default function OrderForm() {
       return null
     }
     return {
-      ...(fastMode && !fromCustomerProfile
-        ? { customer_wechat_nickname: customerWechatNickname.trim() }
-        : { customer_id: customerId }),
+      ...(fastMode && !fromCustomerProfile && !presetCustomerId
+        ? {
+            ...(customerWechatNickname.trim()
+              ? { customer_wechat_nickname: customerWechatNickname.trim() }
+              : {}),
+            ...(customerName.trim() ? { customer_name: customerName.trim() } : {}),
+            ...(customerPhone.trim() ? { customer_phone: customerPhone.trim() } : {}),
+            ...(customerWechatId.trim() ? { customer_wechat_id: customerWechatId.trim() } : {}),
+            ...(customerGender ? { customer_gender: customerGender } : {}),
+          }
+        : {
+            customer_id: customerId,
+            // 客户详情带入时可补填空项，后端只回填空字段
+            ...(presetCustomerId
+              ? {
+                  ...(customerWechatNickname.trim()
+                    ? { customer_wechat_nickname: customerWechatNickname.trim() }
+                    : {}),
+                  ...(customerName.trim() ? { customer_name: customerName.trim() } : {}),
+                  ...(customerPhone.trim() ? { customer_phone: customerPhone.trim() } : {}),
+                  ...(customerWechatId.trim()
+                    ? { customer_wechat_id: customerWechatId.trim() }
+                    : {}),
+                  ...(customerGender ? { customer_gender: customerGender } : {}),
+                }
+              : {}),
+          }),
       start_at: startAt.second(0).millisecond(0).toISOString(),
       adult_count: adultCount,
       child_count: childCount,
@@ -447,7 +531,11 @@ export default function OrderForm() {
         ? await api.put<Order>(`/api/orders/${id}`, body)
         : await api.post<Order>('/api/orders', body)
       message.success(editing ? '订单已更新' : '订单已创建')
-      navigate(`/orders/${order.id}`, { replace: true })
+      if (embedded) {
+        onDone?.(order)
+      } else {
+        navigate(`/orders/${order.id}`, { replace: true })
+      }
     } catch (error) {
       message.error(error instanceof Error ? error.message : '保存失败')
     } finally {
@@ -582,32 +670,6 @@ export default function OrderForm() {
       // 导致弹窗里的「保存」按钮一直处于 loading（antd Button loading 时
       // 会禁用点击），submit(true) 永远无法触发，表现为超售后无法下单。
       setSubmitting(false)
-    }
-  }
-
-  // 点击“贴”：先清空客户微信昵称，再把系统剪贴板内容填入。
-  // https/localhost 下可直接读取剪贴板（iOS 首次会弹“Paste/粘贴”授权气泡，
-  // 点一下即可；授权后本次会话内再点会直接粘贴）；http 局域网环境浏览器
-  // 禁止 JS 读取剪贴板，此时弹出输入框由用户长按粘贴，paste 事件自动捕获。
-  const pasteWechatNickname = async () => {
-    setCustomerWechatNickname('')
-    try {
-      if (!navigator.clipboard?.readText) {
-        throw new DOMException('clipboard api unavailable', 'NotSupportedError')
-      }
-      const text = await navigator.clipboard.readText()
-      if (!text.trim()) {
-        message.warning('剪贴板为空')
-        return
-      }
-      setCustomerWechatNickname(text.trim())
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'NotAllowedError') {
-        // 用户未点屏幕上的 Paste 授权气泡（点到了别处），不是剪贴板不可用
-        message.info('读取剪贴板需授权：请点击屏幕上出现的「粘贴 / Paste」气泡，授权后再点粘贴按钮即可直接填入')
-        return
-      }
-      setPasteFallbackOpen(true)
     }
   }
 
@@ -850,10 +912,29 @@ export default function OrderForm() {
     fontWeight: 600,
   }
 
+  // 操作按钮：桌面端位于白卡片右下角，手机端位于底部固定栏
+  const actionButtons = (
+    <Space>
+      <Button onClick={() => (embedded ? onDone?.() : navigate(id ? `/orders/${id}` : '/orders'))}>
+        取消
+      </Button>
+      <Button
+        type="primary"
+        loading={submitting || checkingConflicts}
+        onClick={() => submit()}
+        disabled={terminalLocked || !canSubmit}
+      >
+        保存订单
+      </Button>
+    </Space>
+  )
+
   return (
     <>
     <Card
       title={editing ? `编辑订单 ${existingOrder?.order_number ?? ''}` : '新建订单'}
+      // 桌面端卡片收窄到与表单内容同宽，避免右侧大面积留白；嵌入气泡时占满气泡宽度
+      style={embedded ? { width: '100%' } : isDesktop ? { maxWidth: 768 } : undefined}
     >
       {terminalLocked ? (
         <p style={{ color: '#d4380d' }}>
@@ -879,17 +960,104 @@ export default function OrderForm() {
           }}
         >
           {fastMode ? (
-            <Form.Item label="客户信息" required style={{ flex: 1 }}>
-              <Input
-                placeholder="输入客户微信昵称"
-                value={customerWechatNickname}
-                onChange={(e) => setCustomerWechatNickname(e.target.value)}
+            <Form.Item label="客户信息" required style={{ flex: 1, minWidth: 0 }}>
+              {/* 四项客户信息均可在框内直接录入；保存订单时按微信昵称/姓名匹配已有客户，匹配不到则建档。
+                  气泡内排 2 行：第一行微信昵称/姓名，第二行手机号/微信ID；
+                  右侧同列第一行放散客、第二行放性别（先生蓝 / 女士红） */}
+              <div
                 style={{
-                  caretColor: isEdit || fromCustomerProfile ? 'transparent' : undefined,
+                  display: 'flex',
+                  flexDirection: isMobile ? 'column' : 'row',
+                  alignItems: 'flex-start',
+                  gap: 8,
                 }}
-                readOnly={isEdit || fromCustomerProfile}
-                tabIndex={isEdit || fromCustomerProfile ? -1 : undefined}
-              />
+              >
+                <div
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    display: 'grid',
+                    gridTemplateColumns:
+                      embedded || isMobile
+                        ? 'repeat(2, minmax(0, 1fr))'
+                        : 'repeat(4, minmax(0, 1fr))',
+                    columnGap: 8,
+                    rowGap: 8,
+                  }}
+                >
+                  <Input
+                    placeholder="微信昵称"
+                    value={customerWechatNickname}
+                    onChange={(e) => setCustomerWechatNickname(e.target.value)}
+                    style={{
+                      caretColor: lockCustomerNickname ? 'transparent' : undefined,
+                    }}
+                    readOnly={lockCustomerNickname}
+                    tabIndex={lockCustomerNickname ? -1 : undefined}
+                  />
+                  <Input
+                    placeholder="姓名"
+                    value={customerName}
+                    onChange={(e) => setCustomerName(e.target.value)}
+                    readOnly={lockCustomerName}
+                    tabIndex={lockCustomerName ? -1 : undefined}
+                  />
+                  <Input
+                    placeholder="手机号"
+                    value={customerPhone}
+                    onChange={(e) => setCustomerPhone(e.target.value)}
+                    readOnly={lockCustomerPhone}
+                    tabIndex={lockCustomerPhone ? -1 : undefined}
+                  />
+                  <Input
+                    placeholder="微信ID"
+                    value={customerWechatId}
+                    onChange={(e) => setCustomerWechatId(e.target.value)}
+                    readOnly={lockCustomerWechatId}
+                    tabIndex={lockCustomerWechatId ? -1 : undefined}
+                  />
+                </div>
+                {embedded && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexDirection: isMobile ? 'row' : 'column',
+                      alignItems: isMobile ? 'center' : undefined,
+                      gap: 8,
+                      flex: 'none',
+                    }}
+                  >
+                    <div
+                      style={{
+                        height: isMobile ? undefined : 32,
+                        display: 'flex',
+                        alignItems: 'center',
+                      }}
+                    >
+                      <Checkbox
+                        checked={walkIn}
+                        disabled={isInProgress}
+                        onChange={(e) => setWalkIn(e.target.checked)}
+                      >
+                        散客
+                      </Checkbox>
+                    </div>
+                    <div
+                      style={{
+                        height: isMobile ? undefined : 32,
+                        display: 'flex',
+                        alignItems: 'center',
+                      }}
+                    >
+                      <GenderCheckboxes
+                        value={customerGender}
+                        onChange={setCustomerGender}
+                        disabled={lockCustomerGender}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
             </Form.Item>
           ) : (
             <Form.Item label="客户（输入姓名/手机/微信搜索后确认）" style={{ flex: 1 }}>
@@ -921,43 +1089,32 @@ export default function OrderForm() {
               </Space.Compact>
             </Form.Item>
           )}
-          {/* 粘贴按钮位于昵称输入框与散客勾选框中间，仅极速客户模式显示 */}
-          {fastMode && (
+          {/* 占位 label 使勾选框与客户输入框在同一水平行（气泡内已移到客户信息右侧） */}
+          {!embedded && (
             <Form.Item label=" " style={{ flex: 'none' }}>
-              <Button
-                icon={<SnippetsOutlined />}
-                onClick={() => {
-                  if (isEdit || fromCustomerProfile) return
-                  pasteWechatNickname()
-                }}
-                disabled={fromCustomerProfile}
-                title="粘贴剪贴板内容"
+              <Checkbox
+                checked={walkIn}
+                disabled={isInProgress}
                 tabIndex={isEdit ? -1 : undefined}
-              />
+                onChange={(e) => setWalkIn(e.target.checked)}
+              >
+                散客
+              </Checkbox>
             </Form.Item>
           )}
-          {/* 占位 label 使勾选框与客户输入框在同一水平行 */}
-          <Form.Item label=" " style={{ flex: 'none' }}>
-            <Checkbox
-              checked={walkIn}
-              disabled={isInProgress}
-              tabIndex={isEdit ? -1 : undefined}
-              onChange={(e) => setWalkIn(e.target.checked)}
-            >
-              散客
-            </Checkbox>
-          </Form.Item>
         </div>
 
-        {/* 日期/时间/成人/儿童统一等宽栅格：手机端 2 列、桌面端 4 列，左右边界对齐 */}
+        {/* 日期/时间/成人/儿童统一等宽栅格：手机端 2 列、桌面端 4 列，左右边界对齐；
+            气泡内空间较窄，固定 2 列，并用 order 让第一行是「开始日期 + 成人」、第二行是「开始时间 + 儿童」 */}
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: isMobile ? 'repeat(2, minmax(0, 1fr))' : 'repeat(4, minmax(0, 1fr))',
+            gridTemplateColumns:
+              embedded || isMobile ? 'repeat(2, minmax(0, 1fr))' : 'repeat(4, minmax(0, 1fr))',
             columnGap: 12,
           }}
         >
-          <Form.Item label="开始日期">
+          <Form.Item label="开始日期" style={embedded ? { order: 1 } : undefined}>
             <Space.Compact style={{ width: '100%' }}>
               <Button
                 style={{ width: 40 }}
@@ -977,12 +1134,17 @@ export default function OrderForm() {
                       setDatePickerOpen(false)
                     }}
                     fullscreen={false}
+                    // 固定为紧凑日历的最小可用宽度，避免浮层随内容撑满屏幕
+                    style={{ width: 280 }}
                   />
                 }
                 trigger="click"
                 open={datePickerOpen}
                 onOpenChange={setDatePickerOpen}
                 placement="bottom"
+                // 去掉浮层内边距并锁定宽度，日历只占最小需求宽度
+                overlayInnerStyle={{ padding: 0 }}
+                overlayStyle={{ width: 280, maxWidth: 'calc(100vw - 16px)' }}
               >
                 <div style={{ ...stepperDisplay, cursor: 'pointer' }}>
                   {startAt.format('YYYY-MM-DD')}
@@ -993,7 +1155,7 @@ export default function OrderForm() {
               </Button>
             </Space.Compact>
           </Form.Item>
-          <Form.Item label="开始时间">
+          <Form.Item label="开始时间" style={embedded ? { order: 3 } : undefined}>
             <Space.Compact style={{ width: '100%' }}>
               <Button style={{ width: 40 }} disabled={isInProgress} onClick={decTime}>
                 −
@@ -1006,7 +1168,7 @@ export default function OrderForm() {
               </Button>
             </Space.Compact>
           </Form.Item>
-          <Form.Item label="成人">
+          <Form.Item label="成人" style={embedded ? { order: 2 } : undefined}>
             <Space.Compact style={{ width: '100%' }}>
               <Button
                 style={{ width: 40 }}
@@ -1031,7 +1193,7 @@ export default function OrderForm() {
               </Button>
             </Space.Compact>
           </Form.Item>
-          <Form.Item label="儿童">
+          <Form.Item label="儿童" style={embedded ? { order: 4 } : undefined}>
             <Space.Compact style={{ width: '100%' }}>
               <Button
                 style={{ width: 40 }}
@@ -1146,26 +1308,6 @@ export default function OrderForm() {
         </Suspense>
       </Modal>
 
-      {/* http 环境无法直接读取剪贴板：用户长按输入框选择“粘贴”后自动捕获并回填 */}
-      <Modal
-        title="粘贴微信昵称"
-        open={pasteFallbackOpen}
-        onCancel={() => setPasteFallbackOpen(false)}
-        footer={null}
-        destroyOnClose
-      >
-        <Input
-          autoFocus
-          placeholder="长按此处选择“粘贴”"
-          onPaste={(e) => {
-            const text = e.clipboardData.getData('text').trim()
-            setCustomerWechatNickname(text)
-            setPasteFallbackOpen(false)
-            if (text) message.success('已粘贴')
-          }}
-        />
-      </Modal>
-
       <Modal
         title="新建客户"
         open={createCustomerOpen}
@@ -1242,37 +1384,35 @@ export default function OrderForm() {
           ))}
         </div>
       </Modal>
+
+      {isDesktop && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+          {actionButtons}
+        </div>
+      )}
     </Card>
-    {/* 与订单详情页一致：桌面端右下悬浮、手机端底部通栏居中；底部留白避免遮挡备注区 */}
-    <div style={{ height: isDesktop ? 72 : 'calc(104px + env(safe-area-inset-bottom, 0px))' }} />
-    <div
-      style={{
-        position: 'fixed',
-        bottom: isDesktop ? 16 : 'calc(56px + env(safe-area-inset-bottom, 0px))',
-        left: isDesktop ? 'auto' : 0,
-        right: isDesktop ? 16 : 0,
-        zIndex: 100,
-        background: '#fff',
-        padding: '8px 12px',
-        borderTop: isDesktop ? 'none' : '1px solid #f0f0f0',
-        borderRadius: isDesktop ? 8 : 0,
-        boxShadow: '0 -2px 8px rgba(0,0,0,0.06)',
-        display: 'flex',
-        justifyContent: 'center',
-      }}
-    >
-      <Space>
-        <Button onClick={() => navigate(id ? `/orders/${id}` : '/orders')}>取消</Button>
-        <Button
-          type="primary"
-          loading={submitting || checkingConflicts}
-          onClick={() => submit()}
-          disabled={terminalLocked || !canSubmit}
+    {/* 手机端：底部固定操作栏；桌面端按钮已在卡片右下角，无需占位 */}
+    {!isDesktop && (
+      <>
+        <div style={{ height: 'calc(104px + env(safe-area-inset-bottom, 0px))' }} />
+        <div
+          style={{
+            position: 'fixed',
+            bottom: 'calc(56px + env(safe-area-inset-bottom, 0px))',
+            left: 0,
+            right: 0,
+            zIndex: 100,
+            background: '#fff',
+            padding: '8px 12px',
+            borderTop: '1px solid #f0f0f0',
+            display: 'flex',
+            justifyContent: 'center',
+          }}
         >
-          保存订单
-        </Button>
-      </Space>
-    </div>
+          {actionButtons}
+        </div>
+      </>
+    )}
     </>
   )
 }

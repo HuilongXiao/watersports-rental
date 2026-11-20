@@ -43,8 +43,10 @@ def search_customers(
     return list(db.scalars(statement).all())
 
 
-def customer_order_stats(db: Session, customer_ids: list[str]) -> dict[str, tuple[int, int]]:
-    """批量返回每个客户的 (订单总数, 已完成订单消费额-分)。
+def customer_order_stats(
+    db: Session, customer_ids: list[str]
+) -> dict[str, tuple[int, int, int, int]]:
+    """批量返回每个客户的 (订单总数, 已完成订单消费额-分, 完成订单数, 爽约次数)。
 
     消费额口径与客户详情 stats 接口一致：已完成订单的订单项目金额合计 +
     支付调整项金额合计。订单总数统计所有状态的订单。
@@ -62,6 +64,15 @@ def customer_order_stats(db: Session, customer_ids: list[str]) -> dict[str, tupl
             .group_by(Order.customer_id)
         ).all()
     )
+    # 按状态分组的订单数，用于完成订单数 / 爽约次数
+    status_counts = {
+        (cid, status): int(count)
+        for cid, status, count in db.execute(
+            select(Order.customer_id, Order.status, func.count())
+            .where(Order.customer_id.in_(customer_ids), Order.is_deleted.is_(False))
+            .group_by(Order.customer_id, Order.status)
+        ).all()
+    }
     item_totals = dict(
         db.execute(
             select(
@@ -94,6 +105,8 @@ def customer_order_stats(db: Session, customer_ids: list[str]) -> dict[str, tupl
         cid: (
             int(counts.get(cid, 0)),
             int(item_totals.get(cid, 0)) + int(adjustment_totals.get(cid, 0)),
+            status_counts.get((cid, "completed"), 0),
+            status_counts.get((cid, "no_show"), 0),
         )
         for cid in customer_ids
     }
