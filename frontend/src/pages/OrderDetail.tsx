@@ -357,6 +357,55 @@ export default function OrderDetail({
   const canCompleteByDate = dayjsToday() >= formatDateTime(order.start_at).slice(0, 10)
   const warnings = order.inventory_warnings ?? []
 
+  // 客户信息单元格内容：桌面/手机两套排版共用
+  const nameText = (() => {
+    const namePart = order.customer_name?.trim() ?? ''
+    const genderPart = order.customer_gender?.trim() ?? ''
+    return namePart ? namePart + (genderPart || '') : ''
+  })()
+  const nameCell =
+    order.customer_id && nameText ? (
+      <Button
+        type="link"
+        size="small"
+        style={{ padding: 0, height: 'auto' }}
+        onClick={() => navigate(`/customers/${order.customer_id}`)}
+      >
+        {nameText}
+      </Button>
+    ) : (
+      nameText
+    )
+  const wechatCell =
+    order.customer_wechat_nickname && order.customer_id ? (
+      <Button
+        type="link"
+        size="small"
+        style={{ padding: 0, height: 'auto' }}
+        onClick={() => navigate(`/customers/${order.customer_id}`)}
+      >
+        {order.customer_wechat_nickname}
+      </Button>
+    ) : (
+      order.customer_wechat_nickname ?? order.customer_wechat_id ?? ''
+    )
+  const peopleCell =
+    isMobile && order.child_count > 0 ? (
+      <>
+        <div>{order.adult_count} 位成人</div>
+        <div>{order.child_count} 位儿童</div>
+      </>
+    ) : (
+      <>
+        {order.adult_count} 位成人
+        {order.child_count > 0 ? `，${order.child_count} 位儿童` : ''}
+      </>
+    )
+  const paymentCell =
+    settings.payment_methods.length > 0 && order.payment_method_code
+      ? settings.payment_methods.find((m) => m.code === order.payment_method_code)?.name ?? ''
+      : ''
+
   return (
     <>
     {/* 浮动返回按钮：回到进入本页之前的页面（与浏览器后退等价，配合列表快照恢复） */}
@@ -402,59 +451,29 @@ export default function OrderDetail({
           labelStyle={{ padding: '4px 4px', textAlign: 'center' }}
           contentStyle={{ padding: '4px 4px', textAlign: 'center' }}
         >
-          {/* 姓名：始终保留此栏。有姓名+性别 → "张磊先生"；仅有姓名 → "张磊"；无姓名 → 留空。 */}
-          {(() => {
-            const namePart = order.customer_name?.trim() ?? ''
-            const genderPart = order.customer_gender?.trim() ?? ''
-            const label = namePart ? namePart + (genderPart || '') : ''
-            return order.customer_id && label ? (
-              <Descriptions.Item label="姓名">
-                <Button
-                  type="link"
-                  size="small"
-                  style={{ padding: 0, height: 'auto' }}
-                  onClick={() => navigate(`/customers/${order.customer_id}`)}
-                >
-                  {label}
-                </Button>
+          {/* 手机版：第一行只放微信（跨两列）→ 第二行姓名+散客 → 第三行人数+支付方式，
+              并隐藏手机号；桌面版顺序与内容保持不变 */}
+          {isMobile ? (
+            <>
+              <Descriptions.Item label="微信" span={2}>
+                {wechatCell}
               </Descriptions.Item>
-            ) : (
-              <Descriptions.Item label="姓名">{label}</Descriptions.Item>
-            )
-          })()}
-          <Descriptions.Item label="微信">
-            {order.customer_wechat_nickname && order.customer_id ? (
-              <Button
-                type="link"
-                size="small"
-                style={{ padding: 0, height: 'auto' }}
-                onClick={() => navigate(`/customers/${order.customer_id}`)}
-              >
-                {order.customer_wechat_nickname}
-                {order.customer_wechat_id ? ` / ${order.customer_wechat_id}` : ''}
-              </Button>
-            ) : (
-              [order.customer_wechat_nickname, order.customer_wechat_id].filter(Boolean).join(' / ') || ''
-            )}
-          </Descriptions.Item>
-          <Descriptions.Item label="手机号">{order.customer_phone ?? ''}</Descriptions.Item>
-          <Descriptions.Item label="散客">{order.is_walk_in ? '是' : '否'}</Descriptions.Item>
-          <Descriptions.Item label="人数">
-            {isMobile && order.child_count > 0 ? (
-              <>
-                <div>{order.adult_count} 位成人</div>
-                <div>{order.child_count} 位儿童</div>
-              </>
-            ) : (
-              <>{order.adult_count} 位成人{order.child_count > 0 ? `，${order.child_count} 位儿童` : ''}</>
-            )}
-          </Descriptions.Item>
-          {/* 支付方式：始终保留此栏（保持 Descriptions 布局稳定） */}
-          <Descriptions.Item label="支付方式">
-            {settings.payment_methods.length > 0 && order.payment_method_code
-              ? settings.payment_methods.find((m) => m.code === order.payment_method_code)?.name ?? ''
-              : ''}
-          </Descriptions.Item>
+              <Descriptions.Item label="姓名">{nameCell}</Descriptions.Item>
+              <Descriptions.Item label="散客">{order.is_walk_in ? '是' : '否'}</Descriptions.Item>
+              <Descriptions.Item label="人数">{peopleCell}</Descriptions.Item>
+              <Descriptions.Item label="支付方式">{paymentCell}</Descriptions.Item>
+            </>
+          ) : (
+            <>
+              {/* 姓名：有姓名+性别 → "张磊先生"；仅有姓名 → "张磊"；无姓名 → 留空。 */}
+              <Descriptions.Item label="姓名">{nameCell}</Descriptions.Item>
+              <Descriptions.Item label="微信">{wechatCell}</Descriptions.Item>
+              <Descriptions.Item label="手机号">{order.customer_phone ?? ''}</Descriptions.Item>
+              <Descriptions.Item label="散客">{order.is_walk_in ? '是' : '否'}</Descriptions.Item>
+              <Descriptions.Item label="人数">{peopleCell}</Descriptions.Item>
+              <Descriptions.Item label="支付方式">{paymentCell}</Descriptions.Item>
+            </>
+          )}
           {/* 时间类字段：拆成日期一行 + 时间一行，避免窄屏时被拆成"日期+时间"/"（操作人）" */}
           {(() => {
             if (!order.start_at) return <Descriptions.Item label="开始时间">{null}</Descriptions.Item>
@@ -726,7 +745,7 @@ export default function OrderDetail({
                     <span style={{ color: '#000' }}>号</span>
                   </span>
                 ) : (
-                  <span style={{ color: '#999', fontSize: 12 }}>没有船只调配</span>
+                  <span style={{ color: '#999', fontSize: 12 }}>无</span>
                 ),
             },
             {
@@ -1018,7 +1037,7 @@ export default function OrderDetail({
               }
             : {
                 position: 'fixed',
-                bottom: isDesktop ? 16 : 'calc(56px + env(safe-area-inset-bottom, 0px))',
+                bottom: isDesktop ? 16 : 'calc(56px + min(env(safe-area-inset-bottom, 0px), 20px))',
                 left: isDesktop ? 'auto' : 0,
                 right: isDesktop ? 16 : 0,
                 zIndex: 100,

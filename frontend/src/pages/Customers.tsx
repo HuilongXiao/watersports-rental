@@ -158,7 +158,7 @@ export default function Customers() {
       ),
     },
     {
-      title: '微信昵称',
+      title: isMobile ? '微信' : '微信昵称',
       dataIndex: 'wechat_nickname',
       ellipsis: true,
       onHeaderCell: centerHeader,
@@ -188,7 +188,7 @@ export default function Customers() {
       render: (v) => v || '—',
     },
     {
-      title: '订单总数',
+      title: isMobile ? '订单数' : '订单总数',
       dataIndex: 'total_orders',
       // 网页版留足表头完整展示的宽度，手机版保持 88px 窄列
       width: isMobile ? 88 : 100,
@@ -238,6 +238,13 @@ export default function Customers() {
       },
     )
   }
+
+  // 手机版列表只保留微信昵称、订单数、消费总额三列；桌面版显示完整列
+  const visibleColumns = isMobile
+    ? columns.filter(
+        (c) => !('dataIndex' in c && ['gender', 'name'].includes(String(c.dataIndex))),
+      )
+    : columns
 
   // 筛选后的列表：数据本身已含备注与统计字段，直接前端过滤
   const filteredCustomers = customers.filter((c) => {
@@ -303,8 +310,10 @@ export default function Customers() {
   return (
     <Card
       title="客户管理"
+      // 手机版：标题与操作区允许换行，操作区放不下时整行下移，避免挤掉左侧标题
+      styles={isMobile ? { header: { flexWrap: 'wrap', rowGap: 8 } } : undefined}
       extra={
-        <Space>
+        <Space wrap>
           <Input.Search
             placeholder="姓名 / 手机 / 微信搜索"
             allowClear
@@ -312,7 +321,8 @@ export default function Customers() {
               setKeyword(value)
               load(value)
             }}
-            style={{ width: 240 }}
+            // 手机版窄一点并允许压缩，给左侧「客户管理」让出空间
+            style={{ width: isMobile ? 150 : 240, minWidth: 0, maxWidth: '100%' }}
           />
           {/* 网页版筛选：气泡内提供状态/备注/消费与完成订单数条件 */}
           {!isMobile && (
@@ -335,7 +345,7 @@ export default function Customers() {
       <Table
         rowKey="id"
         loading={loading}
-        columns={columns}
+        columns={visibleColumns}
         dataSource={filteredCustomers}
         tableLayout="fixed"
         pagination={{ pageSize: 20 }}

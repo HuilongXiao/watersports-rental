@@ -17,7 +17,12 @@ import {
   Table,
   Tag,
 } from 'antd'
-import { DeleteOutlined, MinusOutlined, PlusOutlined } from '@ant-design/icons'
+import {
+  DeleteOutlined,
+  MinusOutlined,
+  PlusOutlined,
+  SnippetsOutlined,
+} from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { api } from '../api'
 import { useAuth } from '../auth'
@@ -113,6 +118,8 @@ export default function OrderForm({
   const [payEditOpen, setPayEditOpen] = useState(false)
   // 用户手动改过支付方式后不再自动填默认值
   const pmTouched = useRef(false)
+  // http 局域网环境无法直接读取剪贴板时，用弹窗捕获用户手动粘贴的内容（仅手机版昵称输入框使用）
+  const [pasteFallbackOpen, setPasteFallbackOpen] = useState(false)
   // 开始日期日历弹窗
   const [datePickerOpen, setDatePickerOpen] = useState(false)
   const peopleTouched = useRef(false)
@@ -256,14 +263,19 @@ export default function OrderForm({
             setCustomerOptions([c])
             setWalkIn(false)
             setFromCustomerProfile(true)
-            // 客户有微信昵称则填昵称；否则填「姓名+性别称谓」（如 张三 + 女士 = 张三女士）
-            setCustomerWechatNickname(
-              c.wechat_nickname?.trim() || `${c.name ?? ''}${c.gender ?? ''}`,
-            )
+            // 只带入档案里已有的资料；空项留空，由用户补填后回填档案
+            setCustomerWechatNickname(c.wechat_nickname ?? '')
             setCustomerName(c.name ?? '')
             setCustomerPhone(c.phone ?? '')
             setCustomerWechatId(c.wechat_id ?? '')
             setCustomerGender(c.gender ?? null)
+            setPresetFilled({
+              nickname: Boolean(c.wechat_nickname?.trim()),
+              name: Boolean(c.name?.trim()),
+              phone: Boolean(c.phone?.trim()),
+              wechatId: Boolean(c.wechat_id?.trim()),
+              gender: Boolean(c.gender?.trim()),
+            })
           })
           .catch(() => {
             // 预填失败时回退到游客
@@ -418,11 +430,11 @@ export default function OrderForm({
   const [checkingConflicts, setCheckingConflicts] = useState(false)
 
   // 客户四项资料的只读状态：客户详情带入的已有资料锁定，仅空项可补填
-  const lockCustomerNickname = isEdit || fromCustomerProfile || presetFilled.nickname
-  const lockCustomerName = isEdit || fromCustomerProfile || presetFilled.name
-  const lockCustomerPhone = isEdit || fromCustomerProfile || presetFilled.phone
-  const lockCustomerWechatId = isEdit || fromCustomerProfile || presetFilled.wechatId
-  const lockCustomerGender = isEdit || fromCustomerProfile || presetFilled.gender
+  const lockCustomerNickname = isEdit || presetFilled.nickname
+  const lockCustomerName = isEdit || presetFilled.name
+  const lockCustomerPhone = isEdit || presetFilled.phone
+  const lockCustomerWechatId = isEdit || presetFilled.wechatId
+  const lockCustomerGender = isEdit || presetFilled.gender
 
   // 校验并组装订单提交体；不通过时给出提示并返回 null
   const buildOrderBody = (): Record<string, unknown> | null => {
@@ -467,7 +479,7 @@ export default function OrderForm({
         : {
             customer_id: customerId,
             // 客户详情带入时可补填空项，后端只回填空字段
-            ...(presetCustomerId
+            ...(presetCustomerId || fromCustomerProfile
               ? {
                   ...(customerWechatNickname.trim()
                     ? { customer_wechat_nickname: customerWechatNickname.trim() }
@@ -670,6 +682,32 @@ export default function OrderForm({
       // 导致弹窗里的「保存」按钮一直处于 loading（antd Button loading 时
       // 会禁用点击），submit(true) 永远无法触发，表现为超售后无法下单。
       setSubmitting(false)
+    }
+  }
+
+  // 点击“贴”：先清空客户微信昵称，再把系统剪贴板内容填入。
+  // https/localhost 下可直接读取剪贴板（iOS 首次会弹“Paste/粘贴”授权气泡，
+  // 点一下即可；授权后本次会话内再点会直接粘贴）；http 局域网环境浏览器
+  // 禁止 JS 读取剪贴板，此时弹出输入框由用户长按粘贴，paste 事件自动捕获。
+  const pasteWechatNickname = async () => {
+    setCustomerWechatNickname('')
+    try {
+      if (!navigator.clipboard?.readText) {
+        throw new DOMException('clipboard api unavailable', 'NotSupportedError')
+      }
+      const text = await navigator.clipboard.readText()
+      if (!text.trim()) {
+        message.warning('剪贴板为空')
+        return
+      }
+      setCustomerWechatNickname(text.trim())
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'NotAllowedError') {
+        // 用户未点屏幕上的 Paste 授权气泡（点到了别处），不是剪贴板不可用
+        message.info('读取剪贴板需授权：请点击屏幕上出现的「粘贴 / Paste」气泡，授权后再点粘贴按钮即可直接填入')
+        return
+      }
+      setPasteFallbackOpen(true)
     }
   }
 
@@ -960,6 +998,21 @@ export default function OrderForm({
           }}
         >
           {fastMode ? (
+            isMobile ? (
+              // 手机版保持单输入框：只填微信昵称，粘贴按钮在右侧
+              <Form.Item label="客户信息" required style={{ flex: 1, minWidth: 0 }}>
+                <Input
+                  placeholder="输入客户微信昵称"
+                  value={customerWechatNickname}
+                  onChange={(e) => setCustomerWechatNickname(e.target.value)}
+                  style={{
+                    caretColor: lockCustomerNickname ? 'transparent' : undefined,
+                  }}
+                  readOnly={lockCustomerNickname}
+                  tabIndex={lockCustomerNickname ? -1 : undefined}
+                />
+              </Form.Item>
+            ) : (
             <Form.Item label="客户信息" required style={{ flex: 1, minWidth: 0 }}>
               {/* 四项客户信息均可在框内直接录入；保存订单时按微信昵称/姓名匹配已有客户，匹配不到则建档。
                   气泡内排 2 行：第一行微信昵称/姓名，第二行手机号/微信ID；
@@ -1059,6 +1112,7 @@ export default function OrderForm({
                 )}
               </div>
             </Form.Item>
+            )
           ) : (
             <Form.Item label="客户（输入姓名/手机/微信搜索后确认）" style={{ flex: 1 }}>
               <Space.Compact style={{ width: '100%' }}>
@@ -1089,6 +1143,21 @@ export default function OrderForm({
               </Space.Compact>
             </Form.Item>
           )}
+          {/* 粘贴按钮位于昵称输入框与散客勾选框中间，仅手机版极速客户模式显示 */}
+          {fastMode && isMobile && (
+            <Form.Item label=" " style={{ flex: 'none' }}>
+              <Button
+                icon={<SnippetsOutlined />}
+                onClick={() => {
+                  if (lockCustomerNickname) return
+                  pasteWechatNickname()
+                }}
+                disabled={lockCustomerNickname}
+                title="粘贴剪贴板内容"
+                tabIndex={isEdit ? -1 : undefined}
+              />
+            </Form.Item>
+          )}
           {/* 占位 label 使勾选框与客户输入框在同一水平行（气泡内已移到客户信息右侧） */}
           {!embedded && (
             <Form.Item label=" " style={{ flex: 'none' }}>
@@ -1117,7 +1186,7 @@ export default function OrderForm({
           <Form.Item label="开始日期" style={embedded ? { order: 1 } : undefined}>
             <Space.Compact style={{ width: '100%' }}>
               <Button
-                style={{ width: 40 }}
+                style={{ width: isMobile ? 28 : 40 }}
                 disabled={isInProgress}
                 onClick={() => setStartAt(startAt.subtract(1, 'day'))}
               >
@@ -1150,20 +1219,20 @@ export default function OrderForm({
                   {startAt.format('YYYY-MM-DD')}
                 </div>
               </Popover>
-              <Button style={{ width: 40 }} disabled={isInProgress} onClick={() => setStartAt(startAt.add(1, 'day'))}>
+              <Button style={{ width: isMobile ? 28 : 40 }} disabled={isInProgress} onClick={() => setStartAt(startAt.add(1, 'day'))}>
                 +
               </Button>
             </Space.Compact>
           </Form.Item>
           <Form.Item label="开始时间" style={embedded ? { order: 3 } : undefined}>
             <Space.Compact style={{ width: '100%' }}>
-              <Button style={{ width: 40 }} disabled={isInProgress} onClick={decTime}>
+              <Button style={{ width: isMobile ? 28 : 40 }} disabled={isInProgress} onClick={decTime}>
                 −
               </Button>
               <Popover content={timeGridContent} trigger="click" placement="bottom">
                 <div style={{ ...stepperDisplay, cursor: 'pointer' }}>{startAt.format('HH:mm')}</div>
               </Popover>
-              <Button style={{ width: 40 }} disabled={isInProgress} onClick={incTime}>
+              <Button style={{ width: isMobile ? 28 : 40 }} disabled={isInProgress} onClick={incTime}>
                 +
               </Button>
             </Space.Compact>
@@ -1171,7 +1240,7 @@ export default function OrderForm({
           <Form.Item label="成人" style={embedded ? { order: 2 } : undefined}>
             <Space.Compact style={{ width: '100%' }}>
               <Button
-                style={{ width: 40 }}
+                style={{ width: isMobile ? 28 : 40 }}
                 disabled={adultCount <= 0 || isInProgress}
                 onClick={() => {
                   peopleTouched.current = true
@@ -1182,7 +1251,7 @@ export default function OrderForm({
               </Button>
               <div style={stepperDisplay}>{adultCount}</div>
               <Button
-                style={{ width: 40 }}
+                style={{ width: isMobile ? 28 : 40 }}
                 disabled={isInProgress}
                 onClick={() => {
                   peopleTouched.current = true
@@ -1196,7 +1265,7 @@ export default function OrderForm({
           <Form.Item label="儿童" style={embedded ? { order: 4 } : undefined}>
             <Space.Compact style={{ width: '100%' }}>
               <Button
-                style={{ width: 40 }}
+                style={{ width: isMobile ? 28 : 40 }}
                 disabled={childCount <= 0 || isInProgress}
                 onClick={() => {
                   peopleTouched.current = true
@@ -1207,7 +1276,7 @@ export default function OrderForm({
               </Button>
               <div style={stepperDisplay}>{childCount}</div>
               <Button
-                style={{ width: 40 }}
+                style={{ width: isMobile ? 28 : 40 }}
                 disabled={isInProgress}
                 onClick={() => {
                   peopleTouched.current = true
@@ -1308,6 +1377,26 @@ export default function OrderForm({
         </Suspense>
       </Modal>
 
+      {/* http 环境无法直接读取剪贴板：用户长按输入框选择“粘贴”后自动捕获并回填 */}
+      <Modal
+        title="粘贴微信昵称"
+        open={pasteFallbackOpen}
+        onCancel={() => setPasteFallbackOpen(false)}
+        footer={null}
+        destroyOnClose
+      >
+        <Input
+          autoFocus
+          placeholder="长按此处选择“粘贴”"
+          onPaste={(e) => {
+            const text = e.clipboardData.getData('text').trim()
+            setCustomerWechatNickname(text)
+            setPasteFallbackOpen(false)
+            if (text) message.success('已粘贴')
+          }}
+        />
+      </Modal>
+
       <Modal
         title="新建客户"
         open={createCustomerOpen}
@@ -1398,7 +1487,8 @@ export default function OrderForm({
         <div
           style={{
             position: 'fixed',
-            bottom: 'calc(56px + env(safe-area-inset-bottom, 0px))',
+            // 贴住底部 TabBar 顶边（高度公式与 AppLayout 的 tabBarStyle 一致），白色区域连成一体
+            bottom: 'calc(56px + min(env(safe-area-inset-bottom, 0px), 20px))',
             left: 0,
             right: 0,
             zIndex: 100,

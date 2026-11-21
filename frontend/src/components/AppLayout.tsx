@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { App, Layout, Menu, Dropdown, Typography, Modal, Input, Select, Tag, Popover } from 'antd'
+import { App, Layout, Menu, Dropdown, Typography, Modal, Input, Select, Popover } from 'antd'
 import {
   DashboardOutlined,
   TeamOutlined,
@@ -161,11 +161,6 @@ export default function AppLayout() {
       >
         <Typography.Text style={{ cursor: 'pointer' }}>
           <UserShieldIcon /> {user?.display_name}（{user?.username}）
-          {isSuperuser && activeGroupName ? (
-            <Tag color="blue" style={{ marginLeft: 8 }}>
-              {activeGroupName}
-            </Tag>
-          ) : null}
         </Typography.Text>
       </Dropdown>
       <Modal
@@ -258,13 +253,15 @@ export default function AppLayout() {
               onClick={() => handleNav(item.key)}
             />
           ))}
-          <div
-            onClick={() => navigate('/orders/new')}
-            style={addButtonStyle}
-            aria-label="新建订单"
-          >
-            <PlusOutlined style={{ fontSize: 24 }} />
-          </div>
+          {!location.pathname.startsWith('/orders/') && (
+            <div
+              onClick={() => navigate('/orders/new')}
+              style={addButtonStyle}
+              aria-label="新建订单"
+            >
+              <PlusOutlined style={{ fontSize: 24 }} />
+            </div>
+          )}
           {tabs.slice(2).map((item) => (
             <TabButton
               key={item.key}
@@ -440,17 +437,17 @@ const mobileContentStyle: React.CSSProperties = {
   WebkitOverflowScrolling: 'touch',
   // Stop scroll chaining to the body at the rubber-band boundaries.
   overscrollBehavior: 'contain',
-  padding: 16,
+  padding: 11,
 }
 
 const tabBarStyle: React.CSSProperties = {
   // In-flow (not fixed): flex sibling of the scrolling Content, so it stays
-  // locked at the bottom. 保留安全区避让 Home 指示条，但设上限：
-  // 从主屏图标/书签独立窗口打开时 inset 为 34px，不设上限会让按钮下方多出
-  // 一大段空白、整体视觉上移，这里最多保留 20px。
+  // locked at the bottom. 固定总高度 = 56px 内容区 + 安全区（最多 20px），
+  // 页面内浮动操作栏按同一公式贴底，两者白色背景严丝合缝、不留缝隙。
   flexShrink: 0,
+  height: 'calc(56px + min(env(safe-area-inset-bottom, 0px), 20px))',
   paddingTop: 0,
-  paddingBottom: 'min(calc(env(safe-area-inset-bottom, 0px) + 4px), 20px)',
+  paddingBottom: 'min(env(safe-area-inset-bottom, 0px), 20px)',
   background: 'rgba(255,255,255,.96)',
   borderTop: '1px solid #d3dde0',
   display: 'flex',

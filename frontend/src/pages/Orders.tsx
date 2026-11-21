@@ -714,7 +714,7 @@ export default function Orders() {
     )
   }
 
-  // 预订栏：按开始时间向下取整到半小时刻度，刻度变化处插入时间分隔行（仅展示用，不改订单顺序）
+  // 预订栏：按整点插入时间分隔行；同一小时内订单超过 5 个时再补一条半点分隔行
   const buildRows = (list: Order[], withDividers: boolean) => {
     if (!withDividers) {
       return { tableRows: list as OrderRow[], noRowBorderIds: new Set<string>() }
@@ -722,19 +722,34 @@ export default function Orders() {
     const rows: OrderRow[] = []
     // 分隔行及它上面那一行都要去掉表格默认的底边线，只留分隔行自己的时间线
     const noRowBorderIds = new Set<string>()
-    let prev = ''
+    // 先统计每个整点小时的订单数，超过 5 个才需要半点分隔线
+    const hourCounts = new Map<string, number>()
+    list.forEach((o) => {
+      const key = dayjs(o.start_at).format('YYYY-MM-DD HH')
+      hourCounts.set(key, (hourCounts.get(key) ?? 0) + 1)
+    })
+    let prevHourKey = ''
+    let prevHalf = -1
     let prevOrderId = ''
     list.forEach((o) => {
       const d = dayjs(o.start_at)
-      // 向下取整：12:29 → 12:00，12:31 → 12:30
-      const label = (d.minute() < 30 ? d.minute(0) : d.minute(30)).format('HH:mm')
-      if (prev && label !== prev) {
+      const half = d.minute() < 30 ? 0 : 30
+      const hourKey = d.format('YYYY-MM-DD HH')
+      // 换小时 → 插入整点分隔线；同一小时且订单数 > 5 → 插入半点分隔线
+      let label = ''
+      if (prevHourKey && hourKey !== prevHourKey) {
+        label = d.minute(0).format('HH:mm')
+      } else if (prevHourKey && half === 30 && prevHalf === 0 && (hourCounts.get(hourKey) ?? 0) > 5) {
+        label = d.minute(30).format('HH:mm')
+      }
+      if (label) {
         const dividerId = `divider-${o.id}`
         rows.push({ ...o, id: dividerId, __divider: label })
         noRowBorderIds.add(dividerId)
         if (prevOrderId) noRowBorderIds.add(prevOrderId)
       }
-      prev = label
+      prevHourKey = hourKey
+      prevHalf = half
       prevOrderId = o.id
       rows.push(o)
     })

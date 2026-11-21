@@ -45,6 +45,10 @@ import type {
 import Users from './Users'
 import Groups from './Groups'
 
+// 系统版本与发布日期：随版本发布手动同步（与 CHANGELOG 的版本标题对应）
+const APP_VERSION = '1.2.2'
+const APP_RELEASE_DATE = '2026-11-21'
+
 interface SettingsTabDef {
   key: string
   label: ReactNode
@@ -1562,10 +1566,8 @@ function BasicTab() {
       </div>
       <Divider />
       <Descriptions size="small" column={1}>
-        <Descriptions.Item label="系统版本">v1.2.1</Descriptions.Item>
-        <Descriptions.Item label="最近更新">
-          {settings ? new Date(settings.updated_at).toLocaleDateString('zh-CN') : '—'}
-        </Descriptions.Item>
+        <Descriptions.Item label="系统版本">v{APP_VERSION}</Descriptions.Item>
+        <Descriptions.Item label="发布日期">{APP_RELEASE_DATE}</Descriptions.Item>
       </Descriptions>
       {/* 保存按钮固定在内容之后、卡片右下角（仅管理员可保存） */}
       {isAdmin && (

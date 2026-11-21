@@ -59,8 +59,8 @@ export default function CustomerDetail() {
   const navigate = useNavigate()
   const { message } = App.useApp()
   const { user } = useAuth()
-  const isSuperuser = user?.role === 'superuser'
   const { isMobile } = useLayoutMode()
+  const isSuperuser = user?.role === 'superuser'
   const [deleting, setDeleting] = useState(false)
   const [customer, setCustomer] = useState<Customer | null>(null)
   const [stats, setStats] = useState<CustomerStats | null>(null)
@@ -276,39 +276,47 @@ export default function CustomerDetail() {
           <Space>
             {customer && !customer.is_system && (
               <>
-                {/* 创建订单：预填当前客户信息（通过 URL query 传递 customerId，OrderForm 自动识别） */}
-                {customer.is_active !== false && (
-                  <Popover
-                    trigger="click"
-                    placement="bottomRight"
-                    open={createOrderOpen}
-                    onOpenChange={handleCreateOrderOpenChange}
-                    destroyTooltipOnHide
-                    overlayInnerStyle={{ padding: 12 }}
-                    content={
-                      <div
-                        style={{
-                          width: 720,
-                          maxWidth: 'calc(100vw - 48px)',
-                          maxHeight: 'calc(100vh - 160px)',
-                          overflowY: 'auto',
-                        }}
-                      >
-                        <OrderForm
-                          embedded
-                          presetCustomerId={customer.id}
-                          onDone={(order) => {
-                            setCreateOrderOpen(false)
-                            // 新建订单时可能补填了客户资料，重新拉取详情
-                            if (order) load()
+                {/* 创建订单：桌面版弹出气泡，手机版跳转到预填当前客户信息的创建订单页 */}
+                {customer.is_active !== false &&
+                  (isMobile ? (
+                    <Button
+                      type="primary"
+                      onClick={() => navigate(`/orders/new?customerId=${customer.id}`)}
+                    >
+                      创建订单
+                    </Button>
+                  ) : (
+                    <Popover
+                      trigger="click"
+                      placement="bottomRight"
+                      open={createOrderOpen}
+                      onOpenChange={handleCreateOrderOpenChange}
+                      destroyTooltipOnHide
+                      overlayInnerStyle={{ padding: 12 }}
+                      content={
+                        <div
+                          style={{
+                            width: 720,
+                            maxWidth: 'calc(100vw - 48px)',
+                            maxHeight: 'calc(100vh - 160px)',
+                            overflowY: 'auto',
                           }}
-                        />
-                      </div>
-                    }
-                  >
-                    <Button type="primary">创建订单</Button>
-                  </Popover>
-                )}
+                        >
+                          <OrderForm
+                            embedded
+                            presetCustomerId={customer.id}
+                            onDone={(order) => {
+                              setCreateOrderOpen(false)
+                              // 新建订单时可能补填了客户资料，重新拉取详情
+                              if (order) load()
+                            }}
+                          />
+                        </div>
+                      }
+                    >
+                      <Button type="primary">创建订单</Button>
+                    </Popover>
+                  ))}
                 <Button onClick={openEdit}>编辑</Button>
               </>
             )}
