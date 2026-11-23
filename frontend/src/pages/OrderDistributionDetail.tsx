@@ -5,10 +5,12 @@ import { LeftOutlined, RightOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import { api } from '../api'
 import FloatingBackButton from '../components/FloatingBackButton'
+import { useLayoutMode } from '../layoutMode'
 import { OrderDistributionChart } from './Dashboard'
 import type { Order } from '../types'
 
 export default function OrderDistributionDetail() {
+  const { isMobile } = useLayoutMode()
   const [date, setDate] = useState<Dayjs>(dayjs())
   const [orderDates, setOrderDates] = useState<string[]>([])
   const navigate = useNavigate()
@@ -54,6 +56,8 @@ export default function OrderDistributionDetail() {
             value={date}
             onChange={(v) => v && setDate(v)}
             allowClear={false}
+            // 手机版：只弹出日历，不唤起系统键盘
+            inputReadOnly={isMobile}
             style={{ width: 160 }}
           />
           <Button

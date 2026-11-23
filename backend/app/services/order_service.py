@@ -572,6 +572,18 @@ def delete_order(
     db.commit()
 
 
+def update_note(
+    db: Session, user: User, order_id: str, note: str | None, active_group_id: str | None = None
+) -> Order:
+    """单独修改订单备注：任何状态（含已完成/已取消）都允许写，不触发订单校验。"""
+    order = get_order(db, order_id, user, active_group_id)
+    order.note = (note or "").strip() or None
+    order.updated_by_user_id = user.id
+    db.commit()
+    db.refresh(order)
+    return order
+
+
 def _editable(order: Order) -> None:
     """终态订单不可修改；active 与 in_progress 均可修改（进行中仅允许调整销售项目）。"""
     if order.status in ("completed", "cancelled", "no_show"):
@@ -719,6 +731,10 @@ def restore_order(
     db: Session, user: User, order_id: str, active_group_id: str | None = None
 ) -> Order:
     order = get_order(db, order_id, user, active_group_id)
+    # 已完成订单保留归还时间，直接回退会产生“预订但已归还”的矛盾状态；
+    # 这类订单应走 cancel_return（取消完成），由它清空归还信息并回到活动状态。
+    if order.status == "completed":
+        raise HTTPException(status_code=409, detail="已完成订单请使用「取消完成」恢复")
     _transition(order, "active")
     order.updated_by_user_id = user.id
     db.commit()

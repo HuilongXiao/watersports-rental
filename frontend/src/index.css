@@ -286,3 +286,17 @@ body.layout-mobile .ant-card .ant-card-head {
 body.layout-mobile .ant-card .ant-card-head-title {
   padding-block: 12px;
 }
+
+/* 全局表格：表头文字统一视觉居中对齐（含排序/筛选图标），列内容对齐保持各自设置 */
+.ant-table-thead > tr > th {
+  text-align: center !important;
+}
+/* 表头若带冒泡排序/筛选触发器，包装元素为 inline-flex，居中由 th 的 text-align 生效 */
+.ant-table-thead > tr > th .ant-table-column-sorters {
+  justify-content: center;
+}
+
+/* 客户详情统计卡片：描述标题保持原位，数字整块在卡片内横向居中 */
+.customer-stat .ant-statistic-content {
+  text-align: center;
+}

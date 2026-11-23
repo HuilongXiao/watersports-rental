@@ -13,7 +13,6 @@ import {
   InputNumber,
   Modal,
   Popconfirm,
-  Popover,
   Space,
   Table,
   Tabs,
@@ -59,61 +58,6 @@ interface BoatDispatchRow {
   returnedAt: string | null
 }
 
-// 订单包含多条船时，展示逐条船只的出发 / 返还明细
-function BoatUsageDetail({ usage }: { usage: BoatUsage[] }) {
-  const content = (
-    <div style={{ maxWidth: 300 }}>
-      {usage.map((u, index) => {
-        const color = typeColorHex(u.equipment_type_color ?? undefined)
-        const departedAt = u.departed_at ? dayjs(u.departed_at) : null
-        const returnedAt = u.returned_at ? dayjs(u.returned_at) : null
-        const departedBy = u.departed_by_user_code ?? u.departed_by_user_name
-        const returnedBy = u.returned_by_user_code ?? u.returned_by_user_name
-        return (
-          <div
-            key={`${u.number}-${index}`}
-            style={{
-              padding: '6px 0',
-              borderTop: index > 0 ? '1px solid #f0f0f0' : undefined,
-              fontSize: 12,
-            }}
-          >
-            <div style={{ marginBottom: 2, fontSize: 13 }}>
-              <span style={{ color, fontWeight: 600 }}>{u.equipment_spec_name ?? '—'}</span>
-              <span style={{ color: '#666' }}> </span>
-              <span style={{ color, fontWeight: 600 }}>{u.number}</span>
-              <span style={{ color: '#000' }}>号</span>
-            </div>
-            <div style={{ color: '#666' }}>
-              出发：
-              {departedAt
-                ? `${departedAt.format('HH:mm')}${departedBy ? `（${departedBy}）` : ''}`
-                : '—'}
-            </div>
-            <div style={{ color: '#666' }}>
-              返还：
-              {returnedAt
-                ? `${returnedAt.format('HH:mm')}${returnedBy ? `（${returnedBy}）` : ''}`
-                : '—'}
-            </div>
-            <div style={{ color: '#666' }}>
-              使用时长：
-              {u.departed_at && u.returned_at
-                ? formatDurationBetween(u.departed_at, u.returned_at)
-                : '—'}
-            </div>
-          </div>
-        )
-      })}
-    </div>
-  )
-  return (
-    <Popover content={content} trigger="click" title="船只使用明细" placement="bottom">
-      <a style={{ fontSize: 12 }}>详情</a>
-    </Popover>
-  )
-}
-
 export default function OrderDetail({
   embedded = false,
   orderId,
@@ -148,6 +92,10 @@ export default function OrderDetail({
   // 完成订单时仍有船只未返还：弹窗确认并一并返还
   const [completeOpen, setCompleteOpen] = useState(false)
   const [completeSubmitting, setCompleteSubmitting] = useState(false)
+  // 备注单独编辑：任何状态（含已完成/已取消）都可写
+  const [noteOpen, setNoteOpen] = useState(false)
+  const [noteDraft, setNoteDraft] = useState('')
+  const [noteSaving, setNoteSaving] = useState(false)
   // 已出发但还未返还的船只明细
   const outstandingBoats = (order?.boat_usage ?? []).filter(
     (u) => u.departed_at && !u.returned_at,
@@ -250,6 +198,22 @@ export default function OrderDetail({
       onChanged?.()
     } catch (error) {
       message.error(error instanceof Error ? error.message : '操作失败')
+    }
+  }
+
+  // 保存备注：走单独的 PATCH 接口，任何状态都能写
+  const saveNote = async () => {
+    setNoteSaving(true)
+    try {
+      const updated = await api.patch<Order>(`/api/orders/${id}/note`, { note: noteDraft })
+      setOrder(updated)
+      setNoteOpen(false)
+      message.success('备注已保存')
+      onChanged?.()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '保存失败')
+    } finally {
+      setNoteSaving(false)
     }
   }
 
@@ -462,6 +426,10 @@ export default function OrderDetail({
               <Descriptions.Item label="散客">{order.is_walk_in ? '是' : '否'}</Descriptions.Item>
               <Descriptions.Item label="人数">{peopleCell}</Descriptions.Item>
               <Descriptions.Item label="支付方式">{paymentCell}</Descriptions.Item>
+              {/* 订单日期：单独占一行，后续时间字段只显示时间 */}
+              <Descriptions.Item label="订单日期" span={2}>
+                {order.start_at ? dayjs(order.start_at).format('YYYY-MM-DD') : ''}
+              </Descriptions.Item>
             </>
           ) : (
             <>
@@ -472,155 +440,52 @@ export default function OrderDetail({
               <Descriptions.Item label="散客">{order.is_walk_in ? '是' : '否'}</Descriptions.Item>
               <Descriptions.Item label="人数">{peopleCell}</Descriptions.Item>
               <Descriptions.Item label="支付方式">{paymentCell}</Descriptions.Item>
+              {/* 订单日期：单独占一行，后续时间字段只显示时间 */}
+              <Descriptions.Item label="订单日期" span={2}>
+                {order.start_at ? dayjs(order.start_at).format('YYYY-MM-DD') : ''}
+              </Descriptions.Item>
             </>
           )}
-          {/* 时间类字段：拆成日期一行 + 时间一行，避免窄屏时被拆成"日期+时间"/"（操作人）" */}
+          {/* 开始时间：有船只出发 → 最早的出发时间；已签到 → 签到时间；否则为下单时填写的开始时间 */}
           {(() => {
-            if (!order.start_at) return <Descriptions.Item label="开始时间">{null}</Descriptions.Item>
-            const d = dayjs(order.start_at)
+            const effective = order.boat_departed_at ?? order.check_in_at ?? order.start_at
+            if (!effective) return <Descriptions.Item label="开始时间">{null}</Descriptions.Item>
             return (
-              <Descriptions.Item label="开始时间">
-                {isDesktop ? (
-                  d.format('YYYY-MM-DD HH:mm')
-                ) : (
-                  <>
-                    <div>{d.format('YYYY-MM-DD')}</div>
-                    <div style={{ color: '#888' }}>{d.format('HH:mm')}</div>
-                  </>
-                )}
-              </Descriptions.Item>
+              <Descriptions.Item label="开始时间">{dayjs(effective).format('HH:mm')}</Descriptions.Item>
             )
           })()}
+          {/* 完成时间：有船只调配且已返还 → 显示返还时间；否则显示操作的完成时间或系统自动归还时间 */}
           {(() => {
-            if (!order.check_in_at) return <Descriptions.Item label="签到时间">{null}</Descriptions.Item>
-            const d = dayjs(order.check_in_at)
-            const by = order.check_in_by_user_code ?? order.check_in_by_user_name
-            return (
-              <Descriptions.Item label="签到时间">
-                {isDesktop ? (
-                  `${d.format('YYYY-MM-DD HH:mm')}${by ? `（${by}）` : ''}`
-                ) : (
-                  <>
-                    <div>{d.format('YYYY-MM-DD')}</div>
-                    <div style={{ color: '#888' }}>
-                      {d.format('HH:mm')}{by ? `（${by}）` : ''}
-                    </div>
-                  </>
-                )}
-              </Descriptions.Item>
-            )
-          })()}
-          {(() => {
-            const hasBoatDetail = (order.boat_usage?.length ?? 0) > 1
-            if (hasBoatDetail) {
-              return (
-                <Descriptions.Item label="出发时间">
-                  <BoatUsageDetail usage={order.boat_usage ?? []} />
-                </Descriptions.Item>
-              )
-            }
-            if (!order.boat_departed_at) return <Descriptions.Item label="出发时间">{null}</Descriptions.Item>
-            const d = dayjs(order.boat_departed_at)
-            return (
-              <Descriptions.Item label="出发时间">
-                {(() => {
-                  const operator =
-                    order.boat_departed_by_user_code ?? order.boat_departed_by_user_name
-                  return isDesktop ? (
-                    `${d.format('YYYY-MM-DD HH:mm')}${operator ? `（${operator}）` : ''}`
-                  ) : (
-                    <>
-                      <div>{d.format('YYYY-MM-DD')}</div>
-                      <div style={{ color: '#888' }}>
-                        {d.format('HH:mm')}
-                        {operator ? `（${operator}）` : ''}
-                      </div>
-                    </>
-                  )
-                })()}
-              </Descriptions.Item>
-            )
-          })()}
-          {(() => {
-            const hasBoatDetail = (order.boat_usage?.length ?? 0) > 1
-            if (hasBoatDetail) {
-              return (
-                <Descriptions.Item label="返还时间">
-                  <BoatUsageDetail usage={order.boat_usage ?? []} />
-                </Descriptions.Item>
-              )
-            }
-            if (!order.boat_returned_at) return <Descriptions.Item label="返还时间">{null}</Descriptions.Item>
-            const d = dayjs(order.boat_returned_at)
-            return (
-              <Descriptions.Item label="返还时间">
-                {(() => {
-                  const operator =
-                    order.boat_returned_by_user_code ?? order.boat_returned_by_user_name
-                  return isDesktop ? (
-                    `${d.format('YYYY-MM-DD HH:mm')}${operator ? `（${operator}）` : ''}`
-                  ) : (
-                    <>
-                      <div>{d.format('YYYY-MM-DD')}</div>
-                      <div style={{ color: '#888' }}>
-                        {d.format('HH:mm')}
-                        {operator ? `（${operator}）` : ''}
-                      </div>
-                    </>
-                  )
-                })()}
-              </Descriptions.Item>
-            )
-          })()}
-          {(() => {
-            if (!order.return_at) return <Descriptions.Item label="完成时间">{null}</Descriptions.Item>
-            const d = dayjs(order.return_at)
-            const by = order.return_by_system
-              ? '系统'
-              : (order.return_by_user_code ?? order.return_by_user_name ?? '')
+            const effective = order.boat_returned_at ?? order.return_at
+            if (!effective) return <Descriptions.Item label="完成时间">{null}</Descriptions.Item>
+            const d = dayjs(effective)
+            const by = order.boat_returned_at
+              ? (order.boat_returned_by_user_code ?? order.boat_returned_by_user_name ?? '')
+              : order.return_by_system
+                ? '系统'
+                : (order.return_by_user_code ?? order.return_by_user_name ?? '')
             return (
               <Descriptions.Item label="完成时间">
                 {isDesktop ? (
-                  `${d.format('YYYY-MM-DD HH:mm')}${by ? `（${by}）` : ''}`
+                  `${d.format('HH:mm')}${by ? `（${by}）` : ''}`
                 ) : (
                   <>
-                    <div>{d.format('YYYY-MM-DD')}</div>
-                    <div style={{ color: '#888' }}>
-                      {d.format('HH:mm')}{by ? `（${by}）` : ''}
-                    </div>
+                    {d.format('HH:mm')}{by ? `（${by}）` : ''}
                   </>
                 )}
               </Descriptions.Item>
             )
           })()}
-          <Descriptions.Item label="使用时长">
-            {(order.boat_usage?.length ?? 0) > 1 ? (
-              <BoatUsageDetail usage={order.boat_usage ?? []} />
-            ) : (
-              <span>
-                {order.boat_departed_at && order.boat_returned_at
-                  ? formatDurationBetween(order.boat_departed_at, order.boat_returned_at)
-                  : order.return_at
-                    ? order.check_in_at
-                      ? formatDurationBetween(order.check_in_at, order.return_at)
-                      : '2小时'
-                    : ''}
-              </span>
-            )}
-          </Descriptions.Item>
           {(() => {
             const d = dayjs(order.created_at)
             const by = order.created_by_user_code ?? order.created_by_user_name
             return (
-              <Descriptions.Item label="创建时间">
+              <Descriptions.Item label="创建时间" span={2}>
                 {isDesktop ? (
                   `${d.format('YYYY-MM-DD HH:mm')}${by ? `（${by}）` : ''}`
                 ) : (
                   <>
-                    <div>{d.format('YYYY-MM-DD')}</div>
-                    <div style={{ color: '#888' }}>
-                      {d.format('HH:mm')}{by ? `（${by}）` : ''}
-                    </div>
+                    {d.format('YYYY-MM-DD HH:mm')}{by ? `（${by}）` : ''}
                   </>
                 )}
               </Descriptions.Item>
@@ -630,29 +495,23 @@ export default function OrderDetail({
             const d = dayjs(order.updated_at)
             const by = order.updated_by_user_code ?? order.updated_by_user_name
             return (
-              <Descriptions.Item label="最后改动">
+              <Descriptions.Item label="最后改动" span={2}>
                 {isDesktop ? (
                   `${d.format('YYYY-MM-DD HH:mm')}${by ? `（${by}）` : ''}`
                 ) : (
                   <>
-                    <div>{d.format('YYYY-MM-DD')}</div>
-                    <div style={{ color: '#888' }}>
-                      {d.format('HH:mm')}{by ? `（${by}）` : ''}
-                    </div>
+                    {d.format('YYYY-MM-DD HH:mm')}{by ? `（${by}）` : ''}
                   </>
                 )}
               </Descriptions.Item>
             )
           })()}
+          <Descriptions.Item label="备注" span={2}>
+            <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', textAlign: 'left' }}>
+              {order.note ?? ''}
+            </span>
+          </Descriptions.Item>
         </Descriptions>
-
-        {/* 备注：脱离信息表格单独展示（不加灰线），有内容时才出现，便于一眼注意到 */}
-        {order.note?.trim() ? (
-          <div style={{ marginTop: 12, fontSize: 13, lineHeight: 1.7 }}>
-            <span style={{ fontWeight: 600 }}>备注：</span>
-            <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{order.note}</span>
-          </div>
-        ) : null}
 
         <Divider orientation="center">订单项目</Divider>
         <Table
@@ -967,6 +826,30 @@ export default function OrderDetail({
         </Form>
       </Modal>
 
+      {/* 备注编辑：任何状态下均可修改 */}
+      <Modal
+        open={noteOpen}
+        title="编辑备注"
+        okText="保存"
+        cancelText="取消"
+        confirmLoading={noteSaving}
+        onOk={saveNote}
+        onCancel={() => {
+          if (!noteSaving) setNoteOpen(false)
+        }}
+        width={420}
+        maskClosable={!noteSaving}
+      >
+        <Input.TextArea
+          value={noteDraft}
+          onChange={(e) => setNoteDraft(e.target.value)}
+          autoSize={{ minRows: 4, maxRows: 10 }}
+          placeholder="填写备注（可留空）"
+          maxLength={1000}
+          showCount
+        />
+      </Modal>
+
       {/* 有船只已出发未返还时，完成订单前明确列出船只并要求确认返还 */}
       <Modal
         open={completeOpen}
@@ -1056,6 +939,16 @@ export default function OrderDetail({
         {(order.editable || order.status === 'in_progress') && canEditOrder && (
           <Button onClick={() => navigate(`/orders/${order.id}/edit`)}>编辑</Button>
         )}
+        {canEditOrder && order.status === 'completed' && (
+          <Button
+            onClick={() => {
+              setNoteDraft(order.note ?? '')
+              setNoteOpen(true)
+            }}
+          >
+            编辑备注
+          </Button>
+        )}
         {canEditOrder && order.status === 'active' && !order.checked_in && (
           today ? (
             <Popconfirm
@@ -1117,10 +1010,10 @@ export default function OrderDetail({
             <Button danger>取消</Button>
           </Popconfirm>
         )}
-        {canEditOrder && (order.status === 'completed' || order.status === 'no_show' || order.status === 'cancelled') && (
+        {canEditOrder && (order.status === 'no_show' || order.status === 'cancelled') && (
           <Popconfirm
             title="恢复为活动订单？"
-            description="仅未到原结束时间之后的订单可恢复。"
+            description="已取消或爽约的订单将恢复为预订状态。"
             onConfirm={() => action(`/api/orders/${order.id}/restore`, '订单已恢复')}
           >
             <Button>恢复订单</Button>

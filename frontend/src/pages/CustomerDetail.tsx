@@ -392,10 +392,11 @@ export default function CustomerDetail() {
       )}
 
       {stats && (
-        <Row gutter={16} style={{ marginBottom: 16 }}>
+        <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
           <Col xs={12} md={6}>
             <Card>
               <Statistic
+                className="customer-stat"
                 title="累计消费"
                 value={fenToYuan(stats.total_spending_fen)}
                 prefix="¥"
@@ -404,17 +405,18 @@ export default function CustomerDetail() {
           </Col>
           <Col xs={12} md={6}>
             <Card>
-              <Statistic title="总订单数" value={stats.total_orders} />
+              <Statistic className="customer-stat" title="总订单数" value={stats.total_orders} />
             </Card>
           </Col>
           <Col xs={12} md={6}>
             <Card>
-              <Statistic title="完成订单数" value={stats.completed_orders} />
+              <Statistic className="customer-stat" title="完成订单数" value={stats.completed_orders} />
             </Card>
           </Col>
           <Col xs={12} md={6}>
             <Card>
               <Statistic
+                className="customer-stat"
                 title="爽约次数"
                 value={stats.no_show_orders}
                 valueStyle={stats.no_show_orders > 0 ? { color: '#cf1322', cursor: 'pointer' } : undefined}

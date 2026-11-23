@@ -578,6 +578,52 @@ export default function OrderForm({
         return
       }
 
+      // 过去时间提醒：新建订单的开始时间早于当前时间时，先确认再创建
+      if (!force && !editing) {
+        const diffMs = dayjs().diff(startAt)
+        if (diffMs > 0) {
+          const totalMinutes = Math.floor(diffMs / 60000)
+          const days = Math.floor(totalMinutes / 1440)
+          const hours = Math.floor((totalMinutes % 1440) / 60)
+          const minutes = totalMinutes % 60
+          let ago = ''
+          if (days > 0) {
+            ago = hours > 0 ? `${days} 天 ${hours} 小时` : `${days} 天`
+          } else if (hours > 0) {
+            ago = minutes > 0 ? `${hours} 小时 ${minutes} 分钟` : `${hours} 小时`
+          } else {
+            ago = minutes > 0 ? `${minutes} 分钟` : '不到 1 分钟'
+          }
+          const confirmed = await new Promise<boolean>((resolve) => {
+            Modal.confirm({
+              title: '开始时间已过',
+              content: (
+                <div style={{ lineHeight: 1.8 }}>
+                  <div>
+                    订单开始日期：
+                    <span style={{ color: '#ff4d4f' }}>{startAt.format('YYYY年M月D日')}</span>
+                  </div>
+                  <div>
+                    订单开始时间：
+                    <span style={{ color: '#ff4d4f' }}>{startAt.format('HH:mm')}</span>
+                  </div>
+                  <div>
+                    距离现在已经过去
+                    <span style={{ color: '#ff4d4f' }}>{ago}</span>。
+                  </div>
+                  <div style={{ marginTop: 8 }}>是否确认创建？</div>
+                </div>
+              ),
+              okText: '继续创建',
+              cancelText: '返回编辑',
+              onOk: () => resolve(true),
+              onCancel: () => resolve(false),
+            })
+          })
+          if (!confirmed) return
+        }
+      }
+
     // 重复订单检查：仅新建订单（编辑不检查），同一客户+同一业务日期+船型有交集时预警
     if (!force && !editing) {
       try {
@@ -844,8 +890,14 @@ export default function OrderForm({
             <Button
               size="small"
               icon={<MinusOutlined />}
-              onClick={() => updateItem(record.key, { quantity: Math.max(1, record.quantity - 1) })}
-              disabled={disabled || record.quantity <= 1}
+              // 数量为 1 时再点「−」直接移除该项目
+              onClick={() =>
+                record.quantity <= 1
+                  ? removeItem(record.key)
+                  : updateItem(record.key, { quantity: record.quantity - 1 })
+              }
+              disabled={disabled}
+              title={record.quantity <= 1 ? '移除该项目' : undefined}
             />
             <span style={{ minWidth: 24, textAlign: 'center' }}>{record.quantity}</span>
             <Button
@@ -879,19 +931,23 @@ export default function OrderForm({
                 : '—',
           },
         ]),
-    {
-      title: '',
-      width: 36,
-      render: (_: unknown, record: DraftItem) => (
-        <Button
-          type="text"
-          danger
-          icon={<DeleteOutlined />}
-          disabled={rowDisabled(record)}
-          onClick={() => removeItem(record.key)}
-        />
-      ),
-    },
+    ...(isMobile
+      ? []
+      : [
+          {
+            title: '',
+            width: 36,
+            render: (_: unknown, record: DraftItem) => (
+              <Button
+                type="text"
+                danger
+                icon={<DeleteOutlined />}
+                disabled={rowDisabled(record)}
+                onClick={() => removeItem(record.key)}
+              />
+            ),
+          },
+        ]),
   ]
 
 

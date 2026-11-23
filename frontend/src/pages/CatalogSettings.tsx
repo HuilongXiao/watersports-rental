@@ -46,8 +46,8 @@ import Users from './Users'
 import Groups from './Groups'
 
 // 系统版本与发布日期：随版本发布手动同步（与 CHANGELOG 的版本标题对应）
-const APP_VERSION = '1.2.2'
-const APP_RELEASE_DATE = '2026-11-21'
+const APP_VERSION = '1.2.3'
+const APP_RELEASE_DATE = '2026-11-23'
 
 interface SettingsTabDef {
   key: string
@@ -1595,6 +1595,7 @@ function ExportTab() {
   const { user } = useAuth()
   const canExport = Boolean(user?.permissions.export_report)
   const isSuperuser = Boolean(user?.role === 'superuser')
+  const { isMobile } = useLayoutMode()
 
   useEffect(() => {
     if (!isSuperuser) return
@@ -1679,6 +1680,8 @@ function ExportTab() {
             value={range}
             onChange={(value) => setRange(value as [Dayjs, Dayjs] | null)}
             allowClear
+            // 手机版：只弹出日历，不唤起系统键盘
+            inputReadOnly={isMobile}
             style={{ flex: '1 1 auto', minWidth: 0, maxWidth: 320 }}
           />
           <Button type="primary" loading={exporting} onClick={doExport} disabled={!canExport}>

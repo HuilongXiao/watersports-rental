@@ -1017,6 +1017,8 @@ export default function Orders() {
           value={draftDay}
           onChange={(value) => setDraftDay(value)}
           allowClear
+          // 手机版：输入框只读，点击仅弹出日历，避免弹出系统键盘
+          inputReadOnly={isMobile}
           style={{ width: '100%' }}
         />
       </div>

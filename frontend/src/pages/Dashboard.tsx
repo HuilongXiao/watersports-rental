@@ -30,6 +30,9 @@ export default function Dashboard() {
     user && (user.role === 'superuser' || user.role === 'admin' || user.permissions.view_revenue),
   )
 
+  // 看板销售额：整元不显示小数，确有角分时才保留两位
+  const formatYuanShort = (fen: number) => (fen % 100 === 0 ? String(fen / 100) : fenToYuan(fen))
+
   useEffect(() => {
     setLoading(true)
     api
@@ -47,8 +50,15 @@ export default function Dashboard() {
       extra={
         <Space size="middle">
           {data && (
-            <span style={{ fontSize: 13, color: '#333' }}>
-              今日订单：<strong style={{ fontSize: 15 }}>{data.today_orders}</strong>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 16 }}>
+              {canViewRevenue && (
+                <span style={{ fontSize: 13, color: '#333' }}>
+                  销售额：<strong style={{ fontSize: 15 }}>¥{formatYuanShort(data.today_completed_amount_fen)}</strong>
+                </span>
+              )}
+              <span style={{ fontSize: 13, color: '#333' }}>
+                订单：<strong style={{ fontSize: 15 }}>{data.today_orders}</strong>
+              </span>
             </span>
           )}
           {/* 电脑网页版没有「更多」入口，手机版保留 */}

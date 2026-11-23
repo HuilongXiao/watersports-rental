@@ -55,6 +55,12 @@ class OrderInput(BaseModel):
     items: list[OrderItemInput] = Field(min_length=1)
 
 
+class OrderNoteInput(BaseModel):
+    """订单备注单独修改：任何状态均可写，不受订单编辑中/终态限制。"""
+
+    note: str | None = None
+
+
 @router.get("")
 def list_orders(
     status: str | None = None,
@@ -180,6 +186,18 @@ def update_order(
     active_group_id: str | None = Depends(get_active_group_id),
 ):
     order = order_service.update_order(db, user, order_id, payload, active_group_id)
+    return order_dict(db, order)
+
+
+@router.patch("/{order_id}/note")
+def update_order_note(
+    order_id: str,
+    payload: OrderNoteInput,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("edit_order")),
+    active_group_id: str | None = Depends(get_active_group_id),
+):
+    order = order_service.update_note(db, user, order_id, payload.note, active_group_id)
     return order_dict(db, order)
 
 

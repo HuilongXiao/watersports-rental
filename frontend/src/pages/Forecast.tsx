@@ -26,6 +26,7 @@ function lightenHex(hex: string, ratio = 0.55): string {
 }
 
 export default function Forecast() {
+  const { isMobile } = useLayoutMode()
   const [date, setDate] = useState<Dayjs>(dayjs())
   const navigate = useNavigate()
   const dateStr = date.format('YYYY-MM-DD')
@@ -40,6 +41,8 @@ export default function Forecast() {
             value={date}
             onChange={(v) => v && setDate(v)}
             allowClear={false}
+            // 手机版：只弹出日历，不唤起系统键盘
+            inputReadOnly={isMobile}
             style={{ width: 150 }}
           />
           <Button icon={<RightOutlined />} onClick={() => setDate(date.add(1, 'day'))} />

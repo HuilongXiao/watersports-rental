@@ -253,15 +253,14 @@ export default function AppLayout() {
               onClick={() => handleNav(item.key)}
             />
           ))}
-          {!location.pathname.startsWith('/orders/') && (
-            <div
-              onClick={() => navigate('/orders/new')}
-              style={addButtonStyle}
-              aria-label="新建订单"
-            >
-              <PlusOutlined style={{ fontSize: 24 }} />
-            </div>
-          )}
+          {/* 手机版底部创建订单按钮：任何页面都常驻显示 */}
+          <div
+            onClick={() => navigate('/orders/new')}
+            style={addButtonStyle}
+            aria-label="新建订单"
+          >
+            <PlusOutlined style={{ fontSize: 24 }} />
+          </div>
           {tabs.slice(2).map((item) => (
             <TabButton
               key={item.key}

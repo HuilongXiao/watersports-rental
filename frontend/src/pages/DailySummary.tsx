@@ -173,26 +173,38 @@ export default function DailySummary({
   }
 
   const usageColumns = [
-    { title: '名称', dataIndex: 'name', key: 'name', onHeaderCell: centerHeaderCell },
+    {
+      title: '名称',
+      dataIndex: 'name',
+      key: 'name',
+      align: 'center' as const,
+      onHeaderCell: centerHeaderCell,
+    },
     {
       title: '数量',
       dataIndex: 'quantity',
       key: 'quantity',
       width: 80,
-      align: 'right' as const,
+      align: 'center' as const,
       onHeaderCell: centerHeaderCell,
     },
     amountCol,
   ]
 
   const othersColumns = [
-    { title: '备注', dataIndex: 'note', key: 'note', onHeaderCell: centerHeaderCell },
+    {
+      title: '备注',
+      dataIndex: 'note',
+      key: 'note',
+      align: 'left' as const,
+      onHeaderCell: centerHeaderCell,
+    },
     {
       title: '数量',
       dataIndex: 'quantity',
       key: 'quantity',
       width: 80,
-      align: 'right' as const,
+      align: 'center' as const,
       onHeaderCell: centerHeaderCell,
     },
     amountCol,
@@ -234,7 +246,10 @@ export default function DailySummary({
             value={date}
             onChange={(v) => v && setDate(v)}
             allowClear={false}
-            style={{ width: 150 }}
+            // 手机版：输入框只读，点击仅弹出日历，避免弹出系统键盘
+            inputReadOnly={isMobile}
+            // 宽度仅够容纳 2026-11-23 + 日历图标，不留多余空白
+            style={{ width: 122 }}
           />
           <Button
             icon={<RightOutlined />}
@@ -262,8 +277,8 @@ export default function DailySummary({
                     canViewRevenue ? (
                       <Table.Summary fixed>
                         <Table.Summary.Row>
-                          <Table.Summary.Cell index={0}>合计</Table.Summary.Cell>
-                          <Table.Summary.Cell index={1} align="right">
+                          <Table.Summary.Cell index={0} align="center">合计</Table.Summary.Cell>
+                          <Table.Summary.Cell index={1} align="center">
                             {summary.equipment_usage.reduce((s, e) => s + e.quantity, 0)}
                           </Table.Summary.Cell>
                           <Table.Summary.Cell index={2} align="right">
@@ -288,8 +303,8 @@ export default function DailySummary({
                     canViewRevenue ? (
                       <Table.Summary fixed>
                         <Table.Summary.Row>
-                          <Table.Summary.Cell index={0}>合计</Table.Summary.Cell>
-                          <Table.Summary.Cell index={1} align="right">
+                          <Table.Summary.Cell index={0} align="center">合计</Table.Summary.Cell>
+                          <Table.Summary.Cell index={1} align="center">
                             {summary.sale_item_usage.reduce((s, e) => s + e.quantity, 0)}
                           </Table.Summary.Cell>
                           <Table.Summary.Cell index={2} align="right">
@@ -317,8 +332,8 @@ export default function DailySummary({
                     canViewRevenue && !summary.is_future ? (
                       <Table.Summary fixed>
                         <Table.Summary.Row>
-                          <Table.Summary.Cell index={0}>合计</Table.Summary.Cell>
-                          <Table.Summary.Cell index={1} align="right">
+                          <Table.Summary.Cell index={0} align="left">合计</Table.Summary.Cell>
+                          <Table.Summary.Cell index={1} align="center">
                             {summary.others.reduce((s, e) => s + e.quantity, 0)}
                           </Table.Summary.Cell>
                           <Table.Summary.Cell index={2} align="right">
@@ -346,12 +361,13 @@ export default function DailySummary({
                       size="small"
                       tableLayout="fixed"
                       columns={[
-                        { title: '方式', dataIndex: 'name', key: 'name', onHeaderCell: centerHeaderCell },
+                        { title: '方式', dataIndex: 'name', key: 'name', align: 'center' as const, onHeaderCell: centerHeaderCell },
                         {
                           title: '代码',
                           dataIndex: 'code',
                           key: 'code',
                           width: 80,
+                          align: 'center' as const,
                           onHeaderCell: centerHeaderCell,
                         },
                         {
@@ -390,8 +406,16 @@ export default function DailySummary({
         </Spin>
       </Card>
 
-      {/* 桌面端右列：上方可插入其他卡片（如看板），下方固定销售日历 */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* 桌面端右列：上方可插入其他卡片（如看板），下方固定销售日历。
+          手机版右列占满整行，销售日历宽度随屏幕自适应（否则列宽由内容撑开，日历只有约 460px） */}
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 16,
+          ...(isMobile ? { width: '100%', minWidth: 0 } : {}),
+        }}
+      >
       {rightTop}
       {/* 销售日历：按月展示每日销售额 */}
       <Card
@@ -430,7 +454,7 @@ export default function DailySummary({
         <div style={{ marginBottom: 8, fontSize: 13, color: '#4e636d' }}>
           本月销售额：
           {canViewRevenue ? (
-            <strong>¥{formatThousands(revenue?.total_fen ?? 0)}</strong>
+            <strong style={{ color: '#1f7a5c' }}>¥{formatThousands(revenue?.total_fen ?? 0)}</strong>
           ) : (
             <strong>—</strong>
           )}
