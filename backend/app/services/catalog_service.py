@@ -107,6 +107,7 @@ def list_catalog(db: Session, user: User, active_group_id: str | None = None) ->
                 if s.equipment_type_id in type_meta
                 else True,
                 "name": s.name,
+                "business_name": s.business_name,
                 "price": s.price,
                 "capacity": s.capacity,
                 "sort_order": s.sort_order,
@@ -227,6 +228,7 @@ def create_equipment_spec(
     price: int, capacity: int | None, is_active: bool, quantity: int = 0,
     boat_numbering_required: bool = True,
     show_in_usage: bool = True,
+    business_name: str | None = None,
 ) -> EquipmentSpec:
     _validate_price(price)
     type_row = db.get(EquipmentType, equipment_type_id)
@@ -252,6 +254,7 @@ def create_equipment_spec(
         group_id=type_row.group_id,
         equipment_type_id=equipment_type_id,
         name=name,
+        business_name=(business_name.strip() or None) if business_name else None,
         price=price,
         capacity=capacity,
         sort_order=next_order,
@@ -279,6 +282,7 @@ def update_equipment_spec(
     equipment_type_id: str | None = None,
     boat_numbering_required: bool | None = None,
     show_in_usage: bool | None = None,
+    business_name=_UNSET,
 ) -> EquipmentSpec:
     item = db.get(EquipmentSpec, spec_id)
     if not item:
@@ -315,6 +319,10 @@ def update_equipment_spec(
         item.price = price
     if name is not None:
         item.name = new_name
+    # 营业名称可为空：显式传 null/空串表示清空，回退到规格名称
+    if business_name is not _UNSET:
+        cleaned = business_name.strip() if isinstance(business_name, str) else None
+        item.business_name = cleaned or None
     if equipment_type_id is not None:
         item.equipment_type_id = new_type_id
     # capacity is nullable (paddleboard); only touch it when explicitly provided.

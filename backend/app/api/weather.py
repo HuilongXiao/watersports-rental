@@ -11,7 +11,7 @@ router = APIRouter(prefix="/api/weather", tags=["weather"])
 async def get_weather(
     latitude: float = Query(31.33, ge=-90, le=90),
     longitude: float = Query(121.52, ge=-180, le=180),
-    days: int = Query(8, ge=1, le=8),
+    days: int = Query(8, ge=1, le=15),
     _: User = Depends(get_current_user),
 ):
     """按店铺坐标返回实时/逐小时/逐天天气（和风天气代理，密钥不出后端）。"""

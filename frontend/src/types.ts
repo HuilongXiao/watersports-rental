@@ -93,6 +93,8 @@ export interface EquipmentSpec {
   // 所属类型是否启用；类型停用后该规格在新订单中不可选
   equipment_type_active?: boolean
   name: string
+  // 营业名称：对外展示用（预订确认书），为空时显示规格名称
+  business_name: string | null
   price: number
   capacity: number | null
   sort_order: number
@@ -141,6 +143,10 @@ export interface OrderItem {
   quantity: number
   unit_price: number
   line_amount: number
+  // 该行已调整金额（退款/调价，负数表示减少，仅支付视图返回）
+  adjusted_fen?: number
+  // 拆分后的多行（仅支付视图返回；空数组表示未拆分）
+  splits?: { id: string; amount_fen: number }[]
   locked: boolean
 }
 
@@ -242,6 +248,12 @@ export interface Order {
 
 export interface PaymentAdjustment {
   id: string
+  // 按订单项目退款时指向该订单项目；其他调整项为空
+  order_item_id?: string | null
+  // 针对拆分后的行调整时指向拆分记录
+  order_item_split_id?: string | null
+  // 按行调整类型：refund 退款 / price 调整价格；其他调整项为空
+  kind?: 'refund' | 'price' | null
   quantity: number
   unit_amount: number
   amount: number
@@ -276,6 +288,10 @@ export interface AppSettings {
   boat_numbering_enabled: boolean
   shop_latitude: number | null
   shop_longitude: number | null
+  // 门店信息（预订确认书展示）
+  shop_name: string | null
+  shop_phone: string | null
+  shop_address: string | null
   updated_at: string
   payment_methods: PaymentMethod[]
   default_payment_method: string | null

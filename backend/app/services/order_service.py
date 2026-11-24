@@ -25,6 +25,7 @@ from app.models.equipment import EquipmentSpec, EquipmentType, SaleItem
 from app.models.group import Group
 from app.models.inventory import InventoryConfiguration
 from app.models.order import Order, OrderItem
+from app.models.payment import OrderItemSplit
 from app.models.settings import DEFAULT_AUTO_RETURN_MINUTES, Setting
 from app.models.user import User
 from app.services import payment_method_service
@@ -606,8 +607,7 @@ def update_order(
         # 旧客户端仅传姓名的回退路径：双方均无昵称时按姓名比对
         if not nickname and (payload.customer_name or "").strip() != (order.customer_name or ""):
             raise HTTPException(status_code=409, detail="订单创建后客户信息不可修改")
-    if bool(getattr(payload, "is_walk_in", False)) != bool(order.is_walk_in):
-        raise HTTPException(status_code=409, detail="订单创建后客户信息不可修改")
+    # 散客标记属于订单属性，签到后仍可修改（不随客户信息锁定）
 
     # Fast customer mode: re-link or create customer from wechat nickname.
     if not payload.customer_id:
@@ -657,7 +657,13 @@ def update_order(
     order.payment_method_code = new_pm
     order.updated_by_user_id = user.id
 
-    for old in list_items(db, order.id):
+    # 编辑订单会重建订单项目：先清空旧项目的拆分记录，避免残留
+    old_items = list_items(db, order.id)
+    if old_items:
+        db.query(OrderItemSplit).filter(
+            OrderItemSplit.order_item_id.in_([i.id for i in old_items])
+        ).delete(synchronize_session=False)
+    for old in old_items:
         db.delete(old)
     db.flush()
     for spec_id, sale_id, quantity, catalog in resolved:

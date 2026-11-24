@@ -28,6 +28,9 @@ export interface WeatherDay {
   temp_max: number
   temp_min: number
   precip: number
+  // 日出/日落（和风返回 "06:28" / "16:52"，部分接口为 ISO 时间）
+  sunrise?: string | null
+  sunset?: string | null
 }
 
 export interface WeatherSummary {

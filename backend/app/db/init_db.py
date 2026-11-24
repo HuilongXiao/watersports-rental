@@ -21,6 +21,9 @@ _ADDITIVE_COLUMNS = [
     ("equipment_specs", "show_in_usage", "BOOLEAN NOT NULL DEFAULT 1"),
     ("settings", "auto_export_orders_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
     ("settings", "auto_export_customers_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
+    ("settings", "shop_name", "VARCHAR(100)"),
+    ("settings", "shop_phone", "VARCHAR(40)"),
+    ("settings", "shop_address", "VARCHAR(200)"),
     ("customers", "note", "TEXT"),
     ("customers", "remind", "BOOLEAN NOT NULL DEFAULT 0"),
     ("users", "group_id", "VARCHAR(36)"),
@@ -38,6 +41,7 @@ _ADDITIVE_COLUMNS = [
     ("settings", "shop_latitude", "FLOAT"),
     ("settings", "shop_longitude", "FLOAT"),
     ("equipment_specs", "sort_order", "INTEGER NOT NULL DEFAULT 0"),
+    ("equipment_specs", "business_name", "VARCHAR(128)"),
     ("orders", "is_walk_in", "BOOLEAN NOT NULL DEFAULT 0"),
     ("orders", "note_popup", "BOOLEAN NOT NULL DEFAULT 0"),
     ("orders", "payment_method_code", "VARCHAR(32)"),
@@ -46,6 +50,9 @@ _ADDITIVE_COLUMNS = [
     ("users", "operator_code", "VARCHAR(2)"),
     ("orders", "is_deleted", "BOOLEAN NOT NULL DEFAULT 0"),
     ("customers", "is_active", "BOOLEAN NOT NULL DEFAULT 1"),
+    ("payment_items", "order_item_id", "VARCHAR(36)"),
+    ("payment_items", "kind", "VARCHAR(16)"),
+    ("payment_items", "order_item_split_id", "VARCHAR(36)"),
 ]
 
 

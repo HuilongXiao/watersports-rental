@@ -78,13 +78,14 @@ def test_walk_in_flag_persisted_and_defaults_false(logged_in_client):
     assert resp.json()["is_walk_in"] is False
 
 
-def test_edit_order_cannot_change_walk_in_flag(logged_in_client):
-    """订单创建后客户信息（含散客标记）不可修改：编辑时修改散客标记返回 409。"""
+def test_edit_order_can_change_walk_in_flag(logged_in_client):
+    """散客标记属于订单属性：订单开始（签到）后仍可修改。"""
     client = logged_in_client
     spec = _spec(client)
     customer_id = _customer(client)
     start = _now_local().replace(hour=14, minute=0)
     order = _create(client, spec["id"], customer_id, start, False)
+    assert client.post(f"/api/orders/{order['id']}/check-in").status_code == 200
 
     resp = client.put(
         f"/api/orders/{order['id']}",
@@ -97,9 +98,10 @@ def test_edit_order_cannot_change_walk_in_flag(logged_in_client):
             "items": [{"equipment_spec_id": spec["id"], "quantity": 1}],
         },
     )
-    assert resp.status_code == 409, resp.text
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["is_walk_in"] is True
 
-    # 保持原值（含散客标记与其他客户字段）的编辑仍可正常保存
+    # 再改回非散客
     resp = client.put(
         f"/api/orders/{order['id']}",
         json={

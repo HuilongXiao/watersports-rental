@@ -27,6 +27,8 @@ def update_settings(
     *, fast_customer_mode: bool = False, boat_numbering_enabled: bool = False,
     auto_return_enabled: bool = True,
     shop_latitude: float | None = None, shop_longitude: float | None = None,
+    shop_name: str | None = None, shop_phone: str | None = None,
+    shop_address: str | None = None,
 ) -> Setting:
     if auto_return_after_minutes < 1:
         raise ValueError("auto_return_after_minutes must be >= 1")
@@ -40,6 +42,10 @@ def update_settings(
     setting.auto_return_enabled = auto_return_enabled
     setting.shop_latitude = shop_latitude
     setting.shop_longitude = shop_longitude
+    # 门店信息：空字符串按未填写处理
+    setting.shop_name = (shop_name or "").strip() or None
+    setting.shop_phone = (shop_phone or "").strip() or None
+    setting.shop_address = (shop_address or "").strip() or None
     setting.updated_by_user_id = user.id
     db.commit()
     db.refresh(setting)

@@ -7,25 +7,26 @@ import {
   Button,
   Card,
   Descriptions,
-  Divider,
+  Dropdown,
   Form,
   Input,
   InputNumber,
   Modal,
   Popconfirm,
+  Radio,
   Space,
   Table,
-  Tabs,
   Tag,
+  Tooltip,
 } from 'antd'
-import { PlusOutlined } from '@ant-design/icons'
 import { api } from '../api'
 import { useAuth } from '../auth'
 import { useSettings } from '../contexts/SettingsContext'
 import { fenToYuan, formatDateTime, formatDurationBetween, typeColorHex, readLatestOrdersSnapshot } from '../utils'
 import { useLayoutMode } from '../layoutMode'
 import FloatingBackButton from '../components/FloatingBackButton'
-import type { BoatUsage, Order, OrderStatus, PaymentView } from '../types'
+import { renderBookingLetter } from '../bookingLetter'
+import type { BoatUsage, Catalog, Order, OrderItem, OrderStatus, PaymentAdjustment, PaymentView } from '../types'
 
 const STATUS_META: Record<OrderStatus, { label: string; color: string }> = {
   active: { label: '预订', color: 'green' },
@@ -33,6 +34,52 @@ const STATUS_META: Record<OrderStatus, { label: string; color: string }> = {
   completed: { label: '已完成', color: 'blue' },
   cancelled: { label: '已取消', color: 'default' },
   no_show: { label: '爽约', color: 'red' },
+}
+
+// Tabler「map-share」图标（内联 SVG，避免引入额外图标包）
+function MapShareIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="23"
+      height="23"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M13 19l-4-2l-6 3v-13l6-3l6 3l6-3v9" />
+      <path d="M9 4v13" />
+      <path d="M15 7v6.5" />
+      <path d="M16 22l5-5" />
+      <path d="M21 21.5v-4.5h-4.5" />
+    </svg>
+  )
+}
+
+// 调起系统分享面板（微信、相册等）。仅 https 安全上下文与支持 Web Share 的浏览器可用。
+async function shareLetterImage(
+  dataUrl: string,
+  fileName: string,
+): Promise<'ok' | 'cancelled' | 'unsupported'> {
+  const nav = navigator as Navigator & {
+    canShare?: (data?: { files?: File[] }) => boolean
+    share?: (data?: { files?: File[]; title?: string; text?: string }) => Promise<void>
+  }
+  if (typeof nav.share !== 'function') return 'unsupported'
+  try {
+    const blob = await (await fetch(dataUrl)).blob()
+    const file = new File([blob], fileName, { type: 'image/png' })
+    if (nav.canShare && !nav.canShare({ files: [file] })) return 'unsupported'
+    await nav.share({ files: [file], title: '预订确认书' })
+    return 'ok'
+  } catch (error) {
+    // 用户在系统分享面板点了取消：不当作失败
+    if (error instanceof Error && error.name === 'AbortError') return 'cancelled'
+    return 'unsupported'
+  }
 }
 
 // 紧凑表格：缩小单元格内边距（手机端保证表头不换行）
@@ -82,13 +129,10 @@ export default function OrderDetail({
 
   const [order, setOrder] = useState<Order | null>(null)
   const [payment, setPayment] = useState<PaymentView | null>(null)
-  const [adjustOpen, setAdjustOpen] = useState(false)
-  const [adjustForm] = Form.useForm()
-  const [adjustQty, setAdjustQty] = useState(1)
-  const [adjustTab, setAdjustTab] = useState<'charge' | 'refund'>('charge')
-  const [adjustSubmitting, setAdjustSubmitting] = useState(false)
-  // 提交锁：防止快速连点或「成功后 load() 失败误导读用户重试」产生重复调整项
-  const adjustSubmittingRef = useRef(false)
+  // 订单项目「详情」弹窗：查看所有调整项
+  const [adjustDetailOpen, setAdjustDetailOpen] = useState(false)
+  // 付款勾选（仅前端展示状态）：按订单项目 id 记录
+  const [paidItems, setPaidItems] = useState<Record<string, boolean>>({})
   // 完成订单时仍有船只未返还：弹窗确认并一并返还
   const [completeOpen, setCompleteOpen] = useState(false)
   const [completeSubmitting, setCompleteSubmitting] = useState(false)
@@ -96,6 +140,27 @@ export default function OrderDetail({
   const [noteOpen, setNoteOpen] = useState(false)
   const [noteDraft, setNoteDraft] = useState('')
   const [noteSaving, setNoteSaving] = useState(false)
+  // 预订确认书图片（手机长按保存到相册）
+  const [letterOpen, setLetterOpen] = useState(false)
+  const [letterLoading, setLetterLoading] = useState(false)
+  const [letterUrl, setLetterUrl] = useState<string | null>(null)
+  // 按订单项目调整（调整价格 / 退款）
+  const [itemAdjustItem, setItemAdjustItem] = useState<OrderItem | null>(null)
+  // 该行是拆分后的行时，指向拆分记录 id
+  const [itemAdjustSplitId, setItemAdjustSplitId] = useState<string | null>(null)
+  const [itemAdjustMode, setItemAdjustMode] = useState<'price' | 'refund'>('refund')
+  const [itemAdjustMax, setItemAdjustMax] = useState(0) // 该行当前净额（分）
+  const [itemAdjustAmount, setItemAdjustAmount] = useState<number | null>(null)
+  const [itemAdjustNote, setItemAdjustNote] = useState('')
+  const [itemAdjustSaving, setItemAdjustSaving] = useState(false)
+  // 拆分弹窗：均分 / 自定义
+  const [splitOpen, setSplitOpen] = useState(false)
+  const [splitItemId, setSplitItemId] = useState<string | null>(null)
+  const [splitTotalFen, setSplitTotalFen] = useState(0)
+  const [splitMode, setSplitMode] = useState<'equal' | 'custom'>('equal')
+  const [splitCount, setSplitCount] = useState<number>(2)
+  const [splitAmounts, setSplitAmounts] = useState<(number | null)[]>([null, null])
+  const [splitSaving, setSplitSaving] = useState(false)
   // 已出发但还未返还的船只明细
   const outstandingBoats = (order?.boat_usage ?? []).filter(
     (u) => u.departed_at && !u.returned_at,
@@ -182,6 +247,11 @@ export default function OrderDetail({
       .catch((error) => message.error(error.message))
   }, [load, message])
 
+  // 切换订单时清空付款勾选
+  useEffect(() => {
+    setPaidItems({})
+  }, [id])
+
   const doCheckIn = async () => {
     try {
       const updated = await api.post<Order>(`/api/orders/${id}/check-in`)
@@ -247,53 +317,6 @@ export default function OrderDetail({
       setCompleteSubmitting(false)
     }
   }
-
-  const submitAdjustment = async () => {
-    // 提交锁：请求进行中忽略后续点击，避免重复创建调整项
-    if (adjustSubmittingRef.current) return
-    adjustSubmittingRef.current = true
-    setAdjustSubmitting(true)
-    try {
-      const values = await adjustForm.validateFields()
-      const amountFen = yuanToFenSafe(values.amount)
-      if (amountFen <= 0) {
-        message.warning('金额必须大于 0（最小 0.01 元）')
-        return
-      }
-      if (adjustQty === 0) {
-        message.warning('数量不能为 0')
-        return
-      }
-      await api.post(`/api/orders/${id}/payment/adjustments`, {
-        quantity: adjustTab === 'refund' ? -adjustQty : adjustQty,
-        unit_amount: amountFen,
-        note: values.note,
-      })
-      // POST 成功即代表调整项已落库：立即关闭弹窗并重置表单，
-      // 避免后续 load() 失败时弹窗仍开着、用户误以为没保存而重试。
-      message.success('调整已添加')
-      setAdjustOpen(false)
-      adjustForm.resetFields()
-      setAdjustQty(1)
-      setAdjustTab('charge')
-      // load() 仅用于刷新展示；失败不应让用户以为调整没加上，
-      // 所以单独 catch，只给温和提示，不抛出。
-      await load().catch(() => {
-        message.warning('调整已保存，但页面刷新失败，请手动下拉刷新')
-      })
-      onChanged?.()
-    } catch (error) {
-      // 仅 POST 本身失败才走到这里（后端校验未通过等），提示真实错误
-      message.error(error instanceof Error ? error.message : '添加失败')
-    } finally {
-      adjustSubmittingRef.current = false
-      setAdjustSubmitting(false)
-    }
-  }
-
-  // Quantity stepper: always positive (min 1)
-  const decQty = () => setAdjustQty((q) => Math.max(1, q - 1))
-  const incQty = () => setAdjustQty((q) => q + 1)
 
   // superuser 永久删除订单（含订单项目与支付记录）
   const [deleting, setDeleting] = useState(false)
@@ -370,6 +393,321 @@ export default function OrderDetail({
       ? settings.payment_methods.find((m) => m.code === order.payment_method_code)?.name ?? ''
       : ''
 
+  // 按订单项目汇总退款（金额为负数），用于小计与行下备注展示
+  const itemRefunds = new Map<string, PaymentAdjustment[]>()
+  // 拆分行的调整合计（退款/调价）
+  const splitAdjusted = new Map<string, number>()
+  for (const adj of payment?.adjustments ?? []) {
+    if (adj.order_item_split_id) {
+      splitAdjusted.set(
+        adj.order_item_split_id,
+        (splitAdjusted.get(adj.order_item_split_id) ?? 0) + adj.amount,
+      )
+    }
+    if (!adj.order_item_id) continue
+    const list = itemRefunds.get(adj.order_item_id) ?? []
+    list.push(adj)
+    itemRefunds.set(adj.order_item_id, list)
+  }
+  const refundedOf = (itemId: string) =>
+    (itemRefunds.get(itemId) ?? []).reduce((sum, a) => sum + a.amount, 0)
+
+  // 表格行：未拆分的项目一行；已拆分的项目按拆分记录展开为多行。
+  // 拆分金额能被单价整除时按金额换算数量（如 180 拆 2 份 → 休闲*1），
+  // 否则沿用原项目数量写法，仅金额不同。
+  interface ItemDisplayRow {
+    key: string
+    item: OrderItem
+    splitId: string | null
+    name: string
+    quantity: number
+    amountFen: number
+  }
+  // 拆分记录由支付视图返回（订单详情本身不含），按订单项目 id 归并
+  const splitsByItemId = new Map<string, { id: string; amount_fen: number }[]>()
+  for (const paymentItem of payment?.order_items ?? []) {
+    if (paymentItem.splits?.length) splitsByItemId.set(paymentItem.id, paymentItem.splits)
+  }
+  const itemRows: ItemDisplayRow[] = []
+  for (const item of order.items) {
+    const name = item.equipment_spec_name ?? item.sale_item_name ?? '—'
+    const splits = splitsByItemId.get(item.id) ?? item.splits ?? []
+    if (splits.length === 0) {
+      itemRows.push({
+        key: item.id,
+        item,
+        splitId: null,
+        name,
+        quantity: item.quantity,
+        amountFen: item.line_amount + refundedOf(item.id),
+      })
+      continue
+    }
+    for (const split of splits) {
+      const amount = split.amount_fen + (splitAdjusted.get(split.id) ?? 0)
+      const unit = item.unit_price
+      const consistent =
+        unit > 0 && split.amount_fen % unit === 0 && split.amount_fen / unit >= 1
+      itemRows.push({
+        key: `s-${split.id}`,
+        item,
+        splitId: split.id,
+        name,
+        quantity: consistent ? split.amount_fen / unit : item.quantity,
+        amountFen: amount,
+      })
+    }
+  }
+  const itemsOriginalTotal = order.items.reduce((sum, item) => sum + item.line_amount, 0)
+  const adjustedTotal = order.items.reduce((sum, item) => sum + refundedOf(item.id), 0)
+
+  // 金额渲染：整数部分右对齐（个位数对齐），小数部分左对齐；
+  // 小数全为 0 时不显示小数点与小数位
+  const moneyParts = (fen: number) => {
+    const fixed = Math.abs(fen / 100).toFixed(2)
+    const [intPart, frac] = fixed.split('.')
+    return { intStr: `${fen < 0 ? '-' : ''}${intPart}`, frac }
+  }
+  const allAmountFen = [...itemRows.map((row) => row.amountFen), itemsOriginalTotal + adjustedTotal]
+  const maxIntLen = Math.max(1, ...allAmountFen.map((fen) => moneyParts(fen).intStr.length))
+  const renderMoney = (fen: number, color?: string) => {
+    const { intStr, frac } = moneyParts(fen)
+    return (
+      <span
+        style={{
+          color,
+          display: 'inline-flex',
+          alignItems: 'baseline',
+          fontVariantNumeric: 'tabular-nums',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        <span>¥</span>
+        <span style={{ display: 'inline-block', width: `${maxIntLen}ch`, textAlign: 'right' }}>
+          {intStr}
+        </span>
+        {frac !== '00' ? (
+          <span style={{ display: 'inline-block', width: '3ch', textAlign: 'left' }}>.{frac}</span>
+        ) : null}
+      </span>
+    )
+  }
+
+  // 付款按钮：未付款黑色文字+灰框，已付款绿色；按钮文字为该行应付金额
+  const allPaid = itemRows.length > 0 && itemRows.every((row) => paidItems[row.key])
+  const moneyText = (fen: number) => {
+    const s = (Math.abs(fen) / 100).toFixed(2)
+    return `${fen < 0 ? '-' : ''}${s.endsWith('.00') ? s.slice(0, -3) : s}`
+  }
+  const payButton = (paid: boolean, onClick: () => void, text: string) => (
+    <Button
+      size="small"
+      onClick={onClick}
+      style={
+        paid
+          ? { background: '#52c41a', borderColor: '#52c41a', color: '#fff' }
+          : { color: '#000', borderColor: '#bfbfbf' }
+      }
+    >
+      {text}
+    </Button>
+  )
+
+  // 生成预订确认书图片
+  const openBookingLetter = async () => {
+    setLetterLoading(true)
+    try {
+      const start = dayjs(order.start_at)
+      const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+      // 器材若有「营业名称」，确认书里优先展示营业名称
+      const catalog = await api.get<Catalog>('/api/catalog').catch(() => null)
+      const businessNameBySpecId = new Map<string, string>()
+      for (const spec of catalog?.equipment ?? []) {
+        if (spec.business_name) businessNameBySpecId.set(spec.id, spec.business_name)
+      }
+
+      // 同一项目可能被创建为多行（或拆分后多行）：确认书中按项目合并数量与金额
+      const letterItems: {
+        name: string
+        quantity: number
+        color: string | null | undefined
+        amountFen: number
+      }[] = []
+      const mergedIndex = new Map<string, number>()
+      for (const row of itemRows) {
+        const name =
+          (row.item.equipment_spec_id
+            ? businessNameBySpecId.get(row.item.equipment_spec_id)
+            : undefined) ?? row.name
+        const key = row.item.equipment_spec_id ?? row.item.sale_item_id ?? name
+        const index = mergedIndex.get(key)
+        if (index === undefined) {
+          mergedIndex.set(key, letterItems.length)
+          letterItems.push({
+            name,
+            quantity: row.quantity,
+            color: row.item.equipment_type_color,
+            amountFen: row.amountFen,
+          })
+        } else {
+          letterItems[index].quantity += row.quantity
+          letterItems[index].amountFen += row.amountFen
+        }
+      }
+
+      const url = await renderBookingLetter({
+        shopName: settings.shop_name,
+        shopPhone: settings.shop_phone,
+        shopAddress: settings.shop_address,
+        wechat: order.customer_wechat_nickname ?? '—',
+        adultCount: order.adult_count,
+        childCount: order.child_count,
+        dateText: `${start.format('YYYY年M月D日')} ${weekdays[start.day()]}`,
+        timeText: start.format('HH:mm'),
+        items: letterItems,
+      })
+      setLetterUrl(url)
+      // 手机端优先调起系统分享面板（可直接选择微信等应用）；
+      // 不支持时退回图片预览弹窗（长按保存 / 下载）
+      if (isMobile) {
+        const result = await shareLetterImage(
+          url,
+          `预订确认书-${order.order_number}.png`,
+        )
+        if (result !== 'unsupported') return
+      }
+      setLetterOpen(true)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '生成确认书失败')
+    } finally {
+      setLetterLoading(false)
+    }
+  }
+
+  // 打开某行调整弹窗：退款上限为该行当前净额；调价预填当前净额
+  const openItemAdjust = (row: ItemDisplayRow, mode: 'price' | 'refund') => {
+    if (mode === 'refund' && row.amountFen <= 0) return
+    setItemAdjustItem(row.item)
+    setItemAdjustSplitId(row.splitId)
+    setItemAdjustMode(mode)
+    setItemAdjustMax(row.amountFen)
+    setItemAdjustAmount(mode === 'price' ? row.amountFen / 100 : null)
+    setItemAdjustNote('')
+  }
+
+  // 打开拆分弹窗：均分默认份数 = 项目数量（数量为 1 时用成人数）
+  const openSplit = (row: ItemDisplayRow) => {
+    setSplitItemId(row.item.id)
+    setSplitTotalFen(row.amountFen)
+    setSplitMode('equal')
+    setSplitCount(row.item.quantity > 1 ? row.item.quantity : Math.max(2, order.adult_count))
+    setSplitAmounts([null, null])
+    setSplitOpen(true)
+  }
+
+  // 提交拆分：均分自动计算，自定义要求合计等于该行当前金额
+  const submitSplit = async () => {
+    if (!splitItemId) return
+    let amounts: number[]
+    if (splitMode === 'equal') {
+      const count = Math.round(splitCount || 0)
+      if (count < 2) {
+        message.warning('拆分份数至少为 2')
+        return
+      }
+      const base = Math.floor(splitTotalFen / count)
+      if (base < 1) {
+        message.warning('拆分份数过多，每份金额不足 0.01 元')
+        return
+      }
+      const remainder = splitTotalFen - base * count
+      amounts = Array.from({ length: count }, (_, i) => base + (i < remainder ? 1 : 0))
+    } else {
+      amounts = splitAmounts.map((value) => yuanToFenSafe(value ?? 0))
+      if (amounts.length < 2) {
+        message.warning('拆分至少需要 2 行')
+        return
+      }
+      if (amounts.some((a) => a <= 0)) {
+        message.warning('每行拆分金额必须大于 0')
+        return
+      }
+      if (amounts.reduce((sum, a) => sum + a, 0) !== splitTotalFen) {
+        message.warning('拆分金额合计必须等于该行当前金额')
+        return
+      }
+    }
+    setSplitSaving(true)
+    try {
+      await api.post(`/api/orders/${id}/payment/item-splits`, {
+        order_item_id: splitItemId,
+        amounts_fen: amounts,
+      })
+      message.success('已拆分')
+      setSplitOpen(false)
+      await load()
+      onChanged?.()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '拆分失败')
+    } finally {
+      setSplitSaving(false)
+    }
+  }
+
+  // 提交按行调整（调整价格 / 退款）
+  const submitItemAdjust = async () => {
+    if (!itemAdjustItem) return
+    const amountFen = yuanToFenSafe(itemAdjustAmount ?? 0)
+    if (amountFen < 0) {
+      message.warning('金额不能为负数')
+      return
+    }
+    if (itemAdjustMode === 'refund') {
+      if (amountFen <= 0) {
+        message.warning('请输入退款金额')
+        return
+      }
+      if (amountFen > itemAdjustMax) {
+        message.warning('退款金额不能超过该行剩余可退金额')
+        return
+      }
+    } else if (amountFen === itemAdjustMax) {
+      message.warning('调整后金额与当前金额相同')
+      return
+    }
+    if (!itemAdjustNote.trim()) {
+      message.warning(itemAdjustMode === 'refund' ? '请填写退款备注' : '请填写调价备注')
+      return
+    }
+    setItemAdjustSaving(true)
+    try {
+      if (itemAdjustMode === 'refund') {
+        await api.post(`/api/orders/${id}/payment/item-refunds`, {
+          order_item_id: itemAdjustItem.id,
+          order_item_split_id: itemAdjustSplitId,
+          amount_fen: amountFen,
+          note: itemAdjustNote.trim(),
+        })
+      } else {
+        await api.post(`/api/orders/${id}/payment/item-price-adjustments`, {
+          order_item_id: itemAdjustItem.id,
+          order_item_split_id: itemAdjustSplitId,
+          new_amount_fen: amountFen,
+          note: itemAdjustNote.trim(),
+        })
+      }
+      message.success(itemAdjustMode === 'refund' ? '退款已记录' : '价格已调整')
+      setItemAdjustItem(null)
+      setItemAdjustSplitId(null)
+      await load()
+      onChanged?.()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '操作失败')
+    } finally {
+      setItemAdjustSaving(false)
+    }
+  }
+
   return (
     <>
     {/* 浮动返回按钮：回到进入本页之前的页面（与浏览器后退等价，配合列表快照恢复） */}
@@ -383,8 +721,20 @@ export default function OrderDetail({
           </Space>
         }
         extra={
-          // 气泡内嵌时显示「关闭」，普通页面统一用左上角浮动返回按钮
-          embedded ? <Button onClick={onClose}>关闭</Button> : undefined
+          // 右上角「转发」生成预订确认书图片；气泡内嵌时另显示「关闭」
+          <Space>
+            <Tooltip title="转发预订确认书">
+              <Button
+                type="text"
+                aria-label="转发预订确认书"
+                loading={letterLoading}
+                icon={<MapShareIcon />}
+                onClick={openBookingLetter}
+                style={{ width: 42, height: 42 }}
+              />
+            </Tooltip>
+            {embedded ? <Button onClick={onClose}>关闭</Button> : null}
+          </Space>
         }
       >
         {warnings.length > 0 && (
@@ -512,60 +862,134 @@ export default function OrderDetail({
             </span>
           </Descriptions.Item>
         </Descriptions>
+      </Card>
 
-        <Divider orientation="center">订单项目</Divider>
+      <Card
+        title="订单项目"
+        extra={
+          <Button size="small" onClick={() => setAdjustDetailOpen(true)}>
+            详情
+          </Button>
+        }
+      >
         <Table
-          rowKey="id"
+          rowKey="key"
           size="small"
           pagination={false}
           tableLayout="fixed"
-          dataSource={order.items}
+          dataSource={itemRows}
+          summary={() => (
+            <Table.Summary.Row>
+              <Table.Summary.Cell index={0} align="center">
+                合计
+              </Table.Summary.Cell>
+              <Table.Summary.Cell index={1} align="center">
+                <span style={{ fontWeight: 600 }}>
+                  {renderMoney(
+                    itemsOriginalTotal + adjustedTotal,
+                    adjustedTotal !== 0 ? '#cf1322' : undefined,
+                  )}
+                </span>
+              </Table.Summary.Cell>
+              <Table.Summary.Cell index={2} align="center" />
+              <Table.Summary.Cell index={3} align="center">
+                {payButton(
+                  allPaid,
+                  () =>
+                    setPaidItems(
+                      allPaid
+                        ? {}
+                        : Object.fromEntries(itemRows.map((row) => [row.key, true])),
+                    ),
+                  moneyText(itemsOriginalTotal + adjustedTotal),
+                )}
+              </Table.Summary.Cell>
+            </Table.Summary.Row>
+          )}
           columns={[
             {
               title: '项目',
               align: 'center',
               onHeaderCell: centerHeader,
               onCell: centeredCell,
-              render: (_, item) => {
-                const name = item.equipment_spec_name ?? item.sale_item_name ?? '—'
-                return (
+              render: (_, row) => (
+                <>
                   <span
                     style={{
-                      color: typeColorHex(item.equipment_type_color),
-                      fontWeight: item.equipment_type_color ? 600 : undefined,
+                      color: typeColorHex(row.item.equipment_type_color),
+                      fontWeight: row.item.equipment_type_color ? 600 : undefined,
                     }}
                   >
-                    {name}
+                    {row.name}
                   </span>
+                  <span style={{ color: '#000' }}>*{row.quantity}</span>
+                </>
+              ),
+            },
+            {
+              title: '小计',
+              width: 92,
+              align: 'center',
+              onHeaderCell: centerHeader,
+              onCell: nowrapCell,
+              render: (_, row) => {
+                const adjusted = row.splitId
+                  ? (splitAdjusted.get(row.splitId) ?? 0)
+                  : refundedOf(row.item.id)
+                return renderMoney(row.amountFen, adjusted !== 0 ? '#cf1322' : undefined)
+              },
+            },
+            {
+              title: '调整',
+              width: 72,
+              align: 'center',
+              onHeaderCell: centerHeader,
+              onCell: centeredCell,
+              render: (_, row) => {
+                if (!canEditOrder) return null
+                const menuItems = [
+                  { key: 'price', label: '调整价格' },
+                  { key: 'refund', label: '退款' },
+                  // 已拆分的行不再提供再次拆分
+                  ...(row.splitId ? [] : [{ key: 'split', label: '拆分' }]),
+                ]
+                return (
+                  <Dropdown
+                    trigger={['click']}
+                    menu={{
+                      items: menuItems,
+                      onClick: ({ key }) => {
+                        if (key === 'split') {
+                          openSplit(row)
+                        } else {
+                          openItemAdjust(row, key as 'price' | 'refund')
+                        }
+                      },
+                    }}
+                  >
+                    <Button size="small">调整</Button>
+                  </Dropdown>
                 )
               },
             },
             {
-              title: '数量',
-              dataIndex: 'quantity',
-              width: 56,
+              title: '付款',
+              width: 76,
               align: 'center',
               onHeaderCell: centerHeader,
-              onCell: nowrapCell,
-            },
-            {
-              title: '单价',
-              align: 'center',
-              onHeaderCell: centerHeader,
-              onCell: nowrapCell,
-              render: (_, item) => `¥${fenToYuan(item.unit_price)}`,
-            },
-            {
-              title: '小计',
-              align: 'center',
-              onHeaderCell: centerHeader,
-              onCell: nowrapCell,
-              render: (_, item) => `¥${fenToYuan(item.line_amount)}`,
+              onCell: centeredCell,
+              render: (_, row) =>
+                payButton(
+                  Boolean(paidItems[row.key]),
+                  () => setPaidItems((prev) => ({ ...prev, [row.key]: !prev[row.key] })),
+                  moneyText(row.amountFen),
+                ),
             },
           ]}
         />
+      </Card>
 
-        <Divider orientation="center">船只调配</Divider>
+      <Card title="船只调配">
         <Table
           rowKey="key"
           size="small"
@@ -644,186 +1068,119 @@ export default function OrderDetail({
         />
       )}
 
-      <Card title="支付面板">
+      <Modal
+        open={adjustDetailOpen}
+        title="调整详情"
+        footer={null}
+        onCancel={() => setAdjustDetailOpen(false)}
+        width={560}
+      >
         {payment ? (
-          <>
-            <Descriptions
-              column={1}
-              size="small"
-              style={{ maxWidth: 360 }}
-              // 固定标签列宽度，保证三行金额左边界对齐
-              labelStyle={{ width: 104, textAlign: 'left' }}
-              contentStyle={{ textAlign: 'left' }}
-            >
-              <Descriptions.Item label="订单项目金额">¥{fenToYuan(payment.items_total_fen)}</Descriptions.Item>
-              <Descriptions.Item label="调整项合计">
-                {payment.adjustments_total_fen === 0 ? (
-                  '¥0.00'
-                ) : (
-                  <span style={{ color: payment.adjustments_total_fen > 0 ? '#cf1322' : '#3f8600' }}>
-                    {payment.adjustments_total_fen > 0 ? '+' : ''}
-                    ¥{fenToYuan(payment.adjustments_total_fen)}
-                  </span>
-                )}
-              </Descriptions.Item>
-              <Descriptions.Item label="应收总额">
-                <strong>¥{fenToYuan(payment.amount_fen)}</strong>
-              </Descriptions.Item>
-            </Descriptions>
-
-            {/* "调整项"标题行 + 右侧加号按钮（与编辑订单页"添加项目"同款图标） */}
-            <div style={{ display: 'flex', alignItems: 'center', margin: '8px 0' }}>
-              <div style={{ flex: 1, height: 1, background: '#f0f0f0' }} />
-              <span style={{ padding: '0 12px', fontWeight: 500 }}>调整项</span>
-              {canEditOrder && (
-                <Button
-                  type="dashed"
-                  size="small"
-                  icon={<PlusOutlined />}
-                  title="添加调整项"
-                  style={{ width: 28, height: 24, padding: 0 }}
-                  onClick={() => {
-                    adjustForm.resetFields()
-                    setAdjustQty(1)
-                    setAdjustTab('charge')
-                    setAdjustOpen(true)
-                  }}
-                />
-              )}
-              <div style={{ flex: 1, height: 1, background: '#f0f0f0' }} />
-            </div>
-            <Table
-              rowKey="id"
-              size="small"
-              pagination={false}
-              dataSource={payment.adjustments}
-              columns={[
-                {
-                  title: '说明',
-                  dataIndex: 'note',
-                  align: 'center',
-                  onHeaderCell: centerHeader,
-                  onCell: centeredCell,
-                },
-                {
-                  title: '金额',
-                  width: 96,
-                  align: 'center',
-                  onHeaderCell: centerHeader,
-                  onCell: centeredNowrapCell,
-                  render: (_, item) => (
-                    <span style={{ color: item.amount > 0 ? '#cf1322' : '#3f8600' }}>
+          payment.adjustments.length === 0 ? (
+            <span style={{ color: '#999' }}>暂无调整</span>
+          ) : (
+            <div style={{ maxHeight: '60vh', overflowY: 'auto' }}>
+              {[...payment.adjustments]
+                // 按时间顺序编号：调整1、调整2……
+                .sort((a, b) => dayjs(a.created_at).valueOf() - dayjs(b.created_at).valueOf())
+                .map((item, index) => {
+                  const by = item.created_by_user_code ?? item.created_by_user_name
+                  const amount = (
+                    <span style={{ color: item.amount > 0 ? '#cf1322' : '#3f8600', fontWeight: 600 }}>
                       {item.amount > 0 ? '+' : ''}¥{fenToYuan(item.amount)}
                     </span>
-                  ),
-                },
-                {
-                  title: '时间',
-                  width: 162,
-                  align: 'center',
-                  onHeaderCell: centerHeader,
-                  onCell: centeredCell,
-                  render: (_, item) => {
-                    const d = dayjs(item.created_at)
-                    const main = `${d.format('YYYY-MM-DD')} ${d.format('HH:mm')}`
-                    const by = (item.created_by_user_code ?? item.created_by_user_name)?.trim()
-                    return (
-                      <div style={{ fontSize: 12, lineHeight: 1.5 }}>
-                        {by && by.length >= 3 ? (
-                          <>
-                            <div style={{ whiteSpace: 'nowrap' }}>{main}</div>
-                            <div style={{ whiteSpace: 'nowrap' }}>（{by}）</div>
-                          </>
-                        ) : (
-                          <div style={{ whiteSpace: 'nowrap' }}>
-                            {main}
-                            {by ? `（${by}）` : ''}
-                          </div>
-                        )}
+                  )
+                  const time = `${dayjs(item.created_at).format('YYYY-MM-DD HH:mm')}${
+                    by ? `（${by}）` : ''
+                  }`
+                  return isDesktop ? (
+                    <div
+                      key={item.id}
+                      style={{ display: 'flex', gap: 12, alignItems: 'baseline', padding: '6px 0' }}
+                    >
+                      <span style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>
+                        调整{index + 1}
+                      </span>
+                      <span style={{ whiteSpace: 'nowrap' }}>{amount}</span>
+                      <span style={{ whiteSpace: 'nowrap', color: '#666', fontSize: 12 }}>{time}</span>
+                      <span style={{ flex: 1, wordBreak: 'break-word' }}>{item.note}</span>
+                    </div>
+                  ) : (
+                    <div key={item.id} style={{ padding: '6px 0' }}>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 13 }}>
+                        <span style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>
+                          调整{index + 1}
+                        </span>
+                        <span style={{ whiteSpace: 'nowrap' }}>{amount}</span>
+                        <span style={{ color: '#666', fontSize: 12, whiteSpace: 'nowrap' }}>
+                          {time}
+                        </span>
                       </div>
-                    )
-                  },
-                },
-              ]}
-            />
-          </>
+                      <div style={{ marginTop: 2, wordBreak: 'break-word', color: '#333' }}>
+                        {item.note}
+                      </div>
+                    </div>
+                  )
+                })}
+            </div>
+          )
         ) : (
           <span style={{ color: '#999' }}>支付记录加载失败</span>
         )}
-      </Card>
+      </Modal>
 
+      {/* 预订确认书：图片预览，手机端长按保存到相册 */}
       <Modal
-        title="添加调整项"
-        open={adjustOpen}
-        onCancel={() => setAdjustOpen(false)}
-        onOk={submitAdjustment}
-        confirmLoading={adjustSubmitting}
-        destroyOnClose
+        open={letterOpen}
+        title="预订确认书"
+        footer={null}
+        onCancel={() => setLetterOpen(false)}
+        width={420}
+        centered
       >
-        <Tabs
-          activeKey={adjustTab}
-          onChange={(key) => setAdjustTab(key as 'charge' | 'refund')}
-          items={[
-            { key: 'charge', label: '收费' },
-            { key: 'refund', label: '退款' },
-          ]}
-        />
-        <Form form={adjustForm} layout="vertical">
-          <Form.Item
-            label="金额（元，最小 0.01）"
-            name="amount"
-            rules={[
-              { required: true, message: '请输入金额（大于 0，最小 0.01 元）' },
-              {
-                validator: (_, value) =>
-                  typeof value === 'number' && value >= 0.01
-                    ? Promise.resolve()
-                    : Promise.reject(new Error('金额必须大于 0（最小 0.01 元）')),
-              },
-            ]}
-          >
-            <InputNumber
-              style={{ width: '100%' }}
-              min={0.01}
-              step={0.01}
-              precision={2}
-              inputMode="tel"
-              parser={(value) => (value || '').replace(/[^\d.]/g, '') as unknown as number}
+        {letterUrl && (
+          <>
+            <img
+              src={letterUrl}
+              alt="预订确认书"
+              style={{
+                width: '100%',
+                maxHeight: '62vh',
+                objectFit: 'contain',
+                borderRadius: 8,
+                display: 'block',
+                background: '#f5f7fa',
+              }}
             />
-          </Form.Item>
-          <Form.Item label="数量" required>
-            <Space.Compact style={{ width: '100%' }}>
-              <Button style={{ width: 44 }} onClick={decQty} disabled={adjustQty <= 1}>
-                −
-              </Button>
-              <div
-                style={{
-                  flex: 1,
-                  textAlign: 'center',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  border: '1px solid #d9d9d9',
-                  borderLeft: 'none',
-                  borderRight: 'none',
-                  fontWeight: 600,
-                }}
-              >
-                {adjustQty}
-              </div>
-              <Button style={{ width: 44 }} onClick={incQty}>
-                +
-              </Button>
-            </Space.Compact>
-          </Form.Item>
-          <Form.Item
-            label="说明"
-            name="note"
-            rules={[{ required: true, message: '请填写调整说明' }]}
-          >
-            <Input placeholder={adjustTab === 'refund' ? '如：会员折扣 / 退款' : '如：超时费 / 押金'} />
-          </Form.Item>
-        </Form>
+            <div style={{ textAlign: 'center', color: '#8c8c8c', fontSize: 12, marginTop: 8 }}>
+              手机端长按图片可保存到相册；也可点「转发」发送到微信等应用
+            </div>
+            <div style={{ textAlign: 'center', marginTop: 12 }}>
+              <Space>
+                {isMobile && (
+                  <Button
+                    type="primary"
+                    onClick={async () => {
+                      if (!letterUrl) return
+                      const result = await shareLetterImage(
+                        letterUrl,
+                        `预订确认书-${order.order_number}.png`,
+                      )
+                      if (result === 'unsupported') {
+                        message.info('当前浏览器不支持直接转发，请长按图片保存后发送')
+                      }
+                    }}
+                  >
+                    转发
+                  </Button>
+                )}
+                <Button href={letterUrl} download={`预订确认书-${order.order_number}.png`}>
+                  下载图片
+                </Button>
+              </Space>
+            </div>
+          </>
+        )}
       </Modal>
 
       {/* 备注编辑：任何状态下均可修改 */}
@@ -848,6 +1205,172 @@ export default function OrderDetail({
           maxLength={1000}
           showCount
         />
+      </Modal>
+
+      {/* 按订单项目调整：调整价格 / 退款，备注必填 */}
+      <Modal
+        open={Boolean(itemAdjustItem)}
+        title={itemAdjustMode === 'refund' ? '退款' : '调整价格'}
+        okText="保存"
+        cancelText="取消"
+        confirmLoading={itemAdjustSaving}
+        onOk={submitItemAdjust}
+        onCancel={() => {
+          if (!itemAdjustSaving) setItemAdjustItem(null)
+        }}
+        width={380}
+        maskClosable={!itemAdjustSaving}
+      >
+        {itemAdjustItem && (
+          <Form layout="vertical">
+            <Form.Item label="调整项目">
+              <span>
+                {itemAdjustItem.equipment_spec_name ?? itemAdjustItem.sale_item_name ?? '—'}*
+                {itemAdjustItem.quantity}
+              </span>
+            </Form.Item>
+            <Form.Item label="当前金额">
+              <span>¥{fenToYuan(itemAdjustMax)}</span>
+            </Form.Item>
+            <Form.Item
+              label={
+                itemAdjustMode === 'refund'
+                  ? `退款金额（最多 ¥${fenToYuan(itemAdjustMax)}）`
+                  : '调整后金额'
+              }
+              required
+            >
+              <InputNumber
+                value={itemAdjustAmount}
+                onChange={(value) => setItemAdjustAmount(typeof value === 'number' ? value : null)}
+                min={itemAdjustMode === 'refund' ? 0.01 : 0}
+                max={itemAdjustMode === 'refund' ? itemAdjustMax / 100 : undefined}
+                precision={2}
+                addonBefore="¥"
+                style={{ width: '100%' }}
+                placeholder={itemAdjustMode === 'refund' ? '请输入退款金额' : '请输入调整后金额'}
+              />
+            </Form.Item>
+            <Form.Item label="备注" required>
+              <Input.TextArea
+                value={itemAdjustNote}
+                onChange={(e) => setItemAdjustNote(e.target.value)}
+                autoSize={{ minRows: 2, maxRows: 5 }}
+                placeholder={itemAdjustMode === 'refund' ? '请填写退款原因' : '请填写调价原因'}
+                maxLength={200}
+                showCount
+              />
+            </Form.Item>
+          </Form>
+        )}
+      </Modal>
+
+      {/* 拆分：把一行拆成多行展示，金额合计须等于该行当前金额 */}
+      <Modal
+        open={splitOpen}
+        title="拆分"
+        okText="确认拆分"
+        cancelText="取消"
+        confirmLoading={splitSaving}
+        onOk={submitSplit}
+        onCancel={() => {
+          if (!splitSaving) setSplitOpen(false)
+        }}
+        width={420}
+        maskClosable={!splitSaving}
+      >
+        <div style={{ marginBottom: 12 }}>
+          当前行金额：<span style={{ fontWeight: 600 }}>¥{fenToYuan(splitTotalFen)}</span>
+        </div>
+        <Radio.Group
+          value={splitMode}
+          onChange={(e) => setSplitMode(e.target.value)}
+          style={{ marginBottom: 12 }}
+        >
+          <Radio.Button value="equal">均分</Radio.Button>
+          <Radio.Button value="custom">自定义</Radio.Button>
+        </Radio.Group>
+        {splitMode === 'equal' ? (
+          <Form layout="vertical">
+            <Form.Item label="拆分份数" required>
+              <InputNumber
+                min={2}
+                precision={0}
+                value={splitCount}
+                onChange={(value) => setSplitCount(typeof value === 'number' ? value : 2)}
+                style={{ width: '100%' }}
+              />
+            </Form.Item>
+            {(() => {
+              const count = Math.round(splitCount || 0)
+              if (count < 2) return null
+              const base = Math.floor(splitTotalFen / count)
+              const remainder = splitTotalFen - base * count
+              return (
+                <div style={{ fontSize: 12, color: '#666' }}>
+                  {remainder === 0 ? (
+                    <>
+                      每份：<span style={{ fontWeight: 600 }}>¥{fenToYuan(base)}</span>
+                    </>
+                  ) : (
+                    <>
+                      每份：<span style={{ fontWeight: 600 }}>¥{fenToYuan(base)}</span>
+                      ，前 {remainder} 份为 ¥{fenToYuan(base + 1)}
+                    </>
+                  )}
+                </div>
+              )
+            })()}
+          </Form>
+        ) : (
+          <div>
+            {splitAmounts.map((amount, index) => (
+              <div key={index} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                <InputNumber
+                  value={amount}
+                  onChange={(value) =>
+                    setSplitAmounts((prev) =>
+                      prev.map((a, i) =>
+                        i === index ? (typeof value === 'number' ? value : null) : a,
+                      ),
+                    )
+                  }
+                  min={0.01}
+                  precision={2}
+                  addonBefore="¥"
+                  style={{ flex: 1 }}
+                  placeholder={`第 ${index + 1} 行金额`}
+                />
+                {splitAmounts.length > 2 && (
+                  <Button
+                    danger
+                    onClick={() => setSplitAmounts((prev) => prev.filter((_, i) => i !== index))}
+                  >
+                    删除
+                  </Button>
+                )}
+              </div>
+            ))}
+            <Button
+              size="small"
+              onClick={() => setSplitAmounts((prev) => [...prev, null])}
+              style={{ marginBottom: 8 }}
+            >
+              添加一行
+            </Button>
+            {(() => {
+              const total = splitAmounts.reduce<number>(
+                (sum, a) => sum + yuanToFenSafe(a ?? 0),
+                0,
+              )
+              return (
+                <div style={{ color: total === splitTotalFen ? '#3f8600' : '#cf1322', fontSize: 12 }}>
+                  已填合计 ¥{fenToYuan(total)}，需等于 ¥{fenToYuan(splitTotalFen)}
+                </div>
+              )
+            })()}
+          </div>
+        )}
       </Modal>
 
       {/* 有船只已出发未返还时，完成订单前明确列出船只并要求确认返还 */}
@@ -939,7 +1462,10 @@ export default function OrderDetail({
         {(order.editable || order.status === 'in_progress') && canEditOrder && (
           <Button onClick={() => navigate(`/orders/${order.id}/edit`)}>编辑</Button>
         )}
-        {canEditOrder && order.status === 'completed' && (
+        {canEditOrder &&
+          (order.status === 'completed' ||
+            order.status === 'cancelled' ||
+            order.status === 'no_show') && (
           <Button
             onClick={() => {
               setNoteDraft(order.note ?? '')

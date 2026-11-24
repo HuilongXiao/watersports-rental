@@ -1168,21 +1168,13 @@ export default function Orders() {
             placement="bottom"
             overlayStyle={{ maxWidth: 'calc(100vw - 16px)' }}
           >
-            <Button icon={<FilterOutlined />}>筛选</Button>
+            <Button type={filtersActive ? 'primary' : 'default'} icon={<FilterOutlined />}>
+              筛选
+            </Button>
           </Popover>
         </Space>
       }
     >
-      {filtersActive && isDesktop && (
-        <Tag
-          color="blue"
-          closable
-          onClose={clearFilter}
-          style={{ cursor: 'pointer', marginBottom: 8 }}
-        >
-          筛选中
-        </Tag>
-      )}
       {isDesktop ? (
         // 电脑网页版：预订 / 进行中左右并排，各占一半宽度，表头处于同一行
         <div style={{ position: 'relative', display: 'flex', alignItems: 'flex-start', gap: 16 }}>
@@ -1304,7 +1296,7 @@ export default function Orders() {
           className="orders-tabs"
           activeKey={status || 'active'}
           onChange={(key) => {
-            // 处于“筛选中”时点击其他 tab：清除筛选，真正切换到该 tab
+            // 筛选状态下点击其他 tab：清除筛选，真正切换到该 tab
             if (filtersActive) {
               setFilter(EMPTY_FILTER)
             }
@@ -1318,16 +1310,6 @@ export default function Orders() {
           ]}
           style={{ marginBottom: 0, flex: 1, minWidth: 0 }}
         />
-        {filtersActive && (
-          <Tag
-            color="blue"
-            closable
-            onClose={clearFilter}
-            style={{ cursor: 'pointer', marginLeft: 8 }}
-          >
-            筛选中
-          </Tag>
-        )}
       </div>
       {/* 无订单时保留表头，表格内用未来一周天气预报代替「暂无数据」 */}
       <Table

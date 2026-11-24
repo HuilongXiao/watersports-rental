@@ -21,6 +21,10 @@ class SettingsInput(BaseModel):
     # 店铺坐标（每个 Group 独立），用于顶部天气信息；未填写为 None
     shop_latitude: float | None = Field(default=None, ge=-90, le=90)
     shop_longitude: float | None = Field(default=None, ge=-180, le=180)
+    # 门店信息（预订确认书等对外展示）
+    shop_name: str | None = None
+    shop_phone: str | None = None
+    shop_address: str | None = None
 
 
 def _resolve_group_id(db: Session, user: User, active_group_id: str | None) -> str:
@@ -55,6 +59,9 @@ def get_settings(
         "boat_numbering_enabled": setting.boat_numbering_enabled,
         "shop_latitude": setting.shop_latitude,
         "shop_longitude": setting.shop_longitude,
+        "shop_name": setting.shop_name,
+        "shop_phone": setting.shop_phone,
+        "shop_address": setting.shop_address,
         "updated_at": to_iso_z(setting.updated_at),
     }
     # 支付方式随设置一起返回（active 列表 + 默认 code），
@@ -94,6 +101,9 @@ def update_settings(
             auto_return_enabled=payload.auto_return_enabled,
             shop_latitude=payload.shop_latitude,
             shop_longitude=payload.shop_longitude,
+            shop_name=payload.shop_name,
+            shop_phone=payload.shop_phone,
+            shop_address=payload.shop_address,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -104,5 +114,8 @@ def update_settings(
         "boat_numbering_enabled": setting.boat_numbering_enabled,
         "shop_latitude": setting.shop_latitude,
         "shop_longitude": setting.shop_longitude,
+        "shop_name": setting.shop_name,
+        "shop_phone": setting.shop_phone,
+        "shop_address": setting.shop_address,
         "updated_at": to_iso_z(setting.updated_at),
     }

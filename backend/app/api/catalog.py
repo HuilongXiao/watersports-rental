@@ -24,6 +24,8 @@ class EquipmentTypeInput(BaseModel):
 class EquipmentSpecInput(BaseModel):
     equipment_type_id: str
     name: str = Field(min_length=1, max_length=128)
+    # 营业名称：对外展示用（预订确认书），留空则使用规格名称
+    business_name: str | None = Field(default=None, max_length=128)
     price: int = Field(ge=0)
     capacity: int | None = Field(default=None, ge=1)
     is_active: bool = True
@@ -38,6 +40,7 @@ class EquipmentSpecInput(BaseModel):
 class EquipmentSpecUpdate(BaseModel):
     equipment_type_id: str | None = None
     name: str | None = Field(default=None, min_length=1, max_length=128)
+    business_name: str | None = Field(default=None, max_length=128)
     price: int | None = Field(default=None, ge=0)
     # Use an explicit sentinel so that PATCH can set capacity to NULL (paddleboard).
     capacity: int | None = Field(default=None, ge=1)
@@ -116,6 +119,7 @@ def create_equipment_spec(
         db, user, payload.equipment_type_id, payload.name, payload.price,
         payload.capacity, payload.is_active, payload.quantity,
         payload.boat_numbering_required, payload.show_in_usage,
+        payload.business_name,
     )
     return catalog_service.list_catalog(db, user, active_group_id)
 
@@ -143,6 +147,10 @@ def update_equipment_spec(
         equipment_type_id=payload.equipment_type_id,
         boat_numbering_required=payload.boat_numbering_required,
         show_in_usage=payload.show_in_usage,
+        # 未传该字段表示不改动；显式传 null/空串表示清空
+        business_name=payload.business_name
+        if "business_name" in payload.model_fields_set
+        else _UNSET,
     )
     return catalog_service.list_catalog(db, user, active_group_id)
 

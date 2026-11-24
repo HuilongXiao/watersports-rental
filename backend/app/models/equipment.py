@@ -51,6 +51,8 @@ class EquipmentSpec(Base):
         String(36), ForeignKey("equipment_types.id"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(128), nullable=False)
+    # 营业名称：对外展示用（如预订确认书），留空时回退到规格名称
+    business_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     price: Mapped[int] = mapped_column(Integer, nullable=False)
     capacity: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # 操作员自定义的展示顺序（创建订单下拉、预测页等均遵照此顺序）

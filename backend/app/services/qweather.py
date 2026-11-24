@@ -92,12 +92,13 @@ async def _get(client: httpx.AsyncClient, path: str) -> dict:
     return payload
 
 
-_cache: dict[tuple[str, str], tuple[float, dict]] = {}
+_cache: dict[tuple[str, str, str], tuple[float, dict]] = {}
 
 
 async def fetch_weather(latitude: float, longitude: float, days: int = 8) -> dict:
     """拉取当前天气、24 小时与逐天预报，返回前端使用的统一结构。"""
-    cache_key = (f"{latitude:.3f}", f"{longitude:.3f}")
+    # 缓存键带上逐天档位：3 天档的缓存不能复用到需要 15 天的请求
+    cache_key = (f"{latitude:.3f}", f"{longitude:.3f}", _daily_path(days))
     cached = _cache.get(cache_key)
     if cached and time.monotonic() - cached[0] < CACHE_TTL_SECONDS:
         return cached[1]
@@ -138,6 +139,9 @@ async def fetch_weather(latitude: float, longitude: float, days: int = 8) -> dic
                 "temp_max": _num(day["tempMax"]),
                 "temp_min": _num(day["tempMin"]),
                 "precip": _num(day["precip"]),
+                # 日出/日落（和风返回 "06:28" / "16:52"），用于预订确认书
+                "sunrise": day.get("sunrise"),
+                "sunset": day.get("sunset"),
             }
             for day in daily.get("daily", [])[:days]
         ],

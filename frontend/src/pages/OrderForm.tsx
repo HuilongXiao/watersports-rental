@@ -1145,7 +1145,6 @@ export default function OrderForm({
                     >
                       <Checkbox
                         checked={walkIn}
-                        disabled={isInProgress}
                         onChange={(e) => setWalkIn(e.target.checked)}
                       >
                         散客
@@ -1219,7 +1218,6 @@ export default function OrderForm({
             <Form.Item label=" " style={{ flex: 'none' }}>
               <Checkbox
                 checked={walkIn}
-                disabled={isInProgress}
                 tabIndex={isEdit ? -1 : undefined}
                 onChange={(e) => setWalkIn(e.target.checked)}
               >

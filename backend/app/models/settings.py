@@ -46,6 +46,10 @@ class Setting(Base):
     # 店铺坐标：用于顶部天气信息（每个 Group 独立）
     shop_latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     shop_longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 门店信息：用于预订确认书等对外展示
+    shop_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    shop_phone: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    shop_address: Mapped[str | None] = mapped_column(String(200), nullable=True)
     updated_by_user_id: Mapped[str] = mapped_column(String(36), nullable=False)
     updated_at: Mapped[object] = mapped_column(UtcDateTime(), default=utc_now, onupdate=utc_now, nullable=False)
 

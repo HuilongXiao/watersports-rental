@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.order import Order, OrderItem
-from app.models.payment import Payment, PaymentItem
+from app.models.payment import OrderItemSplit, Payment, PaymentItem
 from app.models.user import User
 from app.services.order_service import get_order, list_items
 
@@ -113,6 +113,176 @@ def add_adjustment(
     return payment_view(db, order_id, user, active_group_id)
 
 
+def add_item_refund(
+    db: Session, user: User, order_id: str, payload, active_group_id: str | None = None
+) -> dict:
+    """按订单项目退款：记录为负金额调整项并关联该行，退款金额不得超过该行剩余可退金额。"""
+    get_order(db, order_id, user, active_group_id)
+    note = payload.note.strip() if payload.note else ""
+    if not note:
+        raise HTTPException(status_code=422, detail="退款必须填写备注")
+    if payload.amount_fen < 1:
+        raise HTTPException(status_code=422, detail="退款金额必须大于 0")
+
+    item = db.scalar(
+        select(OrderItem).where(OrderItem.id == payload.order_item_id, OrderItem.order_id == order_id)
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="订单项目不存在")
+
+    split = _get_split(db, payload.order_item_id, getattr(payload, "order_item_split_id", None))
+    if split is not None:
+        remaining = split.amount + split_adjusted_total(db, split.id)
+    else:
+        remaining = item.quantity * item.unit_price + item_adjusted_total(db, order_id, item.id)
+    if payload.amount_fen > remaining:
+        raise HTTPException(status_code=422, detail="退款金额不能超过该行剩余可退金额")
+
+    payment = get_or_create_payment(db, user, order_id, active_group_id)
+    db.add(
+        PaymentItem(
+            id=str(uuid4()),
+            payment_id=payment.id,
+            order_item_id=item.id,
+            order_item_split_id=split.id if split else None,
+            kind="refund",
+            quantity=-1,
+            unit_amount=payload.amount_fen,
+            amount=-payload.amount_fen,
+            note=note,
+            created_by_user_id=user.id,
+        )
+    )
+    payment.updated_by_user_id = user.id
+    db.commit()
+    return payment_view(db, order_id, user, active_group_id)
+
+
+def add_item_price_adjust(
+    db: Session, user: User, order_id: str, payload, active_group_id: str | None = None
+) -> dict:
+    """按订单项目调整价格：把该行当前净额改为新金额，差额记录为调整项。"""
+    get_order(db, order_id, user, active_group_id)
+    note = payload.note.strip() if payload.note else ""
+    if not note:
+        raise HTTPException(status_code=422, detail="调整价格必须填写备注")
+    if payload.new_amount_fen < 0:
+        raise HTTPException(status_code=422, detail="调整后金额不能为负数")
+
+    item = db.scalar(
+        select(OrderItem).where(OrderItem.id == payload.order_item_id, OrderItem.order_id == order_id)
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="订单项目不存在")
+
+    split = _get_split(db, payload.order_item_id, getattr(payload, "order_item_split_id", None))
+    if split is not None:
+        current = split.amount + split_adjusted_total(db, split.id)
+    else:
+        current = item.quantity * item.unit_price + item_adjusted_total(db, order_id, item.id)
+    diff = payload.new_amount_fen - current
+    if diff == 0:
+        raise HTTPException(status_code=422, detail="调整后金额与当前金额相同")
+
+    payment = get_or_create_payment(db, user, order_id, active_group_id)
+    db.add(
+        PaymentItem(
+            id=str(uuid4()),
+            payment_id=payment.id,
+            order_item_id=item.id,
+            order_item_split_id=split.id if split else None,
+            kind="price",
+            quantity=1 if diff > 0 else -1,
+            unit_amount=abs(diff),
+            amount=diff,
+            note=note,
+            created_by_user_id=user.id,
+        )
+    )
+    payment.updated_by_user_id = user.id
+    db.commit()
+    return payment_view(db, order_id, user, active_group_id)
+
+
+def split_order_item(
+    db: Session, user: User, order_id: str, payload, active_group_id: str | None = None
+) -> dict:
+    """把一行订单项目拆分为多行展示：金额合计必须等于该行当前净额。"""
+    get_order(db, order_id, user, active_group_id)
+    item = db.scalar(
+        select(OrderItem).where(OrderItem.id == payload.order_item_id, OrderItem.order_id == order_id)
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="订单项目不存在")
+
+    existing = db.scalar(
+        select(OrderItemSplit.id).where(OrderItemSplit.order_item_id == item.id)
+    )
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="该行已拆分，请先编辑订单恢复")
+
+    amounts = [int(a) for a in payload.amounts_fen]
+    if len(amounts) < 2:
+        raise HTTPException(status_code=422, detail="拆分至少需要 2 行")
+    if any(a <= 0 for a in amounts):
+        raise HTTPException(status_code=422, detail="每行拆分金额必须大于 0")
+
+    current = item.quantity * item.unit_price + item_adjusted_total(db, order_id, item.id)
+    if sum(amounts) != current:
+        raise HTTPException(status_code=422, detail="拆分金额合计必须等于该行当前金额")
+
+    for index, amount in enumerate(amounts):
+        db.add(
+            OrderItemSplit(
+                id=str(uuid4()),
+                order_item_id=item.id,
+                amount=amount,
+                position=index,
+                created_by_user_id=user.id,
+            )
+        )
+    db.commit()
+    return payment_view(db, order_id, user, active_group_id)
+
+
+def _get_split(db: Session, order_item_id: str, split_id: str | None) -> OrderItemSplit | None:
+    if not split_id:
+        return None
+    split = db.scalar(
+        select(OrderItemSplit).where(
+            OrderItemSplit.id == split_id,
+            OrderItemSplit.order_item_id == order_item_id,
+        )
+    )
+    if split is None:
+        raise HTTPException(status_code=404, detail="拆分记录不存在")
+    return split
+
+
+def split_adjusted_total(db: Session, split_id: str) -> int:
+    """某拆分行的调整合计（退款/调价，负数为减少）。"""
+    return int(
+        db.scalar(
+            select(func.coalesce(func.sum(PaymentItem.amount), 0)).where(
+                PaymentItem.order_item_split_id == split_id
+            )
+        )
+        or 0
+    )
+
+
+def item_adjusted_total(db: Session, order_id: str, order_item_id: str) -> int:
+    """某订单项目的调整合计（退款/调价，负数为减少，未调整为 0）。"""
+    return int(
+        db.scalar(
+            select(func.coalesce(func.sum(PaymentItem.amount), 0))
+            .join(Payment, Payment.id == PaymentItem.payment_id)
+            .where(Payment.order_id == order_id, PaymentItem.order_item_id == order_item_id)
+        )
+        or 0
+    )
+
+
 def payment_view(
     db: Session, order_id: str, user: User | None = None, active_group_id: str | None = None
 ) -> dict:
@@ -131,8 +301,29 @@ def payment_view(
         else []
     )
     items = list_items(db, order_id)
+    # 拆分记录：按订单项目分组（列表为空表示未拆分）
+    splits_by_item: dict[str, list[OrderItemSplit]] = {}
+    if items:
+        for split in db.scalars(
+            select(OrderItemSplit)
+            .where(OrderItemSplit.order_item_id.in_([i.id for i in items]))
+            .order_by(OrderItemSplit.position)
+        ).all():
+            splits_by_item.setdefault(split.order_item_id, []).append(split)
     normal_total = order_items_total(db, order_id)
     adjustment_total = adjustments_total(db, order_id)
+    # 每个订单项目的调整合计（负数表示减少），用于前端按行展示调整后小计
+    adjusted_by_item: dict[str, int] = {}
+    if payment:
+        for item_id, total in db.execute(
+            select(PaymentItem.order_item_id, func.coalesce(func.sum(PaymentItem.amount), 0))
+            .where(
+                PaymentItem.payment_id == payment.id,
+                PaymentItem.order_item_id.is_not(None),
+            )
+            .group_by(PaymentItem.order_item_id)
+        ).all():
+            adjusted_by_item[item_id] = int(total)
     return {
         "order_id": order_id,
         "payment_id": payment.id if payment else None,
@@ -147,12 +338,20 @@ def payment_view(
                 "quantity": item.quantity,
                 "unit_price": item.unit_price,
                 "line_amount": item.quantity * item.unit_price,
+                "adjusted_fen": adjusted_by_item.get(item.id, 0),
+                "splits": [
+                    {"id": s.id, "amount_fen": s.amount}
+                    for s in splits_by_item.get(item.id, [])
+                ],
             }
             for item in items
         ],
         "adjustments": [
             {
                 "id": item.id,
+                "order_item_id": item.order_item_id,
+                "order_item_split_id": item.order_item_split_id,
+                "kind": item.kind,
                 "quantity": item.quantity,
                 "unit_amount": item.unit_amount,
                 "amount": item.amount,

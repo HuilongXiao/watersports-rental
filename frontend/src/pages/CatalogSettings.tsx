@@ -244,6 +244,7 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
   const [specForm] = Form.useForm<{
     equipment_type_id: string
     name: string
+    business_name?: string | null
     price: number
     capacity: number | null
     quantity: number
@@ -285,6 +286,7 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
       specForm.setFieldsValue({
         equipment_type_id: spec.equipment_type_id,
         name: spec.name,
+        business_name: spec.business_name ?? undefined,
         price: spec.price / 100,
         capacity: spec.capacity,
         quantity: total,
@@ -308,6 +310,7 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
     const body = {
       equipment_type_id: values.equipment_type_id,
       name: values.name,
+      business_name: values.business_name?.trim() || null,
       price: yuanToFen(values.price),
       capacity: values.capacity === undefined ? null : values.capacity,
     }
@@ -501,6 +504,13 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
           </div>
           <Form.Item label="规格名称" name="name" rules={[{ required: true, message: '如：竞速皮划艇（3 座）' }]}>
             <Input />
+          </Form.Item>
+          <Form.Item
+            label="营业名称"
+            name="business_name"
+            extra="填写后，订单的「预订确认书」中显示该名称；留空则显示规格名称。"
+          >
+            <Input placeholder="如：休闲皮划艇" maxLength={128} />
           </Form.Item>
           <Row gutter={12}>
             <Col span={12}>
@@ -1281,6 +1291,12 @@ function StoreTab({ onNumberingChanged }: { onNumberingChanged?: () => void }) {
   // 店铺坐标：经度 / 纬度，均未填写时为 null
   const [longitude, setLongitude] = useState<number | null>(null)
   const [latitude, setLatitude] = useState<number | null>(null)
+  // 门店信息（预订确认书展示）
+  const [shopName, setShopName] = useState('')
+  const [shopPhone, setShopPhone] = useState('')
+  const [shopAddress, setShopAddress] = useState('')
+  // 正在获取浏览器定位
+  const [locating, setLocating] = useState(false)
   const [saving, setSaving] = useState(false)
   const { message } = App.useApp()
   // 保存成功后刷新全局 SettingsContext（更新缓存，OrderForm 等页面立即生效）
@@ -1296,9 +1312,40 @@ function StoreTab({ onNumberingChanged }: { onNumberingChanged?: () => void }) {
         setBoatNumbering(data.boat_numbering_enabled)
         setLatitude(data.shop_latitude)
         setLongitude(data.shop_longitude)
+        setShopName(data.shop_name ?? '')
+        setShopPhone(data.shop_phone ?? '')
+        setShopAddress(data.shop_address ?? '')
       })
       .catch((error) => message.error(error.message))
   }, [message])
+
+  // 获取当前位置自动填写经纬度（浏览器定位；需 https 或 localhost 且允许定位权限）
+  const locateCurrent = () => {
+    if (!navigator.geolocation) {
+      message.error('当前浏览器不支持定位，请手动填写')
+      return
+    }
+    setLocating(true)
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLongitude(Number(pos.coords.longitude.toFixed(6)))
+        setLatitude(Number(pos.coords.latitude.toFixed(6)))
+        setLocating(false)
+        message.success('已获取当前位置，请点击保存')
+      },
+      (error) => {
+        setLocating(false)
+        if (error.code === error.PERMISSION_DENIED) {
+          message.error('定位权限被拒绝：请允许浏览器定位（非 https/localhost 访问时浏览器会禁止定位）')
+        } else if (error.code === error.POSITION_UNAVAILABLE) {
+          message.error('无法获取位置信息，请检查设备定位是否开启')
+        } else {
+          message.error('定位超时，请重试')
+        }
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
+    )
+  }
 
   const save = async () => {
     // 经度与纬度必须同时填写（都不填表示未设置）
@@ -1315,6 +1362,9 @@ function StoreTab({ onNumberingChanged }: { onNumberingChanged?: () => void }) {
         boat_numbering_enabled: boatNumbering,
         shop_latitude: latitude,
         shop_longitude: longitude,
+        shop_name: shopName,
+        shop_phone: shopPhone,
+        shop_address: shopAddress,
       })
       // PUT 只返回基础设置，不包含 payment_methods；合并保留原付款方式，避免保存后付款区域消失
       setSettings((prev) =>
@@ -1378,6 +1428,25 @@ function StoreTab({ onNumberingChanged }: { onNumberingChanged?: () => void }) {
           开启后可在「器材编号」中为每条船只编号，并在手机版「船只」页面调配出发/返还。开启前必须先给所有器材编号完整。
         </div>
         <Divider style={{ borderColor: '#d9d9d9', margin: '16px 0' }} />
+        {/* 门店信息：用于预订确认书等对外展示 */}
+        <strong>门店信息</strong>
+        <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+          <Input
+            addonBefore="店铺名称"
+            value={shopName}
+            onChange={(e) => setShopName(e.target.value)}
+            maxLength={100}
+            placeholder="用于预订确认书"
+          />
+          <Input
+            addonBefore="联系电话"
+            value={shopPhone}
+            onChange={(e) => setShopPhone(e.target.value)}
+            maxLength={40}
+            placeholder="如：13800000000"
+          />
+        </div>
+        <Divider style={{ borderColor: '#d9d9d9', margin: '16px 0' }} />
         {/* 店铺坐标：每个 Group 独立，顶部天气信息按此坐标获取 */}
         <div
           style={{
@@ -1389,29 +1458,40 @@ function StoreTab({ onNumberingChanged }: { onNumberingChanged?: () => void }) {
           }}
         >
           <strong>店铺坐标</strong>
-          <Space size={8}>
-            <InputNumber
-              min={-180}
-              max={180}
-              step={0.01}
-              value={longitude}
-              onChange={(value) => setLongitude(value)}
-              addonBefore="经度"
-              placeholder="121.52"
-              style={{ width: 148 }}
-            />
-            <InputNumber
-              min={-90}
-              max={90}
-              step={0.01}
-              value={latitude}
-              onChange={(value) => setLatitude(value)}
-              addonBefore="纬度"
-              placeholder="31.33"
-              style={{ width: 140 }}
-            />
-          </Space>
+          <Button type="primary" size="small" onClick={locateCurrent} loading={locating}>
+            获取当前位置
+          </Button>
         </div>
+        <Space size={8} style={{ marginTop: 8 }}>
+          <InputNumber
+            min={-180}
+            max={180}
+            step={0.01}
+            value={longitude}
+            onChange={(value) => setLongitude(value)}
+            addonBefore="经度"
+            placeholder="121.52"
+            style={{ width: 148 }}
+          />
+          <InputNumber
+            min={-90}
+            max={90}
+            step={0.01}
+            value={latitude}
+            onChange={(value) => setLatitude(value)}
+            addonBefore="纬度"
+            placeholder="31.33"
+            style={{ width: 140 }}
+          />
+        </Space>
+        <Input
+          addonBefore="店铺地址"
+          value={shopAddress}
+          onChange={(e) => setShopAddress(e.target.value)}
+          maxLength={200}
+          placeholder="如：上海市浦东新区xx路xx号"
+          style={{ marginTop: 8 }}
+        />
         <div style={{ color: '#888', fontSize: 12, marginTop: 4 }}>
           用于顶部天气信息，按该坐标展示当地天气；经度与纬度需同时填写。
         </div>
@@ -1475,6 +1555,9 @@ function BasicTab() {
         boat_numbering_enabled: settings?.boat_numbering_enabled ?? false,
         shop_latitude: settings?.shop_latitude ?? null,
         shop_longitude: settings?.shop_longitude ?? null,
+        shop_name: settings?.shop_name ?? null,
+        shop_phone: settings?.shop_phone ?? null,
+        shop_address: settings?.shop_address ?? null,
       })
       setSettings((prev) =>
         prev
