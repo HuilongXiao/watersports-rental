@@ -55,8 +55,8 @@ import Users from './Users'
 import Groups from './Groups'
 
 // 系统版本与发布日期：随版本发布手动同步（与 CHANGELOG 的版本标题对应）
-const APP_VERSION = '1.2.3'
-const APP_RELEASE_DATE = '2026-11-23'
+const APP_VERSION = '1.2.4'
+const APP_RELEASE_DATE = '2026-11-25'
 
 interface SettingsTabDef {
   key: string
