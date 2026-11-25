@@ -117,8 +117,6 @@ interface ItemDisplayRow {
   amountFen: number
   // 该行累计调整（退款/调价，负数为减少），用于金额标红
   adjustedFen: number
-  // 增值税发票汇总行（合计上方展示税额，不参与数量、调整与付款）
-  isInvoice?: boolean
 }
 
 // 按订单项目 + 支付视图计算表格行与每行净额（含退款/调价）。
@@ -477,7 +475,7 @@ export default function OrderDetail({
       : ''
 
   const { rows: itemRows, refundedOf } = computeItemRows(order.items, payment)
-  // 增值税发票：不单独作为项目行，而是在合计上方显示一行税额
+  // 增值税发票：不占用项目行，在合计上方以文字说明税额
   const invoiceTaxRateBp = Math.round((order.invoice_tax_rate ?? 0) * 100)
   const invoiceTaxExtraFen = order.invoice_tax_item_id
     ? order.items.reduce((sum, item) => {
@@ -487,28 +485,10 @@ export default function OrderDetail({
         return sum + (item.unit_price - originalUnit) * item.quantity
       }, 0)
     : 0
-  const invoiceRow: ItemDisplayRow | null = order.invoice_tax_item_id
-    ? {
-        key: `invoice-${order.invoice_tax_item_id}`,
-        item: {
-          id: `invoice-${order.invoice_tax_item_id}`,
-          equipment_spec_id: null,
-          sale_item_id: null,
-          quantity: 1,
-          unit_price: 0,
-          line_amount: 0,
-          locked: true,
-        },
-        splitId: null,
-        name: '增值税发票',
-        quantity: 1,
-        amountFen: invoiceTaxExtraFen,
-        adjustedFen: 0,
-        isInvoice: true,
-      }
-    : null
-  // 发票税额行固定展示在所有项目之后、合计之前
-  const displayRows = invoiceRow ? [...itemRows, invoiceRow] : itemRows
+  const invoiceTaxText =
+    order.invoice_tax_item_id && invoiceTaxRateBp
+      ? `订单包含${invoiceTaxExtraFen / 100}元的${invoiceTaxRateBp / 100}%增值税`
+      : ''
   const itemsOriginalTotal = order.items.reduce((sum, item) => sum + item.line_amount, 0)
   const adjustedTotal = order.items.reduce((sum, item) => sum + refundedOf(item.id), 0)
 
@@ -928,34 +908,43 @@ export default function OrderDetail({
           size="small"
           pagination={false}
           tableLayout="fixed"
-          dataSource={displayRows}
+          dataSource={itemRows}
           summary={() => (
-            <Table.Summary.Row>
-              <Table.Summary.Cell index={0} align="center">
-                合计
-              </Table.Summary.Cell>
-              <Table.Summary.Cell index={1} align="center">
-                <span style={{ fontWeight: 600 }}>
-                  {renderMoney(
-                    itemsOriginalTotal + adjustedTotal,
-                    adjustedTotal !== 0 ? '#cf1322' : undefined,
+            <>
+              {invoiceTaxText ? (
+                <Table.Summary.Row>
+                  <Table.Summary.Cell index={0} colSpan={4} align="right">
+                    <span style={{ fontSize: 12, color: '#8c8c8c' }}>{invoiceTaxText}</span>
+                  </Table.Summary.Cell>
+                </Table.Summary.Row>
+              ) : null}
+              <Table.Summary.Row>
+                <Table.Summary.Cell index={0} align="center">
+                  合计
+                </Table.Summary.Cell>
+                <Table.Summary.Cell index={1} align="center">
+                  <span style={{ fontWeight: 600 }}>
+                    {renderMoney(
+                      itemsOriginalTotal + adjustedTotal,
+                      adjustedTotal !== 0 ? '#cf1322' : undefined,
+                    )}
+                  </span>
+                </Table.Summary.Cell>
+                <Table.Summary.Cell index={2} align="center" />
+                <Table.Summary.Cell index={3} align="center">
+                  {payButton(
+                    allPaid,
+                    () =>
+                      setPaidItems(
+                        allPaid
+                          ? {}
+                          : Object.fromEntries(itemRows.map((row) => [row.key, true])),
+                      ),
+                    moneyText(itemsOriginalTotal + adjustedTotal),
                   )}
-                </span>
-              </Table.Summary.Cell>
-              <Table.Summary.Cell index={2} align="center" />
-              <Table.Summary.Cell index={3} align="center">
-                {payButton(
-                  allPaid,
-                  () =>
-                    setPaidItems(
-                      allPaid
-                        ? {}
-                        : Object.fromEntries(itemRows.map((row) => [row.key, true])),
-                    ),
-                  moneyText(itemsOriginalTotal + adjustedTotal),
-                )}
-              </Table.Summary.Cell>
-            </Table.Summary.Row>
+                </Table.Summary.Cell>
+              </Table.Summary.Row>
+            </>
           )}
           columns={[
             {
@@ -973,9 +962,7 @@ export default function OrderDetail({
                   >
                     {row.name}
                   </span>
-                  {row.isInvoice ? null : (
-                    <span style={{ color: '#000' }}>*{row.quantity}</span>
-                  )}
+                  <span style={{ color: '#000' }}>*{row.quantity}</span>
                 </>
               ),
             },
@@ -995,7 +982,6 @@ export default function OrderDetail({
               onHeaderCell: centerHeader,
               onCell: centeredCell,
               render: (_, row) => {
-                if (row.isInvoice) return null
                 if (!canEditOrder) return null
                 const menuItems = [
                   { key: 'price', label: '调整价格' },
@@ -1029,13 +1015,11 @@ export default function OrderDetail({
               onHeaderCell: centerHeader,
               onCell: centeredCell,
               render: (_, row) =>
-                row.isInvoice
-                  ? null
-                  : payButton(
-                      Boolean(paidItems[row.key]),
-                      () => setPaidItems((prev) => ({ ...prev, [row.key]: !prev[row.key] })),
-                      moneyText(row.amountFen),
-                    ),
+                payButton(
+                  Boolean(paidItems[row.key]),
+                  () => setPaidItems((prev) => ({ ...prev, [row.key]: !prev[row.key] })),
+                  moneyText(row.amountFen),
+                ),
             },
           ]}
         />
