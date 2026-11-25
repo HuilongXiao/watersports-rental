@@ -117,7 +117,7 @@ interface ItemDisplayRow {
   amountFen: number
   // 该行累计调整（退款/调价，负数为减少），用于金额标红
   adjustedFen: number
-  // 发票销售项目行（数量固定 1，不参与金额与调整）
+  // 增值税发票汇总行（合计上方展示税额，不参与数量、调整与付款）
   isInvoice?: boolean
 }
 
@@ -477,7 +477,16 @@ export default function OrderDetail({
       : ''
 
   const { rows: itemRows, refundedOf } = computeItemRows(order.items, payment)
-  // 发票销售项目与器材、售卖项目同列表展示，数量固定为 1，不产生金额
+  // 增值税发票：不单独作为项目行，而是在合计上方显示一行税额
+  const invoiceTaxRateBp = Math.round((order.invoice_tax_rate ?? 0) * 100)
+  const invoiceTaxExtraFen = order.invoice_tax_item_id
+    ? order.items.reduce((sum, item) => {
+        if (!invoiceTaxRateBp) return sum
+        // 反推未税单价，差额即为该行因增值税发票产生的额外金额
+        const originalUnit = Math.round((item.unit_price * 10000) / (10000 + invoiceTaxRateBp))
+        return sum + (item.unit_price - originalUnit) * item.quantity
+      }, 0)
+    : 0
   const invoiceRow: ItemDisplayRow | null = order.invoice_tax_item_id
     ? {
         key: `invoice-${order.invoice_tax_item_id}`,
@@ -491,16 +500,15 @@ export default function OrderDetail({
           locked: true,
         },
         splitId: null,
-        name: `${order.invoice_tax_item_name ?? '发票税率'}（税率 ${
-          order.invoice_tax_rate ?? 0
-        }%）`,
+        name: '增值税发票',
         quantity: 1,
-        amountFen: 0,
+        amountFen: invoiceTaxExtraFen,
         adjustedFen: 0,
         isInvoice: true,
       }
     : null
-  const displayRows = invoiceRow ? [invoiceRow, ...itemRows] : itemRows
+  // 发票税额行固定展示在所有项目之后、合计之前
+  const displayRows = invoiceRow ? [...itemRows, invoiceRow] : itemRows
   const itemsOriginalTotal = order.items.reduce((sum, item) => sum + item.line_amount, 0)
   const adjustedTotal = order.items.reduce((sum, item) => sum + refundedOf(item.id), 0)
 
@@ -965,7 +973,9 @@ export default function OrderDetail({
                   >
                     {row.name}
                   </span>
-                  <span style={{ color: '#000' }}>*{row.quantity}</span>
+                  {row.isInvoice ? null : (
+                    <span style={{ color: '#000' }}>*{row.quantity}</span>
+                  )}
                 </>
               ),
             },
@@ -976,9 +986,7 @@ export default function OrderDetail({
               onHeaderCell: centerHeader,
               onCell: nowrapCell,
               render: (_, row) =>
-                row.isInvoice
-                  ? '—'
-                  : renderMoney(row.amountFen, row.adjustedFen !== 0 ? '#cf1322' : undefined),
+                renderMoney(row.amountFen, row.adjustedFen !== 0 ? '#cf1322' : undefined),
             },
             {
               title: '调整',
@@ -1021,11 +1029,13 @@ export default function OrderDetail({
               onHeaderCell: centerHeader,
               onCell: centeredCell,
               render: (_, row) =>
-                payButton(
-                  Boolean(paidItems[row.key]),
-                  () => setPaidItems((prev) => ({ ...prev, [row.key]: !prev[row.key] })),
-                  moneyText(row.amountFen),
-                ),
+                row.isInvoice
+                  ? null
+                  : payButton(
+                      Boolean(paidItems[row.key]),
+                      () => setPaidItems((prev) => ({ ...prev, [row.key]: !prev[row.key] })),
+                      moneyText(row.amountFen),
+                    ),
             },
           ]}
         />
