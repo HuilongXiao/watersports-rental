@@ -105,6 +105,87 @@ interface BoatDispatchRow {
   returnedAt: string | null
 }
 
+// 订单项目展示行：未拆分的项目一行；已拆分的项目按拆分记录展开为多行。
+// 拆分金额能被单价整除时按金额换算数量（如 180 拆 2 份 → 休闲*1），
+// 否则沿用原项目数量写法，仅金额不同。
+interface ItemDisplayRow {
+  key: string
+  item: OrderItem
+  splitId: string | null
+  name: string
+  quantity: number
+  amountFen: number
+  // 该行累计调整（退款/调价，负数为减少），用于金额标红
+  adjustedFen: number
+}
+
+// 按订单项目 + 支付视图计算表格行与每行净额（含退款/调价）。
+// 仅用于详情表格；预订确认书按需求固定展示项目原本标价，不走这份计算。
+function computeItemRows(
+  items: OrderItem[],
+  payment: PaymentView | null,
+): { rows: ItemDisplayRow[]; refundedOf: (itemId: string) => number } {
+  // 按订单项目汇总调整（含退款与调价，金额为负数表示减少）
+  const itemRefunds = new Map<string, PaymentAdjustment[]>()
+  // 拆分行的调整合计（退款/调价）
+  const splitAdjusted = new Map<string, number>()
+  for (const adj of payment?.adjustments ?? []) {
+    if (adj.order_item_split_id) {
+      splitAdjusted.set(
+        adj.order_item_split_id,
+        (splitAdjusted.get(adj.order_item_split_id) ?? 0) + adj.amount,
+      )
+    }
+    if (!adj.order_item_id) continue
+    const list = itemRefunds.get(adj.order_item_id) ?? []
+    list.push(adj)
+    itemRefunds.set(adj.order_item_id, list)
+  }
+  const refundedOf = (itemId: string) =>
+    (itemRefunds.get(itemId) ?? []).reduce((sum, a) => sum + a.amount, 0)
+
+  // 拆分记录由支付视图返回（订单详情本身不含），按订单项目 id 归并
+  const splitsByItemId = new Map<string, { id: string; amount_fen: number }[]>()
+  for (const paymentItem of payment?.order_items ?? []) {
+    if (paymentItem.splits?.length) splitsByItemId.set(paymentItem.id, paymentItem.splits)
+  }
+
+  const rows: ItemDisplayRow[] = []
+  for (const item of items) {
+    const name = item.equipment_spec_name ?? item.sale_item_name ?? '—'
+    const splits = splitsByItemId.get(item.id) ?? item.splits ?? []
+    if (splits.length === 0) {
+      const adjusted = refundedOf(item.id)
+      rows.push({
+        key: item.id,
+        item,
+        splitId: null,
+        name,
+        quantity: item.quantity,
+        amountFen: item.line_amount + adjusted,
+        adjustedFen: adjusted,
+      })
+      continue
+    }
+    for (const split of splits) {
+      const adjusted = splitAdjusted.get(split.id) ?? 0
+      const unit = item.unit_price
+      const consistent =
+        unit > 0 && split.amount_fen % unit === 0 && split.amount_fen / unit >= 1
+      rows.push({
+        key: `s-${split.id}`,
+        item,
+        splitId: split.id,
+        name,
+        quantity: consistent ? split.amount_fen / unit : item.quantity,
+        amountFen: split.amount_fen + adjusted,
+        adjustedFen: adjusted,
+      })
+    }
+  }
+  return { rows, refundedOf }
+}
+
 export default function OrderDetail({
   embedded = false,
   orderId,
@@ -393,71 +474,7 @@ export default function OrderDetail({
       ? settings.payment_methods.find((m) => m.code === order.payment_method_code)?.name ?? ''
       : ''
 
-  // 按订单项目汇总退款（金额为负数），用于小计与行下备注展示
-  const itemRefunds = new Map<string, PaymentAdjustment[]>()
-  // 拆分行的调整合计（退款/调价）
-  const splitAdjusted = new Map<string, number>()
-  for (const adj of payment?.adjustments ?? []) {
-    if (adj.order_item_split_id) {
-      splitAdjusted.set(
-        adj.order_item_split_id,
-        (splitAdjusted.get(adj.order_item_split_id) ?? 0) + adj.amount,
-      )
-    }
-    if (!adj.order_item_id) continue
-    const list = itemRefunds.get(adj.order_item_id) ?? []
-    list.push(adj)
-    itemRefunds.set(adj.order_item_id, list)
-  }
-  const refundedOf = (itemId: string) =>
-    (itemRefunds.get(itemId) ?? []).reduce((sum, a) => sum + a.amount, 0)
-
-  // 表格行：未拆分的项目一行；已拆分的项目按拆分记录展开为多行。
-  // 拆分金额能被单价整除时按金额换算数量（如 180 拆 2 份 → 休闲*1），
-  // 否则沿用原项目数量写法，仅金额不同。
-  interface ItemDisplayRow {
-    key: string
-    item: OrderItem
-    splitId: string | null
-    name: string
-    quantity: number
-    amountFen: number
-  }
-  // 拆分记录由支付视图返回（订单详情本身不含），按订单项目 id 归并
-  const splitsByItemId = new Map<string, { id: string; amount_fen: number }[]>()
-  for (const paymentItem of payment?.order_items ?? []) {
-    if (paymentItem.splits?.length) splitsByItemId.set(paymentItem.id, paymentItem.splits)
-  }
-  const itemRows: ItemDisplayRow[] = []
-  for (const item of order.items) {
-    const name = item.equipment_spec_name ?? item.sale_item_name ?? '—'
-    const splits = splitsByItemId.get(item.id) ?? item.splits ?? []
-    if (splits.length === 0) {
-      itemRows.push({
-        key: item.id,
-        item,
-        splitId: null,
-        name,
-        quantity: item.quantity,
-        amountFen: item.line_amount + refundedOf(item.id),
-      })
-      continue
-    }
-    for (const split of splits) {
-      const amount = split.amount_fen + (splitAdjusted.get(split.id) ?? 0)
-      const unit = item.unit_price
-      const consistent =
-        unit > 0 && split.amount_fen % unit === 0 && split.amount_fen / unit >= 1
-      itemRows.push({
-        key: `s-${split.id}`,
-        item,
-        splitId: split.id,
-        name,
-        quantity: consistent ? split.amount_fen / unit : item.quantity,
-        amountFen: amount,
-      })
-    }
-  }
+  const { rows: itemRows, refundedOf } = computeItemRows(order.items, payment)
   const itemsOriginalTotal = order.items.reduce((sum, item) => sum + item.line_amount, 0)
   const adjustedTotal = order.items.reduce((sum, item) => sum + refundedOf(item.id), 0)
 
@@ -515,9 +532,14 @@ export default function OrderDetail({
 
   // 生成预订确认书图片
   const openBookingLetter = async () => {
+    if (!id) return
     setLetterLoading(true)
     try {
-      const start = dayjs(order.start_at)
+      // 确认书固定展示项目原本标价：重新拉取一次订单，金额直接取 line_amount，
+      // 不使用退款/调价后的净额。
+      const freshOrder = await api.get<Order>(`/api/orders/${id}`)
+      setOrder(freshOrder)
+      const start = dayjs(freshOrder.start_at)
       const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
       // 器材若有「营业名称」，确认书里优先展示营业名称
       const catalog = await api.get<Catalog>('/api/catalog').catch(() => null)
@@ -526,7 +548,7 @@ export default function OrderDetail({
         if (spec.business_name) businessNameBySpecId.set(spec.id, spec.business_name)
       }
 
-      // 同一项目可能被创建为多行（或拆分后多行）：确认书中按项目合并数量与金额
+      // 同一项目可能被创建为多行：确认书中按项目合并数量与原本标价金额
       const letterItems: {
         name: string
         quantity: number
@@ -534,24 +556,27 @@ export default function OrderDetail({
         amountFen: number
       }[] = []
       const mergedIndex = new Map<string, number>()
-      for (const row of itemRows) {
+      for (const item of freshOrder.items) {
         const name =
-          (row.item.equipment_spec_id
-            ? businessNameBySpecId.get(row.item.equipment_spec_id)
-            : undefined) ?? row.name
-        const key = row.item.equipment_spec_id ?? row.item.sale_item_id ?? name
+          (item.equipment_spec_id
+            ? businessNameBySpecId.get(item.equipment_spec_id)
+            : undefined) ??
+          item.equipment_spec_name ??
+          item.sale_item_name ??
+          '—'
+        const key = item.equipment_spec_id ?? item.sale_item_id ?? name
         const index = mergedIndex.get(key)
         if (index === undefined) {
           mergedIndex.set(key, letterItems.length)
           letterItems.push({
             name,
-            quantity: row.quantity,
-            color: row.item.equipment_type_color,
-            amountFen: row.amountFen,
+            quantity: item.quantity,
+            color: item.equipment_type_color,
+            amountFen: item.line_amount,
           })
         } else {
-          letterItems[index].quantity += row.quantity
-          letterItems[index].amountFen += row.amountFen
+          letterItems[index].quantity += item.quantity
+          letterItems[index].amountFen += item.line_amount
         }
       }
 
@@ -559,23 +584,15 @@ export default function OrderDetail({
         shopName: settings.shop_name,
         shopPhone: settings.shop_phone,
         shopAddress: settings.shop_address,
-        wechat: order.customer_wechat_nickname ?? '—',
-        adultCount: order.adult_count,
-        childCount: order.child_count,
+        wechat: freshOrder.customer_wechat_nickname ?? '—',
+        adultCount: freshOrder.adult_count,
+        childCount: freshOrder.child_count,
         dateText: `${start.format('YYYY年M月D日')} ${weekdays[start.day()]}`,
         timeText: start.format('HH:mm'),
         items: letterItems,
       })
       setLetterUrl(url)
-      // 手机端优先调起系统分享面板（可直接选择微信等应用）；
-      // 不支持时退回图片预览弹窗（长按保存 / 下载）
-      if (isMobile) {
-        const result = await shareLetterImage(
-          url,
-          `预订确认书-${order.order_number}.png`,
-        )
-        if (result !== 'unsupported') return
-      }
+      // 先展示确认书预览，再由用户点击「转发」调起系统分享面板
       setLetterOpen(true)
     } catch (error) {
       message.error(error instanceof Error ? error.message : '生成确认书失败')
@@ -932,12 +949,8 @@ export default function OrderDetail({
               align: 'center',
               onHeaderCell: centerHeader,
               onCell: nowrapCell,
-              render: (_, row) => {
-                const adjusted = row.splitId
-                  ? (splitAdjusted.get(row.splitId) ?? 0)
-                  : refundedOf(row.item.id)
-                return renderMoney(row.amountFen, adjusted !== 0 ? '#cf1322' : undefined)
-              },
+              render: (_, row) =>
+                renderMoney(row.amountFen, row.adjustedFen !== 0 ? '#cf1322' : undefined),
             },
             {
               title: '调整',
