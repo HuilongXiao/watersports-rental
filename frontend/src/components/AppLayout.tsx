@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { App, Layout, Menu, Dropdown, Typography, Modal, Input, Select, Popover } from 'antd'
 import {
   DashboardOutlined,
@@ -15,6 +15,7 @@ import { useAuth } from '../auth'
 import { useLayoutMode } from '../layoutMode'
 import WeatherCard from './WeatherCard'
 import OrderForm from '../pages/OrderForm'
+import { refreshSettingsIssues, useSettingsIssues } from '../settingsIssues'
 
 const { Header, Sider, Content } = Layout
 
@@ -72,6 +73,16 @@ export default function AppLayout() {
   }, [location.pathname])
 
   const isSuperuser = Boolean(user && user.role === 'superuser')
+  // 配置类入口仅管理员可见；设置待完善项（器材编号/数量）有权限时才检查
+  const canManageSettings = Boolean(
+    user && (user.role === 'superuser' || user.role === 'admin'),
+  )
+  const settingsIssues = useSettingsIssues(canManageSettings)
+  // 切换 Group 后待完善项随之变化
+  useEffect(() => {
+    if (canManageSettings) refreshSettingsIssues()
+  }, [canManageSettings, activeGroup])
+  const settingsAlert = canManageSettings && settingsIssues.hasIssues
 
   // 左上角标题：显示当前 Group 名称。超级管理员始终处于某个 Group 内
   // （登录后自动选中第一个 Group，切换时也只能在 Group 之间切换）。
@@ -218,7 +229,7 @@ export default function AppLayout() {
       { key: '/dashboard', icon: <DashboardOutlined />, label: '概览' },
       { key: '/orders', icon: <SquareChevronsRightIcon />, label: '订单' },
       { key: '/boats', icon: <KayakIcon />, label: '船只' },
-      { key: '/settings', icon: <SettingOutlined />, label: '设置' },
+      { key: '/settings', icon: <SettingOutlined />, label: '设置', alert: settingsAlert },
     ]
     return (
       <Layout className="mobile-app-shell" style={mobileLayoutStyle}>
@@ -332,7 +343,20 @@ export default function AppLayout() {
             theme="light"
             mode="inline"
             selectedKeys={[selectedKey]}
-            items={[{ key: '/settings', icon: <SettingOutlined />, label: '目录与设置' }]}
+            items={[
+              {
+                key: '/settings',
+                icon: <SettingOutlined />,
+                label: (
+                  <span>
+                    目录与设置
+                    {settingsAlert && (
+                      <span style={{ color: '#ff4d4f', marginLeft: 4 }}>❗</span>
+                    )}
+                  </span>
+                ),
+              },
+            ]}
             onClick={({ key }) => handleNav(key)}
             style={{ borderTop: '1px solid #eef2f4', flexShrink: 0 }}
           />
@@ -416,6 +440,8 @@ interface TabItem {
   key: string
   icon: ReactNode
   label: string
+  /** 该入口下有待完善的设置时显示红色感叹号 */
+  alert?: boolean
 }
 
 // Mobile: the whole app is locked to the viewport and only the Content area
@@ -569,7 +595,10 @@ function TabButton({
       }}
     >
       <span style={{ fontSize: 18 }}>{item.icon}</span>
-      <span>{item.label}</span>
+      <span>
+        {item.label}
+        {item.alert && <span style={{ color: '#ff4d4f' }}> ❗</span>}
+      </span>
     </div>
   )
 }

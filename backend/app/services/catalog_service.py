@@ -18,10 +18,12 @@ from app.models.equipment import (
     EQUIPMENT_TYPE_COLORS,
     EquipmentSpec,
     EquipmentType,
+    InvoiceTaxItem,
     SaleItem,
 )
 from app.models.order import Order, OrderItem
 from app.models.user import User
+from app.models.inventory import InventoryConfiguration
 from app.services.inventory_service import ensure_configuration
 
 # Sentinel distinguishing "field omitted in PATCH" from an explicit None (clear capacity).
@@ -46,13 +48,16 @@ def list_catalog(db: Session, user: User, active_group_id: str | None = None) ->
         EquipmentSpec.sort_order, EquipmentSpec.created_at, EquipmentSpec.name
     )
     sale_stmt = select(SaleItem).order_by(SaleItem.name)
+    invoice_stmt = select(InvoiceTaxItem).order_by(InvoiceTaxItem.name)
     if group_id is not None:
         type_stmt = type_stmt.where(EquipmentType.group_id == group_id)
         spec_stmt = spec_stmt.where(EquipmentSpec.group_id == group_id)
         sale_stmt = sale_stmt.where(SaleItem.group_id == group_id)
+        invoice_stmt = invoice_stmt.where(InvoiceTaxItem.group_id == group_id)
     types = list(db.scalars(type_stmt).all())
     specs = list(db.scalars(spec_stmt).all())
     sale_items = list(db.scalars(sale_stmt).all())
+    invoice_items = list(db.scalars(invoice_stmt).all())
     type_meta = {item.id: item for item in types}
 
     # 近 7 日（按订单开始时间）各项目的销售数量总和，用于下单页下拉排序。
@@ -127,6 +132,15 @@ def list_catalog(db: Session, user: User, active_group_id: str | None = None) ->
                 "sold_quantity_7d": int(sale_sales.get(i.id, 0)),
             }
             for i in sale_items
+        ],
+        "invoice_tax_items": [
+            {
+                "id": i.id,
+                "name": i.name,
+                "rate_bp": i.rate_bp,
+                "is_active": i.is_active,
+            }
+            for i in invoice_items
         ],
     }
 
@@ -352,6 +366,24 @@ def update_equipment_spec(
             db.execute(
                 delete(BoatNumber).where(BoatNumber.equipment_spec_id == item.id)
             )
+        else:
+            # 开启器材编号前必须已完成全部编号，否则不允许开启
+            config = db.scalar(
+                select(InventoryConfiguration).where(
+                    InventoryConfiguration.equipment_spec_id == item.id
+                )
+            )
+            target = int(config.total_quantity or 0) if config else 0
+            numbered = db.scalar(
+                select(func.count())
+                .select_from(BoatNumber)
+                .where(BoatNumber.equipment_spec_id == item.id)
+            ) or 0
+            if target <= 0 or numbered < target:
+                raise HTTPException(
+                    status_code=409,
+                    detail="开启器材编号前需完成全部器材编号，请先为每条器材编号",
+                )
         item.boat_numbering_required = boat_numbering_required
     if show_in_usage is not None:
         item.show_in_usage = show_in_usage
@@ -446,6 +478,67 @@ def update_sale_item(
     if price is not None:
         _validate_price(price)
         item.price = price
+    if is_active is not None:
+        item.is_active = is_active
+    item.updated_by_user_id = user.id
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+def _validate_rate_bp(rate_bp: int) -> None:
+    if rate_bp < 0 or rate_bp > 10000:
+        raise HTTPException(status_code=422, detail="税率必须在 0% 到 100% 之间")
+
+
+def create_invoice_tax_item(
+    db: Session, user: User, name: str, rate_bp: int, is_active: bool,
+    active_group_id: str | None = None,
+) -> InvoiceTaxItem:
+    _validate_rate_bp(rate_bp)
+    name = name.strip()
+    group_id = _ensure_group(user, active_group_id)
+    clash_stmt = select(InvoiceTaxItem).where(InvoiceTaxItem.name == name)
+    if group_id is not None:
+        clash_stmt = clash_stmt.where(InvoiceTaxItem.group_id == group_id)
+    if db.scalar(clash_stmt):
+        raise HTTPException(status_code=409, detail="税率名称已存在")
+    item = InvoiceTaxItem(
+        id=str(uuid4()),
+        group_id=group_id,
+        name=name,
+        rate_bp=rate_bp,
+        is_active=is_active,
+        created_by_user_id=user.id,
+        updated_by_user_id=user.id,
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+def update_invoice_tax_item(
+    db: Session, user: User, item_id: str,
+    name: str | None = None, rate_bp: int | None = None, is_active: bool | None = None,
+) -> InvoiceTaxItem:
+    item = db.get(InvoiceTaxItem, item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="发票销售项目不存在")
+    _check_group_ownership(user, item.group_id, "发票销售项目")
+    if name is not None:
+        new_name = name.strip()
+        clash_stmt = select(InvoiceTaxItem).where(
+            InvoiceTaxItem.name == new_name, InvoiceTaxItem.id != item_id
+        )
+        if item.group_id is not None:
+            clash_stmt = clash_stmt.where(InvoiceTaxItem.group_id == item.group_id)
+        if db.scalar(clash_stmt):
+            raise HTTPException(status_code=409, detail="税率名称已存在")
+        item.name = new_name
+    if rate_bp is not None:
+        _validate_rate_bp(rate_bp)
+        item.rate_bp = rate_bp
     if is_active is not None:
         item.is_active = is_active
     item.updated_by_user_id = user.id

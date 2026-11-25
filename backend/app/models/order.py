@@ -37,6 +37,11 @@ class Order(Base):
     note_popup: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # 支付方式 code（对应 payment_methods.code，可为空=未选择）
     payment_method_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 发票销售项目：选中后订单全部项目单价按对应税率上浮（快照税率，历史订单不受目录变更影响）
+    invoice_tax_item_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("invoice_tax_items.id"), nullable=True
+    )
+    invoice_tax_rate_bp: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # 软删除标记：由超管删除的订单仅置此标记，数据保留但前端不可见
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 

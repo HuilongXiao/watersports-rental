@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   App,
@@ -22,6 +22,7 @@ import {
   Table,
   Tabs,
   Tag,
+  Tooltip,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { RightOutlined } from '@ant-design/icons'
@@ -33,12 +34,20 @@ import { useLayoutMode } from '../layoutMode'
 import LayoutModeSwitch from '../components/LayoutModeSwitch'
 import FloatingBackButton from '../components/FloatingBackButton'
 import { fenToYuan, formatDateTime, typeColorHex, TYPE_COLOR_OPTIONS, yuanToFen } from '../utils'
+import { refreshSettingsIssues, useSettingsIssues, type SettingsIssues } from '../settingsIssues'
+import {
+  confirmUnsavedChanges,
+  useHistoryBackGuard,
+  useBeforeUnloadWarning,
+  type UnsavedGuard,
+} from '../unsavedGuard'
 import type {
   AppSettings,
   Catalog,
   EquipmentSpec,
   EquipmentType,
   InventoryRow,
+  InvoiceTaxItem,
   PaymentMethod,
   SaleItem,
 } from '../types'
@@ -76,54 +85,90 @@ export default function CatalogSettings() {
   // 配置类入口（器材目录/系统设置）仅管理员与超级管理员可见
   const isAdmin = Boolean(user && (user.role === 'superuser' || user.role === 'admin'))
 
-  // 器材目录待完善项（编号未完成 / 数量未填写）时，在「器材目录」入口显示红色感叹号
-  const [numberingAllComplete, setNumberingAllComplete] = useState(true)
-  const [quantityAllComplete, setQuantityAllComplete] = useState(true)
-  const refreshNumbering = useCallback(async () => {
-    try {
-      const [numbering, inventory, catalogData] = await Promise.all([
-        api.get<{ all_complete: boolean }>('/api/boats/numbering'),
-        api.get<InventoryRow[]>('/api/inventory'),
-        api.get<Catalog>('/api/catalog'),
-      ])
-      setNumberingAllComplete(numbering.all_complete)
-      // 启用中的器材都必须填写数量（0 视为未填写）
-      setQuantityAllComplete(
-        catalogData.equipment.every(
-          (spec) =>
-            !spec.is_active ||
-            (inventory.find((r) => r.equipment_spec_id === spec.id)?.total_quantity ?? 0) > 0,
-        ),
-      )
-    } catch {
-      // 降级：接口失败时不显示提醒，不阻塞页面
-    }
+  // 器材目录待完善项（编号未完成 / 数量未填写）：各级入口显示红色感叹号
+  const issues = useSettingsIssues(isAdmin)
+  const refreshNumbering = useCallback(() => {
+    refreshSettingsIssues()
   }, [])
-  useEffect(() => {
-    refreshNumbering()
-  }, [refreshNumbering])
+  const catalogInvalid = issues.hasIssues
+  const alertMark = <span style={{ color: '#ff4d4f', marginLeft: 4 }}>❗</span>
+
+  // 未保存提醒：各 tab 注册自己的「是否有改动 + 保存方法」，
+  // 切换 tab / 返回时先询问是否保存
+  const [sectionKey, setSectionKey] = useState(isAdmin ? '店铺管理' : '系统设置')
+  const [storeTabKey, setStoreTabKey] = useState('store-settings')
+  const [systemTabKey, setSystemTabKey] = useState('basic')
+  const guardsRef = useRef<Record<string, UnsavedGuard>>({})
+  const registerGuard = useCallback((key: string, fn: UnsavedGuard | null) => {
+    if (fn) guardsRef.current[key] = fn
+    else delete guardsRef.current[key]
+  }, [])
+  const canLeave = useCallback(async (key: string | null) => {
+    if (!key) return true
+    const guard = guardsRef.current[key]
+    return guard ? guard.confirmLeave() : true
+  }, [])
+  // 各 tab 上报是否有未保存改动（用于拦截手机边缘返回）
+  const [dirtyMap, setDirtyMap] = useState<Record<string, boolean>>({})
+  const reportDirty = useCallback((key: string, dirty: boolean) => {
+    setDirtyMap((prev) => (prev[key] === dirty ? prev : { ...prev, [key]: dirty }))
+  }, [])
+  const activeGuardKey = isMobile
+    ? mobileActive
+    : sectionKey === '店铺管理'
+      ? storeTabKey
+      : systemTabKey
+  useHistoryBackGuard(
+    Boolean(activeGuardKey && dirtyMap[activeGuardKey]),
+    () => (activeGuardKey ? guardsRef.current[activeGuardKey] ?? null : null),
+  )
+  const changeSection = useCallback(
+    async (next: string) => {
+      if (next === sectionKey) return
+      const inner = sectionKey === '店铺管理' ? storeTabKey : systemTabKey
+      if (!(await canLeave(inner))) return
+      setSectionKey(next)
+    },
+    [sectionKey, storeTabKey, systemTabKey, canLeave],
+  )
+  const changeInner = useCallback(
+    async (section: string, next: string) => {
+      const current = section === '店铺管理' ? storeTabKey : systemTabKey
+      if (next === current) return
+      if (!(await canLeave(current))) return
+      if (section === '店铺管理') setStoreTabKey(next)
+      else setSystemTabKey(next)
+    },
+    [storeTabKey, systemTabKey, canLeave],
+  )
 
   // 店铺管理：店铺设置 + 器材目录 / 类型管理 / 售卖项目
   const storeEntries: SettingsTabDef[] = [
     {
       key: 'store-settings',
       label: '店铺设置',
-      children: <StoreTab onNumberingChanged={refreshNumbering} />,
+      children: (
+        <StoreTab
+          onNumberingChanged={refreshNumbering}
+          guardKey="store-settings"
+          registerGuard={registerGuard}
+          onDirtyChange={reportDirty}
+        />
+      ),
     },
     {
       key: 'catalog',
       label: (
         <span>
           器材目录
-          {!(numberingAllComplete && quantityAllComplete) && (
-            <span style={{ color: '#ff4d4f', marginLeft: 4 }}>❗</span>
-          )}
+          {catalogInvalid && alertMark}
         </span>
       ),
-      children: <EquipmentTab onNumberingChanged={refreshNumbering} />,
+      children: <EquipmentTab onNumberingChanged={refreshNumbering} issues={issues} />,
     },
     { key: 'types', label: '类型管理', children: <TypeTab /> },
     { key: 'items', label: '售卖项目', children: <SaleTab /> },
+    { key: 'invoice', label: '发票税率', children: <InvoiceTab /> },
   ]
 
   // 系统设置 - 数据管理：数据导出 + 数据备份合并为一个页面（按权限显示对应卡片）
@@ -136,7 +181,17 @@ export default function CatalogSettings() {
 
   // 系统设置：基础设置 + 数据管理 + 用户管理 + Group 管理
   const systemEntries: SettingsTabDef[] = [
-    { key: 'basic', label: '基础设置', children: <BasicTab /> },
+    {
+      key: 'basic',
+      label: '基础设置',
+      children: (
+        <BasicTab
+          guardKey="basic"
+          registerGuard={registerGuard}
+          onDirtyChange={reportDirty}
+        />
+      ),
+    },
     ...(canExport || canBackup
       ? [{ key: 'data', label: '数据管理', children: dataManagement }]
       : []),
@@ -151,10 +206,25 @@ export default function CatalogSettings() {
     ...(isAdmin ? [{ title: '店铺管理', entries: storeEntries }] : []),
     { title: '系统设置', entries: systemEntries },
   ]
+  // 顶层入口也带感叹号：问题都在「店铺管理」内
   const tabs: SettingsTabDef[] = sections.map((section) => ({
     key: section.title,
-    label: section.title,
-    children: <Tabs items={section.entries} />,
+    label:
+      section.title === '店铺管理' && catalogInvalid ? (
+        <span>
+          {section.title}
+          {alertMark}
+        </span>
+      ) : (
+        section.title
+      ),
+    children: (
+      <Tabs
+        items={section.entries}
+        activeKey={section.title === '店铺管理' ? storeTabKey : systemTabKey}
+        onChange={(key) => changeInner(section.title, key)}
+      />
+    ),
   }))
   const allEntries = sections.flatMap((section) => section.entries)
 
@@ -164,7 +234,12 @@ export default function CatalogSettings() {
     if (current) {
       return (
         <div>
-          <FloatingBackButton onClick={() => setMobileActive(null)} ariaLabel="返回设置" />
+          <FloatingBackButton
+            onClick={async () => {
+              if (await canLeave(mobileActive)) setMobileActive(null)
+            }}
+            ariaLabel="返回设置"
+          />
           {current.children}
         </div>
       )
@@ -174,7 +249,16 @@ export default function CatalogSettings() {
         {sections.map((section) => (
           <Card
             key={section.title}
-            title={section.title}
+            title={
+              section.title === '店铺管理' && catalogInvalid ? (
+                <span>
+                  {section.title}
+                  {alertMark}
+                </span>
+              ) : (
+                section.title
+              )
+            }
             style={{ marginBottom: 16 }}
           >
             <List
@@ -196,7 +280,7 @@ export default function CatalogSettings() {
   }
 
   // 电脑版：横向 Tabs（保持原样）
-  return <Tabs items={tabs} />
+  return <Tabs items={tabs} activeKey={sectionKey} onChange={changeSection} />
 }
 
 /* ---------------- Equipment types & specs ---------------- */
@@ -233,7 +317,13 @@ function ColorSwatchPicker({
   )
 }
 
-function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void }) {
+function EquipmentTab({
+  onNumberingChanged,
+  issues,
+}: {
+  onNumberingChanged?: () => void
+  issues: SettingsIssues
+}) {
   const { isMobile } = useLayoutMode()
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const { message } = App.useApp()
@@ -304,8 +394,13 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
     setSpecModal(true)
   }
 
-  const submitSpec = async () => {
-    const values = await specForm.validateFields()
+  const submitSpec = async (): Promise<boolean> => {
+    let values: Awaited<ReturnType<typeof specForm.validateFields>>
+    try {
+      values = await specForm.validateFields()
+    } catch {
+      return false
+    }
     const quantity = values.quantity ?? 0
     const body = {
       equipment_type_id: values.equipment_type_id,
@@ -333,9 +428,26 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
       setSpecModal(false)
       load()
       onNumberingChanged?.()
+      return true
     } catch (error) {
       message.error(error instanceof Error ? error.message : '保存失败')
+      return false
     }
+  }
+
+  // 编辑规格未保存就关闭：提示是否保存
+  const closeSpecModal = async () => {
+    const switchesChanged = editingSpec
+      ? specActive !== editingSpec.is_active ||
+        numberingRequired !== (editingSpec.boat_numbering_required ?? true) ||
+        showInUsage !== (editingSpec.show_in_usage ?? true)
+      : false
+    if (!specForm.isFieldsTouched() && !switchesChanged) {
+      setSpecModal(false)
+      return
+    }
+    const ok = await confirmUnsavedChanges(() => submitSpec())
+    if (ok) setSpecModal(false)
   }
 
   // 数量为必填项：启用中且总数量为 0 视为「未填写」，在表头与对应行显示红色感叹号
@@ -348,6 +460,20 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
             0) === 0,
       )
       .map((spec) => spec.id),
+  )
+
+  // 编号未完成的规格：在「数量」框后显示感叹号，点击直接打开器材编号
+  const numberingBySpec = new Map(issues.numbering.map((i) => [i.specId, i]))
+  // 编辑规格弹窗内的即时校验
+  const qtyValue = Form.useWatch('quantity', specForm)
+  const qtyMissing =
+    qtyValue === undefined || qtyValue === null || Number(qtyValue) <= 0
+  const numberingStatusById = new Map(
+    issues.numberingStatus.map((s) => [s.specId, s]),
+  )
+  const editingStatus = editingSpec ? numberingStatusById.get(editingSpec.id) : undefined
+  const editingNumberingIncomplete = Boolean(
+    editingStatus && editingStatus.target > 0 && editingStatus.numbered < editingStatus.target,
   )
 
   const specColumns: ColumnsType<EquipmentSpec> = [
@@ -406,14 +532,7 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
       ),
     },
     {
-      title:
-        missingQuantityIds.size > 0 ? (
-          <span style={{ whiteSpace: 'nowrap' }}>
-            数量 <span style={{ color: '#ff4d4f' }}>❗</span>
-          </span>
-        ) : (
-          '数量'
-        ),
+      title: '数量',
       width: isMobile ? 62 : 110,
       align: 'center',
       render: (_, record) => {
@@ -437,6 +556,20 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
             </span>
             {missingQuantityIds.has(record.id) && (
               <span style={{ color: '#ff4d4f', marginLeft: 4 }}>❗</span>
+            )}
+            {numberingBySpec.has(record.id) && (
+              <Tooltip title="该器材编号未完成，点击设置">
+                <span
+                  style={{ color: '#ff4d4f', marginLeft: 4, cursor: 'pointer' }}
+                  onClick={(e) => {
+                    // 不触发行点击（打开编辑规格）
+                    e.stopPropagation()
+                    setNumberingSpecId(record.id)
+                  }}
+                >
+                  ❗
+                </span>
+              </Tooltip>
             )}
           </span>
         )
@@ -472,7 +605,7 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
       <Modal
         title={editingSpec ? '编辑规格' : '新建规格'}
         open={specModal}
-        onCancel={() => setSpecModal(false)}
+        onCancel={closeSpecModal}
         onOk={submitSpec}
         destroyOnClose
       >
@@ -543,7 +676,16 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
             </Col>
           </Row>
           <Form.Item
-            label="数量"
+            label={
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                数量
+                {qtyMissing && (
+                  <span style={{ color: '#ff4d4f', fontSize: 12, fontWeight: 400 }}>
+                    数量未填写
+                  </span>
+                )}
+              </span>
+            }
             name="quantity"
             rules={[
               { required: true, message: '请输入数量' },
@@ -597,7 +739,11 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
                     checkedChildren="开"
                     unCheckedChildren="关"
                     checked={numberingRequired}
-                    onChange={setNumberingRequired}
+                    onChange={(checked) => {
+                      setNumberingRequired(checked)
+                      // 开启后立即要求完成编号：直接打开编号弹窗
+                      if (checked) setNumberingSpecId(editingSpec.id)
+                    }}
                   />
                 </div>
                 <Button
@@ -606,6 +752,13 @@ function EquipmentTab({ onNumberingChanged }: { onNumberingChanged?: () => void 
                 >
                   器材编号
                 </Button>
+                {editingNumberingIncomplete && (
+                  <span style={{ color: '#ff4d4f', fontSize: 12 }}>
+                    {numberingRequired
+                      ? `❗ 已开启器材编号，需要完成全部器材编号（${editingStatus?.numbered ?? 0}/${editingStatus?.target ?? 0}）后才能保存。`
+                      : '❗ 如开启器材编号功能，需要先完成全部器材编号。'}
+                  </span>
+                )}
               </div>
             </Form.Item>
           )}
@@ -676,6 +829,8 @@ function NumberingModal({
   }, [open, specId, message])
 
   const target = view?.target_quantity ?? 0
+  // 尚未填写的编号数量（含未编满的情况）
+  const missingCount = numbers.filter((n) => !n.trim()).length
 
   const generate = () => {
     if (step < 1) {
@@ -728,6 +883,11 @@ function NumberingModal({
         <div style={{ padding: 24, textAlign: 'center' }}>加载中…</div>
       ) : (
         <>
+          {missingCount > 0 && (
+            <div style={{ color: '#ff4d4f', marginBottom: 8 }}>
+              ❗ 该器材共 {target} 件，还有 {missingCount} 件未填写编号，请补全后保存。
+            </div>
+          )}
           <p style={{ color: '#666', marginBottom: 12 }}>
             该器材共 <b>{target}</b> 件，必须全部填写编号后才能保存；所有器材之间的编号不能相同。
           </p>
@@ -835,8 +995,13 @@ function TypeTab() {
     setModalOpen(true)
   }
 
-  const submit = async () => {
-    const values = await form.validateFields()
+  const submit = async (): Promise<boolean> => {
+    let values: { name: string; color: string; is_active: boolean }
+    try {
+      values = await form.validateFields()
+    } catch {
+      return false
+    }
     try {
       if (editingType) {
         await api.put(`/api/catalog/equipment-types/${editingType.id}`, values)
@@ -846,9 +1011,20 @@ function TypeTab() {
       message.success('已保存')
       setModalOpen(false)
       load()
+      return true
     } catch (error) {
       message.error(error instanceof Error ? error.message : '保存失败')
+      return false
     }
+  }
+
+  // 有未保存的修改就关闭时，提示是否保存
+  const closeModal = async () => {
+    if (!form.isFieldsTouched()) {
+      setModalOpen(false)
+      return
+    }
+    if (await confirmUnsavedChanges(() => submit())) setModalOpen(false)
   }
 
   const columns: ColumnsType<EquipmentType> = [
@@ -928,7 +1104,7 @@ function TypeTab() {
       <Modal
         title={editingType ? '编辑类型' : '新建类型'}
         open={modalOpen}
-        onCancel={() => setModalOpen(false)}
+        onCancel={closeModal}
         onOk={submit}
         destroyOnClose
       >
@@ -985,8 +1161,13 @@ function SaleTab() {
     setModalOpen(true)
   }
 
-  const submit = async () => {
-    const values = await form.validateFields()
+  const submit = async (): Promise<boolean> => {
+    let values: { name: string; price: number; is_active: boolean }
+    try {
+      values = await form.validateFields()
+    } catch {
+      return false
+    }
     const body = {
       name: values.name,
       price: yuanToFen(values.price),
@@ -998,9 +1179,20 @@ function SaleTab() {
       message.success('已保存')
       setModalOpen(false)
       load()
+      return true
     } catch (error) {
       message.error(error instanceof Error ? error.message : '保存失败')
+      return false
     }
+  }
+
+  // 有未保存的修改就关闭时，提示是否保存
+  const closeModal = async () => {
+    if (!form.isFieldsTouched()) {
+      setModalOpen(false)
+      return
+    }
+    if (await confirmUnsavedChanges(() => submit())) setModalOpen(false)
   }
 
   return (
@@ -1068,7 +1260,7 @@ function SaleTab() {
       <Modal
         title={editing ? '编辑售卖项目' : '新建售卖项目'}
         open={modalOpen}
-        onCancel={() => setModalOpen(false)}
+        onCancel={closeModal}
         onOk={submit}
         destroyOnClose
       >
@@ -1085,6 +1277,178 @@ function SaleTab() {
               name="is_active"
               valuePropName="checked"
               extra="停用后新订单将无法选择该项目；已停用的项目可在此重新启用，历史订单不受影响。"
+            >
+              <Switch checkedChildren="启用" unCheckedChildren="停用" />
+            </Form.Item>
+          )}
+        </Form>
+      </Modal>
+    </Card>
+  )
+}
+
+/* ---------------- Invoice tax items ---------------- */
+
+function InvoiceTab() {
+  const { isMobile } = useLayoutMode()
+  const [catalog, setCatalog] = useState<Catalog | null>(null)
+  const { message } = App.useApp()
+  const [modalOpen, setModalOpen] = useState(false)
+  const [editing, setEditing] = useState<InvoiceTaxItem | null>(null)
+  const [form] = Form.useForm<{ name: string; rate: number; is_active: boolean }>()
+
+  const load = useCallback(async () => {
+    setCatalog(await api.get<Catalog>('/api/catalog'))
+  }, [])
+
+  useEffect(() => {
+    load().catch((error) => message.error(error.message))
+  }, [load, message])
+
+  const open = (item: InvoiceTaxItem | null) => {
+    setEditing(item)
+    if (item) {
+      form.setFieldsValue({
+        name: item.name,
+        rate: item.rate_bp / 100,
+        is_active: item.is_active,
+      })
+    } else form.resetFields()
+    setModalOpen(true)
+  }
+
+  const submit = async (): Promise<boolean> => {
+    let values: { name: string; rate: number; is_active: boolean }
+    try {
+      values = await form.validateFields()
+    } catch {
+      return false
+    }
+    const body = {
+      name: values.name,
+      rate_bp: Math.round(values.rate * 100),
+      ...(editing ? { is_active: values.is_active ?? true } : {}),
+    }
+    try {
+      if (editing) await api.put(`/api/catalog/invoice-tax-items/${editing.id}`, body)
+      else await api.post('/api/catalog/invoice-tax-items', body)
+      message.success('已保存')
+      setModalOpen(false)
+      load()
+      return true
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '保存失败')
+      return false
+    }
+  }
+
+  // 有未保存的修改就关闭时，提示是否保存
+  const closeModal = async () => {
+    if (!form.isFieldsTouched()) {
+      setModalOpen(false)
+      return
+    }
+    if (await confirmUnsavedChanges(() => submit())) setModalOpen(false)
+  }
+
+  // 税率展示：整百分比不带小数（6%），非整百分比保留两位（6.50%）
+  const formatRate = (rateBp: number) =>
+    `${rateBp % 100 === 0 ? String(rateBp / 100) : (rateBp / 100).toFixed(2)}%`
+
+  return (
+    <Card
+      title="发票税率"
+      extra={
+        <Button type="primary" onClick={() => open(null)}>
+          新建发票销售项目
+        </Button>
+      }
+    >
+      <Table
+        rowKey="id"
+        dataSource={catalog?.invoice_tax_items ?? []}
+        pagination={false}
+        tableLayout="fixed"
+        columns={[
+          {
+            title: '税率名称',
+            dataIndex: 'name',
+            align: 'center',
+            width: isMobile ? 108 : undefined,
+            ellipsis: isMobile,
+            render: (v: string) => <span style={{ whiteSpace: 'nowrap' }}>{v}</span>,
+          },
+          {
+            title: '税率',
+            dataIndex: 'rate_bp',
+            align: 'center',
+            width: isMobile ? 84 : 120,
+            render: (v: number, record) => (
+              <span
+                style={{
+                  display: 'inline-block',
+                  whiteSpace: 'nowrap',
+                  color: record.is_active ? undefined : '#8c8c8c',
+                }}
+              >
+                {formatRate(v)}
+              </span>
+            ),
+          },
+          {
+            title: '状态',
+            dataIndex: 'is_active',
+            align: 'center',
+            width: isMobile ? 84 : 110,
+            render: (v: boolean) => (v ? <Tag color="green">启用</Tag> : <Tag>已停用</Tag>),
+          },
+          {
+            title: '操作',
+            align: 'center',
+            width: isMobile ? 56 : 90,
+            render: (_, record) => (
+              <Button type="link" size="small" onClick={() => open(record)}>
+                编辑
+              </Button>
+            ),
+          },
+        ]}
+      />
+      <Modal
+        title={editing ? '编辑发票销售项目' : '新建发票销售项目'}
+        open={modalOpen}
+        onCancel={closeModal}
+        onOk={submit}
+        destroyOnClose
+      >
+        <Form form={form} layout="vertical">
+          <Form.Item
+            label="税率名称"
+            name="name"
+            rules={[{ required: true, message: '请输入税率名称' }]}
+          >
+            <Input placeholder="如：增值税专票 6%" />
+          </Form.Item>
+          <Form.Item
+            label="税率（%）"
+            name="rate"
+            rules={[{ required: true, message: '请输入税率' }]}
+            extra="订单选择该发票销售项目后，全部项目单价按此税率上浮。"
+          >
+            <InputNumber
+              min={0}
+              max={100}
+              precision={2}
+              inputMode="decimal"
+              style={{ width: '100%' }}
+            />
+          </Form.Item>
+          {editing && (
+            <Form.Item
+              label="启用状态"
+              name="is_active"
+              valuePropName="checked"
+              extra="停用后新订单将无法选择该项目；历史订单不受影响。"
             >
               <Switch checkedChildren="启用" unCheckedChildren="停用" />
             </Form.Item>
@@ -1283,7 +1647,17 @@ function PaymentSection() {
   )
 }
 
-function StoreTab({ onNumberingChanged }: { onNumberingChanged?: () => void }) {
+function StoreTab({
+  onNumberingChanged,
+  guardKey,
+  registerGuard,
+  onDirtyChange,
+}: {
+  onNumberingChanged?: () => void
+  guardKey?: string
+  registerGuard?: (key: string, fn: UnsavedGuard | null) => void
+  onDirtyChange?: (key: string, dirty: boolean) => void
+}) {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [minutes, setMinutes] = useState(120)
   const [autoReturnOn, setAutoReturnOn] = useState(true)
@@ -1347,11 +1721,11 @@ function StoreTab({ onNumberingChanged }: { onNumberingChanged?: () => void }) {
     )
   }
 
-  const save = async () => {
+  const save = async (): Promise<boolean> => {
     // 经度与纬度必须同时填写（都不填表示未设置）
     if ((latitude === null) !== (longitude === null)) {
       message.error('店铺坐标需要同时填写经度与纬度')
-      return
+      return false
     }
     setSaving(true)
     try {
@@ -1380,12 +1754,44 @@ function StoreTab({ onNumberingChanged }: { onNumberingChanged?: () => void }) {
       refreshGlobalSettings()
       onNumberingChanged?.()
       message.success('设置已保存')
+      return true
     } catch (error) {
       message.error(error instanceof Error ? error.message : '保存失败')
+      return false
     } finally {
       setSaving(false)
     }
   }
+
+  // 有改动但未保存：切换 tab / 返回时提示
+  const dirty = Boolean(settings) && (
+    minutes !== settings!.auto_return_after_minutes ||
+    autoReturnOn !== settings!.auto_return_enabled ||
+    boatNumbering !== settings!.boat_numbering_enabled ||
+    latitude !== settings!.shop_latitude ||
+    longitude !== settings!.shop_longitude ||
+    shopName !== (settings!.shop_name ?? '') ||
+    shopPhone !== (settings!.shop_phone ?? '') ||
+    shopAddress !== (settings!.shop_address ?? '')
+  )
+  useBeforeUnloadWarning(dirty)
+  const dirtyRef = useRef(dirty)
+  dirtyRef.current = dirty
+  const saveRef = useRef(save)
+  saveRef.current = save
+  useEffect(() => {
+    if (!guardKey || !registerGuard) return
+    registerGuard(guardKey, {
+      isDirty: () => dirtyRef.current,
+      confirmLeave: async () =>
+        dirtyRef.current ? confirmUnsavedChanges(() => saveRef.current()) : true,
+    })
+    return () => registerGuard(guardKey, null)
+  }, [guardKey, registerGuard])
+  // 上报改动状态，交给历史守卫拦截手机边缘返回
+  useEffect(() => {
+    if (guardKey) onDirtyChange?.(guardKey, dirty)
+  }, [dirty, guardKey, onDirtyChange])
 
   return (
     <Card title="店铺设置">
@@ -1445,6 +1851,13 @@ function StoreTab({ onNumberingChanged }: { onNumberingChanged?: () => void }) {
             maxLength={40}
             placeholder="如：13800000000"
           />
+          <Input
+            addonBefore="店铺地址"
+            value={shopAddress}
+            onChange={(e) => setShopAddress(e.target.value)}
+            maxLength={200}
+            placeholder="如：上海市浦东新区xx路xx号"
+          />
         </div>
         <Divider style={{ borderColor: '#d9d9d9', margin: '16px 0' }} />
         {/* 店铺坐标：每个 Group 独立，顶部天气信息按此坐标获取 */}
@@ -1484,14 +1897,6 @@ function StoreTab({ onNumberingChanged }: { onNumberingChanged?: () => void }) {
             style={{ width: 140 }}
           />
         </Space>
-        <Input
-          addonBefore="店铺地址"
-          value={shopAddress}
-          onChange={(e) => setShopAddress(e.target.value)}
-          maxLength={200}
-          placeholder="如：上海市浦东新区xx路xx号"
-          style={{ marginTop: 8 }}
-        />
         <div style={{ color: '#888', fontSize: 12, marginTop: 4 }}>
           用于顶部天气信息，按该坐标展示当地天气；经度与纬度需同时填写。
         </div>
@@ -1513,7 +1918,15 @@ function StoreTab({ onNumberingChanged }: { onNumberingChanged?: () => void }) {
   )
 }
 
-function BasicTab() {
+function BasicTab({
+  guardKey,
+  registerGuard,
+  onDirtyChange,
+}: {
+  guardKey?: string
+  registerGuard?: (key: string, fn: UnsavedGuard | null) => void
+  onDirtyChange?: (key: string, dirty: boolean) => void
+} = {}) {
   const { user } = useAuth()
   // 极速客户模式仅管理员与超级管理员可改
   const isAdmin = Boolean(user && (user.role === 'superuser' || user.role === 'admin'))
@@ -1545,7 +1958,7 @@ function BasicTab() {
       .catch((error) => message.error(error.message))
   }, [message])
 
-  const save = async () => {
+  const save = async (): Promise<boolean> => {
     setSaving(true)
     try {
       const result = await api.put<AppSettings>('/api/settings', {
@@ -1571,12 +1984,35 @@ function BasicTab() {
       )
       refreshGlobalSettings()
       message.success('设置已保存')
+      return true
     } catch (error) {
       message.error(error instanceof Error ? error.message : '保存失败')
+      return false
     } finally {
       setSaving(false)
     }
   }
+
+  // 有改动但未保存：切换 tab / 返回时提示
+  const dirty = Boolean(settings) && fastMode !== settings!.fast_customer_mode
+  useBeforeUnloadWarning(dirty)
+  const dirtyRef = useRef(dirty)
+  dirtyRef.current = dirty
+  const saveRef = useRef(save)
+  saveRef.current = save
+  useEffect(() => {
+    if (!guardKey || !registerGuard) return
+    registerGuard(guardKey, {
+      isDirty: () => dirtyRef.current,
+      confirmLeave: async () =>
+        dirtyRef.current ? confirmUnsavedChanges(() => saveRef.current()) : true,
+    })
+    return () => registerGuard(guardKey, null)
+  }, [guardKey, registerGuard])
+  // 上报改动状态，交给历史守卫拦截手机边缘返回
+  useEffect(() => {
+    if (guardKey) onDirtyChange?.(guardKey, dirty)
+  }, [dirty, guardKey, onDirtyChange])
 
   return (
     <Card title="基础设置">

@@ -21,7 +21,7 @@ from app.core.time_utils import (
 )
 from app.models.customer import Customer
 from app.models.boat import BoatDispatch
-from app.models.equipment import EquipmentSpec, EquipmentType, SaleItem
+from app.models.equipment import EquipmentSpec, EquipmentType, InvoiceTaxItem, SaleItem
 from app.models.group import Group
 from app.models.inventory import InventoryConfiguration
 from app.models.order import Order, OrderItem
@@ -116,6 +116,28 @@ def _resolve_items(db: Session, payload_items: list) -> list[tuple[str | None, s
                 raise HTTPException(status_code=422, detail="售卖项目不可用或已停用")
             resolved.append((None, sale.id, item.quantity, sale))
     return resolved
+
+
+def _resolve_invoice_tax_item(
+    db: Session, payload, allow_inactive: bool = False
+) -> InvoiceTaxItem | None:
+    """解析订单选择的发票销售项目（一个订单最多一个）。"""
+    invoice_id = getattr(payload, "invoice_tax_item_id", None)
+    if not invoice_id:
+        return None
+    item = db.get(InvoiceTaxItem, invoice_id)
+    if not item:
+        raise HTTPException(status_code=422, detail="发票销售项目不存在")
+    if not item.is_active and not allow_inactive:
+        raise HTTPException(status_code=422, detail="发票销售项目已停用")
+    return item
+
+
+def _apply_invoice_tax(price: int, rate_bp: int | None) -> int:
+    """按税率（基点）上浮单价，四舍五入到分。"""
+    if not rate_bp:
+        return price
+    return (price * (10000 + rate_bp) + 5000) // 10000
 
 
 def _sole_group_id(db: Session) -> str | None:
@@ -375,6 +397,9 @@ def create_order(db: Session, user: User, payload, active_group_id: str | None =
     spec_quantities = [(ref, qty) for _, _, qty, ref in resolved if isinstance(ref, EquipmentSpec)]
     validate_people_capacity(spec_quantities, payload.adult_count, payload.child_count)
 
+    invoice_tax = _resolve_invoice_tax_item(db, payload)
+    tax_rate_bp = invoice_tax.rate_bp if invoice_tax else None
+
     order = Order(
         id=str(uuid4()),
         group_id=active_group_id if active_group_id else customer.group_id,
@@ -395,6 +420,8 @@ def create_order(db: Session, user: User, payload, active_group_id: str | None =
         payment_method_code=_resolve_payment_method_code(
             db, payload, user_group_id=(active_group_id or customer.group_id)
         ),
+        invoice_tax_item_id=invoice_tax.id if invoice_tax else None,
+        invoice_tax_rate_bp=tax_rate_bp,
         created_by_user_id=user.id,
         updated_by_user_id=user.id,
     )
@@ -408,7 +435,7 @@ def create_order(db: Session, user: User, payload, active_group_id: str | None =
                 equipment_spec_id=spec_id,
                 sale_item_id=sale_id,
                 quantity=quantity,
-                unit_price=catalog.price,
+                unit_price=_apply_invoice_tax(catalog.price, tax_rate_bp),
                 created_by_user_id=user.id,
                 updated_by_user_id=user.id,
             )
@@ -623,6 +650,16 @@ def update_order(
     resolved = _resolve_items(db, payload.items)
     spec_quantities = [(ref, qty) for _, _, qty, ref in resolved if isinstance(ref, EquipmentSpec)]
     validate_people_capacity(spec_quantities, payload.adult_count, payload.child_count)
+    # 保留原有发票项目可继续使用（即使已停用）；新选择的发票项目必须启用
+    invoice_tax = _resolve_invoice_tax_item(
+        db,
+        payload,
+        allow_inactive=(
+            bool(payload.invoice_tax_item_id)
+            and payload.invoice_tax_item_id == order.invoice_tax_item_id
+        ),
+    )
+    tax_rate_bp = invoice_tax.rate_bp if invoice_tax else None
 
     # 进行中订单：器材项目必须与原订单完全一致（不可增删改），仅可调整销售项目
     if order.check_in_at is not None:
@@ -655,6 +692,8 @@ def update_order(
             user.id, order.id, order.payment_method_code, new_pm,
         )
     order.payment_method_code = new_pm
+    order.invoice_tax_item_id = invoice_tax.id if invoice_tax else None
+    order.invoice_tax_rate_bp = tax_rate_bp
     order.updated_by_user_id = user.id
 
     # 编辑订单会重建订单项目：先清空旧项目的拆分记录，避免残留
@@ -674,7 +713,7 @@ def update_order(
                 equipment_spec_id=spec_id,
                 sale_item_id=sale_id,
                 quantity=quantity,
-                unit_price=catalog.price,
+                unit_price=_apply_invoice_tax(catalog.price, tax_rate_bp),
                 created_by_user_id=user.id,
                 updated_by_user_id=user.id,
             )

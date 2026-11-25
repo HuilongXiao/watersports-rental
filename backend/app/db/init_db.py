@@ -53,6 +53,8 @@ _ADDITIVE_COLUMNS = [
     ("payment_items", "order_item_id", "VARCHAR(36)"),
     ("payment_items", "kind", "VARCHAR(16)"),
     ("payment_items", "order_item_split_id", "VARCHAR(36)"),
+    ("orders", "invoice_tax_item_id", "VARCHAR(36)"),
+    ("orders", "invoice_tax_rate_bp", "INTEGER"),
 ]
 
 

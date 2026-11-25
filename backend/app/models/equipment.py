@@ -80,6 +80,34 @@ class EquipmentSpec(Base):
     )
 
 
+class InvoiceTaxItem(Base):
+    """发票销售项目：订单选择后使全部项目单价上浮对应税率。
+
+    税率以「基点」整数存储（100 bp = 1%），避免浮点误差；前端按百分数展示。
+    """
+
+    __tablename__ = "invoice_tax_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, index=True)
+    group_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("groups.id"), nullable=True, index=True
+    )
+    # 税率名称，如「增值税专票 6%」
+    name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    # 税率（基点）：600 = 6%
+    rate_bp: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_by_user_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    updated_by_user_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    created_at: Mapped[object] = mapped_column(UtcDateTime(), default=utc_now, nullable=False)
+    updated_at: Mapped[object] = mapped_column(UtcDateTime(), default=utc_now, onupdate=utc_now, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("rate_bp >= 0 AND rate_bp <= 10000", name="ck_invoice_tax_items_rate"),
+        UniqueConstraint("group_id", "name", name="uq_invoice_tax_items_group_name"),
+    )
+
+
 class SaleItem(Base):
     __tablename__ = "sale_items"
 

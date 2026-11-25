@@ -114,10 +114,19 @@ export interface SaleItem {
   sold_quantity_7d: number
 }
 
+export interface InvoiceTaxItem {
+  id: string
+  name: string
+  // 税率（基点）：100 = 1%，600 = 6%
+  rate_bp: number
+  is_active: boolean
+}
+
 export interface Catalog {
   equipment_types: EquipmentType[]
   equipment: EquipmentSpec[]
   sale_items: SaleItem[]
+  invoice_tax_items: InvoiceTaxItem[]
 }
 
 export interface InventoryRow {
@@ -209,6 +218,11 @@ export interface Order {
   is_walk_in: boolean
   note_popup: boolean
   payment_method_code: string | null
+  // 发票销售项目（选中后订单全部项目单价按税率上浮）
+  invoice_tax_item_id: string | null
+  invoice_tax_item_name: string | null
+  // 税率（百分数，如 6 表示 6%）
+  invoice_tax_rate: number | null
   items: OrderItem[]
   items_total_fen: number
   refund_amount_fen: number

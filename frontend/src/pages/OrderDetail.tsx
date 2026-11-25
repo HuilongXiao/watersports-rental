@@ -117,6 +117,8 @@ interface ItemDisplayRow {
   amountFen: number
   // 该行累计调整（退款/调价，负数为减少），用于金额标红
   adjustedFen: number
+  // 发票销售项目行（数量固定 1，不参与金额与调整）
+  isInvoice?: boolean
 }
 
 // 按订单项目 + 支付视图计算表格行与每行净额（含退款/调价）。
@@ -475,6 +477,30 @@ export default function OrderDetail({
       : ''
 
   const { rows: itemRows, refundedOf } = computeItemRows(order.items, payment)
+  // 发票销售项目与器材、售卖项目同列表展示，数量固定为 1，不产生金额
+  const invoiceRow: ItemDisplayRow | null = order.invoice_tax_item_id
+    ? {
+        key: `invoice-${order.invoice_tax_item_id}`,
+        item: {
+          id: `invoice-${order.invoice_tax_item_id}`,
+          equipment_spec_id: null,
+          sale_item_id: null,
+          quantity: 1,
+          unit_price: 0,
+          line_amount: 0,
+          locked: true,
+        },
+        splitId: null,
+        name: `${order.invoice_tax_item_name ?? '发票税率'}（税率 ${
+          order.invoice_tax_rate ?? 0
+        }%）`,
+        quantity: 1,
+        amountFen: 0,
+        adjustedFen: 0,
+        isInvoice: true,
+      }
+    : null
+  const displayRows = invoiceRow ? [invoiceRow, ...itemRows] : itemRows
   const itemsOriginalTotal = order.items.reduce((sum, item) => sum + item.line_amount, 0)
   const adjustedTotal = order.items.reduce((sum, item) => sum + refundedOf(item.id), 0)
 
@@ -894,7 +920,7 @@ export default function OrderDetail({
           size="small"
           pagination={false}
           tableLayout="fixed"
-          dataSource={itemRows}
+          dataSource={displayRows}
           summary={() => (
             <Table.Summary.Row>
               <Table.Summary.Cell index={0} align="center">
@@ -950,7 +976,9 @@ export default function OrderDetail({
               onHeaderCell: centerHeader,
               onCell: nowrapCell,
               render: (_, row) =>
-                renderMoney(row.amountFen, row.adjustedFen !== 0 ? '#cf1322' : undefined),
+                row.isInvoice
+                  ? '—'
+                  : renderMoney(row.amountFen, row.adjustedFen !== 0 ? '#cf1322' : undefined),
             },
             {
               title: '调整',
@@ -959,6 +987,7 @@ export default function OrderDetail({
               onHeaderCell: centerHeader,
               onCell: centeredCell,
               render: (_, row) => {
+                if (row.isInvoice) return null
                 if (!canEditOrder) return null
                 const menuItems = [
                   { key: 'price', label: '调整价格' },

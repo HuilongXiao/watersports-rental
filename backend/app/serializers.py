@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.time_utils import to_iso_z
 from app.models.boat import BoatDispatch
 from app.models.customer import Customer
-from app.models.equipment import EquipmentSpec, EquipmentType, SaleItem
+from app.models.equipment import EquipmentSpec, EquipmentType, InvoiceTaxItem, SaleItem
 from app.models.order import Order, OrderItem
 from app.models.payment import Payment, PaymentItem
 from app.models.user import User
@@ -90,6 +90,13 @@ def _catalog_names(db: Session, items: list[OrderItem]) -> tuple[dict, dict, dic
         for s in db.scalars(select(SaleItem).where(SaleItem.id.in_(sale_ids))).all()
     } if sale_ids else {}
     return spec_names, sale_names, spec_colors, spec_numbering
+
+
+def _invoice_name(db: Session, invoice_id: str | None) -> str | None:
+    if not invoice_id:
+        return None
+    item = db.get(InvoiceTaxItem, invoice_id)
+    return item.name if item else None
 
 
 def order_item_dict(
@@ -181,6 +188,7 @@ def _order_payload(
     refund_total: int,
     check_in_warnings: list[dict] | None = None,
     boat_times: dict | None = None,
+    invoice_name: str | None = None,
 ) -> dict:
     """由已预取的关联数据组装订单响应体（不做任何 DB 查询）。
 
@@ -213,6 +221,14 @@ def _order_payload(
         "is_walk_in": order.is_walk_in,
         "note_popup": order.note_popup,
         "payment_method_code": order.payment_method_code,
+        "invoice_tax_item_id": order.invoice_tax_item_id,
+        "invoice_tax_item_name": invoice_name,
+        # 税率以百分数返回，便于前端展示（基点为 1/100 %）
+        "invoice_tax_rate": (
+            order.invoice_tax_rate_bp / 100
+            if order.invoice_tax_rate_bp is not None
+            else None
+        ),
         "items": [
             order_item_dict(i, spec_names, sale_names, spec_colors, spec_numbering, locked)
             for i in items
@@ -330,6 +346,7 @@ def order_dict(db: Session, order: Order, items: list[OrderItem] | None = None,
         order, items, spec_names, sale_names, spec_colors, spec_numbering,
         names, system_ids, codes, adjustments_total, refund_total, check_in_warnings,
         boat_times=boat_times,
+        invoice_name=_invoice_name(db, order.invoice_tax_item_id),
     )
 
 
@@ -393,7 +410,15 @@ def orders_dict(db: Session, orders: list[Order]) -> list[dict]:
         .group_by(Payment.order_id)
     ).all():
         refunds[oid] = int(total)
-    # 6) 组装响应
+    # 6) 发票销售项目名称：一次查询
+    invoice_ids = {o.invoice_tax_item_id for o in orders if o.invoice_tax_item_id}
+    invoice_names = {
+        i.id: i.name
+        for i in db.scalars(
+            select(InvoiceTaxItem).where(InvoiceTaxItem.id.in_(invoice_ids))
+        ).all()
+    } if invoice_ids else {}
+    # 7) 组装响应
     return [
         _order_payload(
             o,
@@ -402,6 +427,7 @@ def orders_dict(db: Session, orders: list[Order]) -> list[dict]:
             names, system_ids, codes,
             adjustments.get(o.id, 0), refunds.get(o.id, 0),
             boat_times=boat_times.get(o.id, {}),
+            invoice_name=invoice_names.get(o.invoice_tax_item_id),
         )
         for o in orders
     ]

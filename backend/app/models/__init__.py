@@ -1,6 +1,6 @@
 from app.models.boat import BoatDispatch, BoatNumber
 from app.models.customer import Customer
-from app.models.equipment import EquipmentSpec, EquipmentType, SaleItem
+from app.models.equipment import EquipmentSpec, EquipmentType, InvoiceTaxItem, SaleItem
 from app.models.group import Group
 from app.models.inventory import InventoryConfiguration
 from app.models.order import Order, OrderItem
@@ -18,6 +18,7 @@ __all__ = [
     "EquipmentType",
     "EquipmentSpec",
     "SaleItem",
+    "InvoiceTaxItem",
     "InventoryConfiguration",
     "Order",
     "OrderItem",

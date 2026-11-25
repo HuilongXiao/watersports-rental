@@ -37,11 +37,21 @@ const PaymentMethodSelector = lazy(() => import('../components/PaymentMethodSele
 
 interface DraftItem {
   key: string
-  kind: 'equipment' | 'sale'
+  kind: 'equipment' | 'sale' | 'invoice'
   item_id: string | null
   quantity: number
   /** 是否为从已有订单加载的原始项（进行中订单的原始项不可修改/删除） */
   isOriginal?: boolean
+}
+
+interface ItemOption {
+  id: string
+  kind: 'equipment' | 'sale' | 'invoice'
+  name: string
+  price: number
+  sold_quantity_7d: number
+  /** 发票销售项目的税率（基点），仅 kind === 'invoice' 时有值 */
+  rate_bp?: number
 }
 
 export default function OrderForm({
@@ -218,13 +228,26 @@ export default function OrderForm({
           setCustomerPhone(order.customer_phone ?? '')
           setCustomerWechatId(order.customer_wechat_id ?? '')
           setItems(
-            order.items.map((item) => ({
-              key: item.id,
-              kind: item.equipment_spec_id ? 'equipment' : 'sale',
-              item_id: item.equipment_spec_id ?? item.sale_item_id,
-              quantity: item.quantity,
-              isOriginal: true,
-            })),
+            [
+              ...order.items.map((item) => ({
+                key: item.id,
+                kind: (item.equipment_spec_id ? 'equipment' : 'sale') as DraftItem['kind'],
+                item_id: item.equipment_spec_id ?? item.sale_item_id,
+                quantity: item.quantity,
+                isOriginal: true,
+              })),
+              // 发票销售项目与器材、售卖项目同列表展示，数量固定为 1
+              ...(order.invoice_tax_item_id
+                ? [
+                    {
+                      key: `invoice-${order.id}`,
+                      kind: 'invoice' as const,
+                      item_id: order.invoice_tax_item_id,
+                      quantity: 1,
+                    },
+                  ]
+                : []),
+            ],
           )
           peopleTouched.current = true
         })
@@ -314,7 +337,20 @@ export default function OrderForm({
     priceMap.set(s.id, { price: s.price, name: s.name, capacity: null }),
   )
 
-  const applyDefaultPeople = (specId: string | null, kind: 'equipment' | 'sale') => {
+  // 发票销售项目：同一订单最多一个，选中后所有器材/售卖项目单价上浮对应税率
+  const selectedInvoiceItem = (() => {
+    const row = items.find((item) => item.kind === 'invoice' && item.item_id)
+    if (!row) return null
+    return catalog?.invoice_tax_items.find((i) => i.id === row.item_id) ?? null
+  })()
+  const taxRateBp = selectedInvoiceItem?.rate_bp ?? 0
+  // 上浮后单价（四舍五入到分），与后端 _apply_invoice_tax 保持一致
+  const taxedPrice = (price: number) =>
+    taxRateBp ? Math.round((price * (10000 + taxRateBp)) / 10000) : price
+  const formatRateBp = (rateBp: number) =>
+    `${rateBp % 100 === 0 ? String(rateBp / 100) : (rateBp / 100).toFixed(2)}%`
+
+  const applyDefaultPeople = (specId: string | null, kind: DraftItem['kind']) => {
     if (peopleTouched.current || !catalog || kind !== 'equipment' || !specId) return
     const spec = catalog.equipment.find((s) => s.id === specId)
     if (!spec) return
@@ -392,9 +428,9 @@ export default function OrderForm({
   const removeItem = (key: string) => setItems((prev) => prev.filter((item) => item.key !== key))
 
   const totalFen = items.reduce((sum, item) => {
-    if (!item.item_id) return sum
+    if (!item.item_id || item.kind === 'invoice') return sum
     const meta = priceMap.get(item.item_id)
-    return sum + (meta ? meta.price * item.quantity : 0)
+    return sum + (meta ? taxedPrice(meta.price) * item.quantity : 0)
   }, 0)
 
   // 新建订单：未手动选择过时自动填系统默认支付方式（feature 关闭时默认值为 null，不生效）
@@ -461,6 +497,10 @@ export default function OrderForm({
       message.warning('请完善订单项目')
       return null
     }
+    if (items.every((item) => item.kind === 'invoice')) {
+      message.warning('请至少添加一个器材或售卖项目')
+      return null
+    }
     if (adultCount + childCount < 1) {
       message.warning('至少需要 1 人')
       return null
@@ -502,11 +542,16 @@ export default function OrderForm({
       note_popup: note.trim() ? notePopup : false,
       // 功能未开启时不发送该字段（后端也会忽略）
       ...(settings.payment_methods.length > 0 ? { payment_method_code: paymentCode } : {}),
-      items: items.map((item) =>
-        item.kind === 'equipment'
-          ? { equipment_spec_id: item.item_id, quantity: item.quantity }
-          : { sale_item_id: item.item_id, quantity: item.quantity },
-      ),
+      items: items
+        .filter((item) => item.kind !== 'invoice')
+        .map((item) =>
+          item.kind === 'equipment'
+            ? { equipment_spec_id: item.item_id, quantity: item.quantity }
+            : { sale_item_id: item.item_id, quantity: item.quantity },
+        ),
+      // 发票销售项目单独提交（订单中最多一个，不作为一个 OrderItem 存储）
+      invoice_tax_item_id:
+        items.find((item) => item.kind === 'invoice' && item.item_id)?.item_id ?? null,
     }
   }
 
@@ -785,10 +830,11 @@ export default function OrderForm({
   const activeSpecs =
     catalog?.equipment.filter((s) => s.is_active && s.equipment_type_active !== false) ?? []
   const activeSaleItems = catalog?.sale_items.filter((s) => s.is_active) ?? []
+  const activeInvoiceItems = catalog?.invoice_tax_items.filter((s) => s.is_active) ?? []
 
   // 船型与销售项目混合，按近 7 日销售数量降序排列（销量高的靠前）；
-  // 销量相同时按名称升序稳定兜底。
-  const allActiveItems = [
+  // 销量相同时按名称升序稳定兜底。发票销售项目固定排在列表末尾。
+  const allActiveItems: ItemOption[] = [
     ...activeSpecs.map((s) => ({
       id: s.id,
       kind: 'equipment' as const,
@@ -804,23 +850,91 @@ export default function OrderForm({
       sold_quantity_7d: s.sold_quantity_7d,
     })),
   ].sort((a, b) => b.sold_quantity_7d - a.sold_quantity_7d || a.name.localeCompare(b.name))
+  allActiveItems.push(
+    ...activeInvoiceItems.map((s) => ({
+      id: s.id,
+      kind: 'invoice' as const,
+      name: s.name,
+      price: 0,
+      sold_quantity_7d: 0,
+      rate_bp: s.rate_bp,
+    })),
+  )
   const itemKindMap = new Map(allActiveItems.map((i) => [i.id, i.kind]))
+
+  // 目录中的任意项目（含已停用）用于编辑旧订单时回显当前选择
+  const catalogOption = (id: string): ItemOption | null => {
+    const spec = catalog?.equipment.find((s) => s.id === id)
+    if (spec) {
+      return {
+        id: spec.id,
+        kind: 'equipment',
+        name: spec.name,
+        price: spec.price,
+        sold_quantity_7d: spec.sold_quantity_7d,
+      }
+    }
+    const sale = catalog?.sale_items.find((s) => s.id === id)
+    if (sale) {
+      return {
+        id: sale.id,
+        kind: 'sale',
+        name: sale.name,
+        price: sale.price,
+        sold_quantity_7d: sale.sold_quantity_7d,
+      }
+    }
+    const invoice = catalog?.invoice_tax_items.find((s) => s.id === id)
+    if (invoice) {
+      return {
+        id: invoice.id,
+        kind: 'invoice',
+        name: invoice.name,
+        price: 0,
+        sold_quantity_7d: 0,
+        rate_bp: invoice.rate_bp,
+      }
+    }
+    return null
+  }
 
   // 进行中订单：原始项（器材 + 已保存的销售项目）不可改，仅本次新增项可编辑
   const rowDisabled = (record: DraftItem) =>
     terminalLocked || (isInProgress && record.isOriginal)
 
-  const rowOptions = (record: DraftItem) => {
-    if (!isInProgress) return allActiveItems
-    const saleItems = allActiveItems
-      .filter((i) => i.kind === 'sale')
-      .sort((a, b) => b.sold_quantity_7d - a.sold_quantity_7d || a.name.localeCompare(b.name))
-    // 原始行（器材或已保存的销售项目）需保留当前项用于回显
-    if (record.isOriginal && record.item_id) {
-      const current = allActiveItems.find((i) => i.id === record.item_id)
-      if (current) return [current, ...saleItems]
+  const rowOptions = (record: DraftItem): ItemOption[] => {
+    // 进行中订单仅可新增售卖项目或发票销售项目
+    const pool = isInProgress
+      ? allActiveItems.filter((i) => i.kind !== 'equipment')
+      : allActiveItems
+    // 原始行（器材或已保存的项目）需保留当前项用于回显
+    if (record.item_id && !pool.some((i) => i.id === record.item_id)) {
+      const fallback = catalogOption(record.item_id)
+      if (fallback) return [fallback, ...pool]
     }
-    return saleItems
+    return pool
+  }
+
+  // 切换项目：发票销售项目数量固定为 1，且订单中只保留一个
+  const changeRowItem = (record: DraftItem, value: string) => {
+    const kind = itemKindMap.get(value) ?? 'equipment'
+    setItems((prev) =>
+      prev
+        .filter(
+          (item) => kind !== 'invoice' || item.key === record.key || item.kind !== 'invoice',
+        )
+        .map((item) =>
+          item.key === record.key
+            ? {
+                ...item,
+                item_id: value,
+                kind,
+                ...(kind === 'invoice' ? { quantity: 1 } : {}),
+              }
+            : item,
+        ),
+    )
+    if (kind !== 'invoice') applyDefaultPeople(value, kind)
   }
 
   const itemColumns = [
@@ -858,13 +972,13 @@ export default function OrderForm({
           }
           value={record.item_id}
           disabled={rowDisabled(record)}
-          onChange={(value) => {
-            const kind = itemKindMap.get(value) ?? 'equipment'
-            updateItem(record.key, { item_id: value, kind })
-          }}
+          onChange={(value) => changeRowItem(record, value)}
           options={rowOptions(record).map((item) => ({
             value: item.id,
-            label: `${item.name} - ${fenToYuan(item.price)}元`,
+            label:
+              item.kind === 'invoice'
+                ? `${item.name}（税率 ${formatRateBp(item.rate_bp ?? 0)}）`
+                : `${item.name} - ${fenToYuan(item.price)}元`,
           }))}
         />
       ),
@@ -877,7 +991,11 @@ export default function OrderForm({
             width: 80,
             align: 'right' as const,
             render: (_: unknown, record: DraftItem) =>
-              record.item_id ? `¥${fenToYuan(priceMap.get(record.item_id)?.price ?? 0)}` : '—',
+              record.kind === 'invoice'
+                ? '—'
+                : record.item_id
+                  ? `¥${fenToYuan(taxedPrice(priceMap.get(record.item_id)?.price ?? 0))}`
+                  : '—',
           },
         ]),
     {
@@ -885,6 +1003,10 @@ export default function OrderForm({
       width: isMobile ? 100 : 64,
       render: (_: unknown, record: DraftItem) => {
         const disabled = rowDisabled(record)
+        // 发票销售项目数量固定为 1，不可增减
+        if (record.kind === 'invoice') {
+          return <span style={{ display: 'inline-block', width: 24, textAlign: 'center' }}>1</span>
+        }
         return isMobile ? (
           <Space size={4}>
             <Button
@@ -926,9 +1048,13 @@ export default function OrderForm({
             width: 80,
             align: 'right' as const,
             render: (_: unknown, record: DraftItem) =>
-              record.item_id
-                ? `¥${fenToYuan((priceMap.get(record.item_id)?.price ?? 0) * record.quantity)}`
-                : '—',
+              record.kind === 'invoice'
+                ? '—'
+                : record.item_id
+                  ? `¥${fenToYuan(
+                      taxedPrice(priceMap.get(record.item_id)?.price ?? 0) * record.quantity,
+                    )}`
+                  : '—',
           },
         ]),
     ...(isMobile
@@ -1367,7 +1493,14 @@ export default function OrderForm({
                   flexWrap: 'wrap',
                 }}
               >
-                <strong>合计 ¥{fenToYuan(totalFen)}</strong>
+                <strong>
+                  合计 ¥{fenToYuan(totalFen)}
+                  {selectedInvoiceItem ? (
+                    <span style={{ fontSize: 12, color: '#8c8c8c', marginLeft: 8 }}>
+                      含发票税率 {formatRateBp(taxRateBp)}
+                    </span>
+                  ) : null}
+                </strong>
                 {paymentSummary}
               </div>
             </Table.Summary.Cell>

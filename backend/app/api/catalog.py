@@ -62,6 +62,19 @@ class SaleItemUpdate(BaseModel):
     is_active: bool | None = None
 
 
+class InvoiceTaxItemInput(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    # 税率（基点）：100 = 1%，600 = 6%
+    rate_bp: int = Field(ge=0, le=10000)
+    is_active: bool = True
+
+
+class InvoiceTaxItemUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    rate_bp: int | None = Field(default=None, ge=0, le=10000)
+    is_active: bool | None = None
+
+
 @router.get("")
 def list_catalog(
     db: Session = Depends(get_db),
@@ -194,5 +207,33 @@ def update_sale_item(
 ):
     catalog_service.update_sale_item(
         db, user, item_id, name=payload.name, price=payload.price, is_active=payload.is_active
+    )
+    return catalog_service.list_catalog(db, user, active_group_id)
+
+
+@router.post("/invoice-tax-items")
+def create_invoice_tax_item(
+    payload: InvoiceTaxItemInput,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("superuser", "admin")),
+    active_group_id: str | None = Depends(get_active_group_id),
+):
+    catalog_service.create_invoice_tax_item(
+        db, user, payload.name, payload.rate_bp, payload.is_active, active_group_id
+    )
+    return catalog_service.list_catalog(db, user, active_group_id)
+
+
+@router.put("/invoice-tax-items/{item_id}")
+def update_invoice_tax_item(
+    item_id: str,
+    payload: InvoiceTaxItemUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("superuser", "admin")),
+    active_group_id: str | None = Depends(get_active_group_id),
+):
+    catalog_service.update_invoice_tax_item(
+        db, user, item_id,
+        name=payload.name, rate_bp=payload.rate_bp, is_active=payload.is_active,
     )
     return catalog_service.list_catalog(db, user, active_group_id)

@@ -52,6 +52,8 @@ class OrderInput(BaseModel):
     note_popup: bool = False
     # 支付方式 code（必须是启用中的方式，空值表示未选择）
     payment_method_code: str | None = None
+    # 发票销售项目：选择后订单全部项目单价按对应税率上浮（一个订单最多一个）
+    invoice_tax_item_id: str | None = None
     items: list[OrderItemInput] = Field(min_length=1)
 
 
