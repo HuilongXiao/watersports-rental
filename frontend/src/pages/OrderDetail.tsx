@@ -913,7 +913,7 @@ export default function OrderDetail({
             <>
               {invoiceTaxText ? (
                 <Table.Summary.Row>
-                  <Table.Summary.Cell index={0} colSpan={4} align="right">
+                  <Table.Summary.Cell index={0} colSpan={4} align="left">
                     <span style={{ fontSize: 12, color: '#8c8c8c' }}>{invoiceTaxText}</span>
                   </Table.Summary.Cell>
                 </Table.Summary.Row>
