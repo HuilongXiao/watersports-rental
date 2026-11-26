@@ -5,7 +5,7 @@ import dayjs from 'dayjs'
 import { api } from '../api'
 import { useAuth } from '../auth'
 import { fenToYuan, typeColorHex } from '../utils'
-import { ForecastPanel } from './Forecast'
+import { ForecastPanel, FORECAST_ROW_HEIGHT } from './Forecast'
 import DailySummary from './DailySummary'
 import { useLayoutMode } from '../layoutMode'
 import type { Catalog, DashboardData, OrderDistribution } from '../types'
@@ -22,7 +22,7 @@ export default function Dashboard() {
   const navigate = useNavigate()
   const { user } = useAuth()
   const { message } = App.useApp()
-  const { isDesktop } = useLayoutMode()
+  const { isDesktop, isMobile } = useLayoutMode()
   const [data, setData] = useState<DashboardData | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -41,6 +41,48 @@ export default function Dashboard() {
       .catch((error) => message.error(error instanceof Error ? error.message : '加载失败'))
       .finally(() => setLoading(false))
   }, [message])
+
+  // 手机版：按屏幕剩余高度自适应「船只用量」行数，让船只用量 + 看板正好占满一屏
+  const pageRef = useRef<HTMLDivElement>(null)
+  const boardRef = useRef<HTMLDivElement>(null)
+  const [chartRows, setChartRows] = useState<number | undefined>(undefined)
+  const chartRowsRef = useRef<number | undefined>(undefined)
+  useEffect(() => {
+    if (!isMobile) {
+      chartRowsRef.current = undefined
+      setChartRows(undefined)
+      return
+    }
+    const recalc = () => {
+      const page = pageRef.current
+      const board = boardRef.current
+      const chart = page?.querySelector('[data-forecast-chart]') as HTMLElement | null
+      if (!page || !board || !chart) return
+      const scroller = page.closest('.ant-layout-content') as HTMLElement | null
+      const scrollerRect = scroller?.getBoundingClientRect()
+      const pageRect = page.getBoundingClientRect()
+      // 可视区底部（内容区底部减去内边距）
+      const bottom = (scrollerRect?.bottom ?? window.innerHeight) - 11
+      const boardHeight = board.getBoundingClientRect().height
+      const gap = 16
+      // 卡片内除图表外的固定高度（标题、内边距、船型选择器）
+      const chromeHeight =
+        pageRect.height - chart.getBoundingClientRect().height - boardHeight - gap
+      const fits = Math.floor(
+        Math.max(0, bottom - pageRect.top - boardHeight - gap - chromeHeight) /
+          FORECAST_ROW_HEIGHT,
+      )
+      // 最少展示 5 行
+      const next = Math.max(5, fits)
+      if (chartRowsRef.current !== next) {
+        chartRowsRef.current = next
+        setChartRows(next)
+      }
+    }
+    recalc()
+    window.addEventListener('resize', recalc)
+    return () => window.removeEventListener('resize', recalc)
+  }, [isMobile, data])
 
   // 看板卡片：手机版独立展示；电脑网页版放进当日总结右侧列（宽度与销售日历一致）
   const boardCard = (width?: number) => (
@@ -106,26 +148,31 @@ export default function Dashboard() {
 
   return (
     <Spin spinning={loading}>
-      <Space direction="vertical" style={{ display: 'flex' }} size="middle">
-        {/* 船只用量（概览首页默认展示当日） */}
-        <Card
-          title="船只用量"
-          extra={
-            <Button type="link" onClick={() => navigate('/dashboard/forecast')}>
-              更多
-            </Button>
-          }
-        >
-          <ForecastPanel dateStr={data?.today ?? new Date().toISOString().slice(0, 10)} />
-        </Card>
+      <div ref={pageRef}>
+        <Space direction="vertical" style={{ display: 'flex' }} size="middle">
+          {/* 船只用量（概览首页默认展示当日） */}
+          <Card
+            title="船只用量"
+            extra={
+              <Button type="link" onClick={() => navigate('/dashboard/forecast')}>
+                更多
+              </Button>
+            }
+          >
+            <ForecastPanel
+              dateStr={data?.today ?? new Date().toISOString().slice(0, 10)}
+              displayRows={chartRows}
+            />
+          </Card>
 
-        {/* 电脑网页版：左侧当日总结，右侧上为看板、下为销售日历；区域不强制占满宽度 */}
-        {isDesktop ? (
-          <DailySummary embedded rightTop={boardCard(460)} />
-        ) : (
-          boardCard()
-        )}
-      </Space>
+          {/* 电脑网页版：左侧当日总结，右侧上为看板、下为销售日历；区域不强制占满宽度 */}
+          {isDesktop ? (
+            <DailySummary embedded rightTop={boardCard(460)} />
+          ) : (
+            <div ref={boardRef}>{boardCard()}</div>
+          )}
+        </Space>
+      </div>
     </Spin>
   )
 }

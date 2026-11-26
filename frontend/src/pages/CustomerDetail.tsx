@@ -126,7 +126,7 @@ export default function CustomerDetail() {
     try {
       await api.del(`/api/customers/${id}`)
       message.success('客户已停用')
-      navigate('/customers')
+      navigate('/customers', { state: { restoreList: true } })
     } catch (error) {
       message.error(error instanceof Error ? error.message : '停用失败')
       setDeleting(false)
@@ -267,7 +267,10 @@ export default function CustomerDetail() {
 
   return (
     <div>
-      <FloatingBackButton onClick={() => navigate('/customers')} ariaLabel="返回客户列表" />
+      <FloatingBackButton
+        onClick={() => navigate('/customers', { state: { restoreList: true } })}
+        ariaLabel="返回客户列表"
+      />
       <Card
         loading={loading}
         title="客户详情"

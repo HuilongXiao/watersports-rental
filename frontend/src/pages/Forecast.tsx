@@ -10,7 +10,9 @@ import FloatingBackButton from '../components/FloatingBackButton'
 import type { ForecastEquipment, InventoryForecast } from '../types'
 
 const FALLBACK_COLOR = '#0e7a8c'
-const ROW_HEIGHT = 26
+// 每行（30 分钟）图表高度，概览页据此计算自适应行数
+export const FORECAST_ROW_HEIGHT = 26
+const ROW_HEIGHT = FORECAST_ROW_HEIGHT
 const BAR_HEIGHT = 16
 const TIME_GUTTER = 44
 // 图表可视高度：每行 30 分钟，最多同时展示 5 小时（10 行），其余靠右侧滚动条查看
@@ -54,7 +56,14 @@ export default function Forecast() {
 }
 
 // 可复用预测面板：选择器 + 横向条形图；供预测页（带日期选择器）与概览首页（固定当日）共用
-export function ForecastPanel({ dateStr }: { dateStr: string }) {
+export function ForecastPanel({
+  dateStr,
+  displayRows,
+}: {
+  dateStr: string
+  /** 至少展示的行数；概览页按屏幕高度自适应，不足时补空行填满 */
+  displayRows?: number
+}) {
   const [data, setData] = useState<InventoryForecast | null>(null)
   const [loading, setLoading] = useState(false)
   // 左右两列各自独立选中的船型 spec_id；null 表示尚未选择（初始化为第一种船型）
@@ -113,7 +122,14 @@ export function ForecastPanel({ dateStr }: { dateStr: string }) {
         // 手机版：单列布局，选择器在上、图表在下
         <div>
           {renderColumn(0)}
-          {selected[0] && <ForecastChart eq={selected[0]} slots={data.slots} dateStr={data.date} />}
+          {selected[0] && (
+            <ForecastChart
+              eq={selected[0]}
+              slots={data.slots}
+              dateStr={data.date}
+              displayRows={displayRows}
+            />
+          )}
         </div>
       ) : (
         // 电脑版：左右两列布局，两列独立选择、独立展示
@@ -210,10 +226,12 @@ function ForecastChart({
   eq,
   slots,
   dateStr,
+  displayRows,
 }: {
   eq: ForecastEquipment
   slots: string[]
   dateStr: string
+  displayRows?: number
 }) {
   const hex = typeColorHex(eq.type_color) ?? FALLBACK_COLOR
   const lightHex = lightenHex(hex)
@@ -221,20 +239,34 @@ function ForecastChart({
   // 占用条封顶：库存总量对应行宽的 94%，右侧 6% 显示可用/超出数量
   const BAR_RATIO = 0.94
 
+  // 后端只返回有订单覆盖的时间段；行数不足时向后补空行（无占用），把卡片填满
+  const rows = Math.max(slots.length, displayRows ?? 0)
+  const paddedSlots = [...slots]
+  if (rows > slots.length) {
+    const lastSlot = slots.length
+      ? dayjs(`${dateStr} ${slots[slots.length - 1]}`, 'YYYY-MM-DD HH:mm')
+      : dayjs(dateStr).hour(8).minute(0)
+    for (let i = slots.length; i < rows; i += 1) {
+      paddedSlots.push(lastSlot.add((i - slots.length + 1) * 30, 'minute').format('HH:mm'))
+    }
+  }
+  const chartHeight = displayRows ? rows * ROW_HEIGHT : CHART_HEIGHT
+
   return (
     <div
+      data-forecast-chart
       style={{
         border: '1px solid #f0f0f0',
         borderRadius: 4,
-        maxHeight: CHART_HEIGHT,
+        maxHeight: chartHeight,
         overflowY: 'auto',
         overflowX: 'hidden',
       }}
     >
       <div style={{ position: 'relative' }}>
-        {slots.map((slot, i) => {
-          const used = eq.occupied_used[i]
-          const reserved = eq.occupied_active[i]
+        {paddedSlots.map((slot, i) => {
+          const used = eq.occupied_used[i] ?? 0
+          const reserved = eq.occupied_active[i] ?? 0
           const occupied = used + reserved
           // 当前及过去时段右侧「可用」取该时段最后一刻（槽结束时刻）的真实可用
           // 船只数：例如 15:00-15:30 峰值占用 2 条，但 15:30 时只剩 1 条在用，

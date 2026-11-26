@@ -17,7 +17,6 @@ import {
   Space,
   Table,
   Tag,
-  Tooltip,
 } from 'antd'
 import { api } from '../api'
 import { useAuth } from '../auth'
@@ -292,15 +291,11 @@ export default function OrderDetail({
   // 支付方式只读展示所需：从全局设置读取 code→name 映射
   const { settings } = useSettings()
 
-  // 返回订单列表：有历史可退则等价浏览器后退（配合列表快照恢复筛选与滚动）；
-  // 无历史可退（如直接分享链接打开详情）则跳到列表页并带上快照记录的筛选参数。
+  // 返回订单列表：直接回到上一层（订单列表），并带上快照记录的筛选参数。
+  // 不用 navigate(-1)：手机版边缘返回手势会被拦截改走层级返回，两者需一致。
   const goBack = () => {
-    if (window.history.length > 1) {
-      navigate(-1)
-    } else {
-      const snap = readLatestOrdersSnapshot()
-      navigate(`/orders${snap ? snap.search : ''}`)
-    }
+    const snap = readLatestOrdersSnapshot()
+    navigate(`/orders${snap ? snap.search : ''}`, { replace: true })
   }
 
   const load = useCallback(async (): Promise<Order> => {
@@ -423,6 +418,8 @@ export default function OrderDetail({
   const today = formatDateTime(order.start_at).slice(0, 10) === dayjsToday()
   // 完成订单：订单日期当天或之后的日期都可以操作，且不要求签到
   const canCompleteByDate = dayjsToday() >= formatDateTime(order.start_at).slice(0, 10)
+  // 爽约只在开始日期为今天或更早时提供，未来订单不展示
+  const canMarkNoShow = canCompleteByDate
   const warnings = order.inventory_warnings ?? []
 
   // 客户信息单元格内容：桌面/手机两套排版共用
@@ -754,16 +751,14 @@ export default function OrderDetail({
         extra={
           // 右上角「转发」生成预订确认书图片；气泡内嵌时另显示「关闭」
           <Space>
-            <Tooltip title="转发预订确认书">
-              <Button
-                type="text"
-                aria-label="转发预订确认书"
-                loading={letterLoading}
-                icon={<MapShareIcon />}
-                onClick={openBookingLetter}
-                style={{ width: 42, height: 42 }}
-              />
-            </Tooltip>
+            <Button
+              type="text"
+              aria-label="转发预订确认书"
+              loading={letterLoading}
+              icon={<MapShareIcon />}
+              onClick={openBookingLetter}
+              style={{ width: 42, height: 42 }}
+            />
             {embedded ? <Button onClick={onClose}>关闭</Button> : null}
           </Space>
         }
@@ -1095,14 +1090,6 @@ export default function OrderDetail({
           ]}
         />
       </Card>
-
-      {!today && (order.status === 'active' || order.status === 'in_progress') && (
-        <Alert
-          type="info"
-          showIcon
-          message="签到与归还仅允许处理当天（Asia/Shanghai）订单；历史订单如需修正请使用取消类操作。"
-        />
-      )}
 
       <Modal
         open={adjustDetailOpen}
@@ -1511,19 +1498,16 @@ export default function OrderDetail({
             编辑备注
           </Button>
         )}
-        {canEditOrder && order.status === 'active' && !order.checked_in && (
-          today ? (
-            <Popconfirm
-              title="确认签到？"
-              description="签到以服务器当前时间为准，超过自动归还时限后将由系统自动归还。"
-              onConfirm={doCheckIn}
-              overlayStyle={{ maxWidth: '70vw', width: 'auto' }}
-            >
-              <Button type="primary">签到</Button>
-            </Popconfirm>
-          ) : (
-            <Button disabled title="仅当天订单可签到">签到</Button>
-          )
+        {/* 签到仅当天可操作，未来订单不展示该按钮 */}
+        {canEditOrder && order.status === 'active' && !order.checked_in && today && (
+          <Popconfirm
+            title="确认签到？"
+            description="签到以服务器当前时间为准，超过自动归还时限后将由系统自动归还。"
+            onConfirm={doCheckIn}
+            overlayStyle={{ maxWidth: '70vw', width: 'auto' }}
+          >
+            <Button type="primary">签到</Button>
+          </Popconfirm>
         )}
         {canEditOrder && order.status === 'in_progress' && (
           <Popconfirm
@@ -1534,24 +1518,22 @@ export default function OrderDetail({
             <Button>取消签到</Button>
           </Popconfirm>
         )}
-        {canEditOrder && (order.status === 'active' || order.status === 'in_progress') && (
-          canCompleteByDate ? (
-            outstandingBoats.length > 0 ? (
-              <Button type="primary" ghost onClick={() => setCompleteOpen(true)}>
-                完成
-              </Button>
-            ) : (
-              <Popconfirm
-                title="确认完成？"
-                onConfirm={() => action(`/api/orders/${order.id}/return`, '已完成')}
-              >
-                <Button type="primary" ghost>完成</Button>
-              </Popconfirm>
-            )
+        {/* 完成仅订单日期当天及之后可操作，未来订单不展示该按钮 */}
+        {canEditOrder &&
+          (order.status === 'active' || order.status === 'in_progress') &&
+          canCompleteByDate &&
+          (outstandingBoats.length > 0 ? (
+            <Button type="primary" ghost onClick={() => setCompleteOpen(true)}>
+              完成
+            </Button>
           ) : (
-            <Button disabled title="订单日期当天及之后可完成">完成</Button>
-          )
-        )}
+            <Popconfirm
+              title="确认完成？"
+              onConfirm={() => action(`/api/orders/${order.id}/return`, '已完成')}
+            >
+              <Button type="primary" ghost>完成</Button>
+            </Popconfirm>
+          ))}
         {canEditOrder && order.returned && (
           <Popconfirm
             title="取消完成？"
@@ -1561,7 +1543,7 @@ export default function OrderDetail({
             <Button>取消完成</Button>
           </Popconfirm>
         )}
-        {canEditOrder && order.status === 'active' && (
+        {canEditOrder && order.status === 'active' && canMarkNoShow && (
           <Popconfirm title="确认标记爽约？" onConfirm={() => action(`/api/orders/${order.id}/no-show`, '已标记爽约')}>
             <Button>爽约</Button>
           </Popconfirm>

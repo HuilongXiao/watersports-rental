@@ -33,14 +33,15 @@ import { useSettings } from '../contexts/SettingsContext'
 import { useLayoutMode } from '../layoutMode'
 import LayoutModeSwitch from '../components/LayoutModeSwitch'
 import FloatingBackButton from '../components/FloatingBackButton'
+import AlertBadge from '../components/AlertBadge'
 import { fenToYuan, formatDateTime, typeColorHex, TYPE_COLOR_OPTIONS, yuanToFen } from '../utils'
 import { refreshSettingsIssues, useSettingsIssues, type SettingsIssues } from '../settingsIssues'
 import {
   confirmUnsavedChanges,
-  useHistoryBackGuard,
   useBeforeUnloadWarning,
   type UnsavedGuard,
 } from '../unsavedGuard'
+import { useMobileBack } from '../mobileBack'
 import type {
   AppSettings,
   Catalog,
@@ -55,8 +56,8 @@ import Users from './Users'
 import Groups from './Groups'
 
 // 系统版本与发布日期：随版本发布手动同步（与 CHANGELOG 的版本标题对应）
-const APP_VERSION = '1.2.4'
-const APP_RELEASE_DATE = '2026-11-25'
+const APP_VERSION = '1.2.5'
+const APP_RELEASE_DATE = '2026-11-26'
 
 interface SettingsTabDef {
   key: string
@@ -91,7 +92,7 @@ export default function CatalogSettings() {
     refreshSettingsIssues()
   }, [])
   const catalogInvalid = issues.hasIssues
-  const alertMark = <span style={{ color: '#ff4d4f', marginLeft: 4 }}>❗</span>
+  const alertMark = <AlertBadge />
 
   // 未保存提醒：各 tab 注册自己的「是否有改动 + 保存方法」，
   // 切换 tab / 返回时先询问是否保存
@@ -108,20 +109,13 @@ export default function CatalogSettings() {
     const guard = guardsRef.current[key]
     return guard ? guard.confirmLeave() : true
   }, [])
-  // 各 tab 上报是否有未保存改动（用于拦截手机边缘返回）
-  const [dirtyMap, setDirtyMap] = useState<Record<string, boolean>>({})
-  const reportDirty = useCallback((key: string, dirty: boolean) => {
-    setDirtyMap((prev) => (prev[key] === dirty ? prev : { ...prev, [key]: dirty }))
-  }, [])
-  const activeGuardKey = isMobile
-    ? mobileActive
-    : sectionKey === '店铺管理'
-      ? storeTabKey
-      : systemTabKey
-  useHistoryBackGuard(
-    Boolean(activeGuardKey && dirtyMap[activeGuardKey]),
-    () => (activeGuardKey ? guardsRef.current[activeGuardKey] ?? null : null),
-  )
+  // 手机版左缘右滑：返回设置菜单；有未保存改动时先询问
+  useMobileBack(() => {
+    if (!mobileActive) return
+    canLeave(mobileActive).then((ok) => {
+      if (ok) setMobileActive(null)
+    })
+  })
   const changeSection = useCallback(
     async (next: string) => {
       if (next === sectionKey) return
@@ -152,7 +146,6 @@ export default function CatalogSettings() {
           onNumberingChanged={refreshNumbering}
           guardKey="store-settings"
           registerGuard={registerGuard}
-          onDirtyChange={reportDirty}
         />
       ),
     },
@@ -185,11 +178,7 @@ export default function CatalogSettings() {
       key: 'basic',
       label: '基础设置',
       children: (
-        <BasicTab
-          guardKey="basic"
-          registerGuard={registerGuard}
-          onDirtyChange={reportDirty}
-        />
+        <BasicTab guardKey="basic" registerGuard={registerGuard} />
       ),
     },
     ...(canExport || canBackup
@@ -206,18 +195,10 @@ export default function CatalogSettings() {
     ...(isAdmin ? [{ title: '店铺管理', entries: storeEntries }] : []),
     { title: '系统设置', entries: systemEntries },
   ]
-  // 顶层入口也带感叹号：问题都在「店铺管理」内
+  // 顶层「店铺管理 / 系统设置」不加角标，问题只在具体项目（如器材目录）上提示
   const tabs: SettingsTabDef[] = sections.map((section) => ({
     key: section.title,
-    label:
-      section.title === '店铺管理' && catalogInvalid ? (
-        <span>
-          {section.title}
-          {alertMark}
-        </span>
-      ) : (
-        section.title
-      ),
+    label: section.title,
     children: (
       <Tabs
         items={section.entries}
@@ -249,16 +230,7 @@ export default function CatalogSettings() {
         {sections.map((section) => (
           <Card
             key={section.title}
-            title={
-              section.title === '店铺管理' && catalogInvalid ? (
-                <span>
-                  {section.title}
-                  {alertMark}
-                </span>
-              ) : (
-                section.title
-              )
-            }
+            title={section.title}
             style={{ marginBottom: 16 }}
           >
             <List
@@ -585,6 +557,8 @@ function EquipmentTab({
   return (
     <Card
       title="器材目录"
+      // 桌面版限制最小可用宽度，不占满屏幕
+      style={isMobile ? undefined : { maxWidth: 720 }}
       extra={
         <Button type="primary" onClick={() => openSpec(null)}>
           新建规格
@@ -1082,6 +1056,7 @@ function TypeTab() {
   return (
     <Card
       title="类型管理"
+      style={isMobile ? undefined : { maxWidth: 560 }}
       extra={
         <Button type="primary" onClick={() => open(null)}>
           新建类型
@@ -1198,6 +1173,7 @@ function SaleTab() {
   return (
     <Card
       title="售卖项目"
+      style={isMobile ? undefined : { maxWidth: 620 }}
       extra={
         <Button type="primary" onClick={() => open(null)}>
           新建售卖项目
@@ -1358,6 +1334,7 @@ function InvoiceTab() {
   return (
     <Card
       title="发票税率"
+      style={isMobile ? undefined : { maxWidth: 560 }}
       extra={
         <Button type="primary" onClick={() => open(null)}>
           新建发票销售项目
@@ -1651,12 +1628,10 @@ function StoreTab({
   onNumberingChanged,
   guardKey,
   registerGuard,
-  onDirtyChange,
 }: {
   onNumberingChanged?: () => void
   guardKey?: string
   registerGuard?: (key: string, fn: UnsavedGuard | null) => void
-  onDirtyChange?: (key: string, dirty: boolean) => void
 }) {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [minutes, setMinutes] = useState(120)
@@ -1788,13 +1763,10 @@ function StoreTab({
     })
     return () => registerGuard(guardKey, null)
   }, [guardKey, registerGuard])
-  // 上报改动状态，交给历史守卫拦截手机边缘返回
-  useEffect(() => {
-    if (guardKey) onDirtyChange?.(guardKey, dirty)
-  }, [dirty, guardKey, onDirtyChange])
+
 
   return (
-    <Card title="店铺设置">
+    <Card title="店铺设置" style={{ maxWidth: 760 }}>
       <div style={{ maxWidth: 680 }}>
         {/* 自动归还：名称与开关同一行，第二行为时限 */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -1921,11 +1893,9 @@ function StoreTab({
 function BasicTab({
   guardKey,
   registerGuard,
-  onDirtyChange,
 }: {
   guardKey?: string
   registerGuard?: (key: string, fn: UnsavedGuard | null) => void
-  onDirtyChange?: (key: string, dirty: boolean) => void
 } = {}) {
   const { user } = useAuth()
   // 极速客户模式仅管理员与超级管理员可改
@@ -2009,13 +1979,10 @@ function BasicTab({
     })
     return () => registerGuard(guardKey, null)
   }, [guardKey, registerGuard])
-  // 上报改动状态，交给历史守卫拦截手机边缘返回
-  useEffect(() => {
-    if (guardKey) onDirtyChange?.(guardKey, dirty)
-  }, [dirty, guardKey, onDirtyChange])
+
 
   return (
-    <Card title="基础设置">
+    <Card title="基础设置" style={{ maxWidth: 760 }}>
       {isAdmin && (
         <>
           <div>

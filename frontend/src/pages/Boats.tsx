@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   App,
   Button,
@@ -247,6 +247,16 @@ export default function Boats() {
     () => (board?.departed ?? []).filter((boat) => matchType(boat.type_id)),
     [board, typeFilter],
   )
+
+  // 首次加载：出发页没有待调配订单、返还页有待返还内容时，自动切到「返还」
+  const autoToggledRef = useRef(false)
+  useEffect(() => {
+    if (!board || autoToggledRef.current) return
+    autoToggledRef.current = true
+    if (departCards.length === 0 && (returnCards.length > 0 || departedBoats.length > 0)) {
+      setTab('return')
+    }
+  }, [board, departCards, returnCards, departedBoats])
 
   const doReturn = async (dispatchId: string) => {
     try {

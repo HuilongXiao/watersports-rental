@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
   App,
   Button,
@@ -19,7 +19,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { FilterOutlined, UserOutlined } from '@ant-design/icons'
 import { api } from '../api'
 import type { Customer } from '../types'
-import { fenToYuan } from '../utils'
+import { fenToYuan, readCustomersSnapshot, saveCustomersSnapshot } from '../utils'
 import { useLayoutMode } from '../layoutMode'
 
 interface FormValues {
@@ -69,9 +69,19 @@ export function GenderCheckboxes({
   )
 }
 
+const PAGE_SIZE = 20
+
 export default function Customers() {
+  const location = useLocation()
+  // 从客户详情返回时恢复上一次的分页 / 筛选 / 滚动位置
+  const restoreSnap = useRef(
+    (location.state as { restoreList?: boolean } | null)?.restoreList
+      ? readCustomersSnapshot()
+      : null,
+  ).current
   const [customers, setCustomers] = useState<Customer[]>([])
-  const [keyword, setKeyword] = useState('')
+  const [keyword, setKeyword] = useState(restoreSnap?.keyword ?? '')
+  const [page, setPage] = useState(restoreSnap?.page ?? 1)
   const [loading, setLoading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
   const [form] = Form.useForm<FormValues>()
@@ -80,16 +90,54 @@ export default function Customers() {
   const { isMobile } = useLayoutMode()
   // 网页版筛选：客户状态 / 有备注 / 累计消费、完成订单数阈值
   const [filterOpen, setFilterOpen] = useState(false)
-  const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'inactive'>('all')
-  const [filterHasNote, setFilterHasNote] = useState(false)
-  const [filterMinSpending, setFilterMinSpending] = useState<number | null>(null)
-  const [filterMinCompleted, setFilterMinCompleted] = useState<number | null>(null)
+  const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'inactive'>(
+    restoreSnap?.filterStatus ?? 'all',
+  )
+  const [filterHasNote, setFilterHasNote] = useState(restoreSnap?.filterHasNote ?? false)
+  const [filterMinSpending, setFilterMinSpending] = useState<number | null>(
+    restoreSnap?.filterMinSpending ?? null,
+  )
+  const [filterMinCompleted, setFilterMinCompleted] = useState<number | null>(
+    restoreSnap?.filterMinCompleted ?? null,
+  )
+
+  // 离开列表（进入详情 / 切换菜单）前保存当前定位，供返回时恢复
+  const snapshotState = useRef({
+    page,
+    keyword,
+    filterStatus,
+    filterHasNote,
+    filterMinSpending,
+    filterMinCompleted,
+  })
+  snapshotState.current = {
+    page,
+    keyword,
+    filterStatus,
+    filterHasNote,
+    filterMinSpending,
+    filterMinCompleted,
+  }
+  useEffect(
+    () => () => {
+      const scroller = document.querySelector('.ant-layout-content') as HTMLElement | null
+      saveCustomersSnapshot({
+        ...snapshotState.current,
+        pageSize: PAGE_SIZE,
+        scrollY: window.scrollY,
+        contentY: scroller?.scrollTop ?? 0,
+        ts: Date.now(),
+      })
+    },
+    [],
+  )
 
   const resetFilters = () => {
     setFilterStatus('all')
     setFilterHasNote(false)
     setFilterMinSpending(null)
     setFilterMinCompleted(null)
+    setPage(1)
   }
 
   const load = async (q = '') => {
@@ -111,8 +159,23 @@ export default function Customers() {
   }
 
   useEffect(() => {
-    load()
+    load(keyword)
   }, [])
+
+  // 数据渲染完成后恢复之前的滚动位置
+  const pendingScroll = useRef(
+    restoreSnap ? { scrollY: restoreSnap.scrollY, contentY: restoreSnap.contentY } : null,
+  )
+  useEffect(() => {
+    if (loading || !pendingScroll.current) return
+    const target = pendingScroll.current
+    pendingScroll.current = null
+    requestAnimationFrame(() => {
+      window.scrollTo(0, target.scrollY)
+      const scroller = document.querySelector('.ant-layout-content') as HTMLElement | null
+      if (scroller) scroller.scrollTop = target.contentY
+    })
+  }, [loading])
 
   const openCreate = () => {
     form.setFieldsValue(EMPTY_VALUES)
@@ -317,8 +380,10 @@ export default function Customers() {
           <Input.Search
             placeholder="姓名 / 手机 / 微信搜索"
             allowClear
+            defaultValue={keyword}
             onSearch={(value) => {
               setKeyword(value)
+              setPage(1)
               load(value)
             }}
             // 手机版窄一点并允许压缩，给左侧「客户管理」让出空间
@@ -348,7 +413,11 @@ export default function Customers() {
         columns={visibleColumns}
         dataSource={filteredCustomers}
         tableLayout="fixed"
-        pagination={{ pageSize: 20 }}
+        pagination={{
+          pageSize: PAGE_SIZE,
+          current: page,
+          onChange: (p) => setPage(p),
+        }}
         onRow={(record) => ({
           onClick: () => navigate(`/customers/${record.id}`),
           style: {

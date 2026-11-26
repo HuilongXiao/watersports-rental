@@ -115,6 +115,47 @@ export function readOrdersSnapshot(search: string): OrdersSnapshot | null {
   }
 }
 
+// 客户列表快照：从客户详情返回时恢复分页/筛选/滚动位置
+const CUSTOMERS_SNAPSHOT_KEY = 'wsr-customers-snapshot'
+
+export interface CustomersSnapshot {
+  page: number
+  pageSize: number
+  keyword: string
+  filterStatus: 'all' | 'active' | 'inactive'
+  filterHasNote: boolean
+  filterMinSpending: number | null
+  filterMinCompleted: number | null
+  /** window 滚动位置（桌面端） */
+  scrollY: number
+  /** .ant-layout-content 滚动位置（移动端） */
+  contentY: number
+  ts: number
+}
+
+export function saveCustomersSnapshot(snapshot: CustomersSnapshot): void {
+  try {
+    sessionStorage.setItem(CUSTOMERS_SNAPSHOT_KEY, JSON.stringify(snapshot))
+  } catch {
+    // 静默降级
+  }
+}
+
+export function readCustomersSnapshot(): CustomersSnapshot | null {
+  try {
+    const raw = sessionStorage.getItem(CUSTOMERS_SNAPSHOT_KEY)
+    if (!raw) return null
+    const snap = JSON.parse(raw) as CustomersSnapshot
+    if (!snap || typeof snap.ts !== 'number' || Date.now() - snap.ts > SNAPSHOT_TTL_MS) {
+      sessionStorage.removeItem(CUSTOMERS_SNAPSHOT_KEY)
+      return null
+    }
+    return snap
+  } catch {
+    return null
+  }
+}
+
 /** 读取未过期的最新一条快照（详情页无历史可退时用于恢复列表筛选参数） */
 export function readLatestOrdersSnapshot(): OrdersSnapshot | null {
   try {
