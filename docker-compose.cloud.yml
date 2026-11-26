@@ -1,4 +1,4 @@
-# 腾讯云生产环境（Ubuntu）：nginx(HTTPS) + FastAPI 单容器后端
+﻿# 腾讯云生产环境（Ubuntu）：nginx(HTTPS) + FastAPI 单容器后端
 # FastAPI 同时提供 API 和已编译的前端静态文件，容器内部监听 8000，仅在内网暴露。
 #
 # 使用方式（在仓库根目录）：
@@ -14,7 +14,7 @@ services:
       args:
         NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
-    image: watersports-rental:1.2.4
+    image: watersports-rental:1.2.5
     container_name: watersports-rental
     restart: always
     expose:

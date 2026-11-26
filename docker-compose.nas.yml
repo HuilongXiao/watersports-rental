@@ -1,4 +1,4 @@
-# NAS deployment — single container (frontend + backend combined).
+﻿# NAS deployment — single container (frontend + backend combined).
 # Image: watersports-rental:<version>（导入对应版本 tar 后获得）
 # Access: http://<NAS-IP>:6688
 # 首次登录：superuserx / 123456（仅首次建库生效，登录后请及时改密）
@@ -12,7 +12,7 @@
 
 services:
   app:
-    image: watersports-rental:1.2.4
+    image: watersports-rental:1.2.5
     container_name: rental-app
     restart: unless-stopped
     ports:
