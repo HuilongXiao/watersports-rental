@@ -244,6 +244,8 @@ export default function OrderForm({
                       kind: 'invoice' as const,
                       item_id: order.invoice_tax_item_id,
                       quantity: 1,
+                      // 与器材/售卖项目一致：签到后进行中订单的原始发票项目不可换选或删除
+                      isOriginal: true,
                     },
                   ]
                 : []),
@@ -903,10 +905,14 @@ export default function OrderForm({
     terminalLocked || (isInProgress && record.isOriginal)
 
   const rowOptions = (record: DraftItem): ItemOption[] => {
-    // 进行中订单仅可新增售卖项目或发票销售项目
-    const pool = isInProgress
+    // 进行中订单仅可新增售卖项目或发票销售项目；
+    // 已保存过发票项目的订单，发票项目与其他原始项一样锁死，不允许再新增/更换
+    let pool = isInProgress
       ? allActiveItems.filter((i) => i.kind !== 'equipment')
       : allActiveItems
+    if (isInProgress && existingOrder?.invoice_tax_item_id) {
+      pool = pool.filter((i) => i.kind !== 'invoice')
+    }
     // 原始行（器材或已保存的项目）需保留当前项用于回显
     if (record.item_id && !pool.some((i) => i.id === record.item_id)) {
       const fallback = catalogOption(record.item_id)
@@ -1000,36 +1006,39 @@ export default function OrderForm({
         ]),
     {
       title: '数量',
-      width: isMobile ? 100 : 64,
+      width: 100,
       render: (_: unknown, record: DraftItem) => {
         const disabled = rowDisabled(record)
-        // 发票销售项目数量固定为 1，不可增减
-        if (record.kind === 'invoice') {
-          return <span style={{ display: 'inline-block', width: 24, textAlign: 'center' }}>1</span>
+        const isInvoice = record.kind === 'invoice'
+        // 增值税发票数量固定为 1：仍显示「− 1 +」，「+」始终锁死；
+        // 「−」等同于移除该项目（签到后进行中订单的原始项由 rowDisabled 锁死）
+        if (isMobile || isInvoice) {
+          return (
+            <Space size={4}>
+              <Button
+                size="small"
+                icon={<MinusOutlined />}
+                // 数量为 1 时再点「−」直接移除该项目
+                onClick={() =>
+                  isInvoice || record.quantity <= 1
+                    ? removeItem(record.key)
+                    : updateItem(record.key, { quantity: record.quantity - 1 })
+                }
+                disabled={disabled}
+                title={isInvoice ? '移除增值税发票' : record.quantity <= 1 ? '移除该项目' : undefined}
+              />
+              <span style={{ minWidth: 24, textAlign: 'center' }}>{record.quantity}</span>
+              <Button
+                size="small"
+                icon={<PlusOutlined />}
+                onClick={() => updateItem(record.key, { quantity: record.quantity + 1 })}
+                disabled={isInvoice ? true : disabled}
+                title={isInvoice ? '增值税发票数量固定为 1' : undefined}
+              />
+            </Space>
+          )
         }
-        return isMobile ? (
-          <Space size={4}>
-            <Button
-              size="small"
-              icon={<MinusOutlined />}
-              // 数量为 1 时再点「−」直接移除该项目
-              onClick={() =>
-                record.quantity <= 1
-                  ? removeItem(record.key)
-                  : updateItem(record.key, { quantity: record.quantity - 1 })
-              }
-              disabled={disabled}
-              title={record.quantity <= 1 ? '移除该项目' : undefined}
-            />
-            <span style={{ minWidth: 24, textAlign: 'center' }}>{record.quantity}</span>
-            <Button
-              size="small"
-              icon={<PlusOutlined />}
-              onClick={() => updateItem(record.key, { quantity: record.quantity + 1 })}
-              disabled={disabled}
-            />
-          </Space>
-        ) : (
+        return (
           <InputNumber
             min={1}
             value={record.quantity}

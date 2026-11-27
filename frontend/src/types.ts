@@ -317,7 +317,7 @@ export interface DashboardData {
   status_counts: Record<OrderStatus, number>
   status_amounts_fen: Record<OrderStatus, number>
   checked_in_now: number
-  today_completed_amount_fen: number
+  today_revenue_fen: number
   low_inventory: Array<{
     equipment_spec_id: string
     available_quantity: number

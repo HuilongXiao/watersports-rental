@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
   App,
@@ -163,18 +163,17 @@ export default function Customers() {
   }, [])
 
   // 数据渲染完成后恢复之前的滚动位置
+  // 用 useLayoutEffect 在浏览器绘制前同步定位，避免先画出列表顶部再跳回原位（屏闪）
   const pendingScroll = useRef(
     restoreSnap ? { scrollY: restoreSnap.scrollY, contentY: restoreSnap.contentY } : null,
   )
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (loading || !pendingScroll.current) return
     const target = pendingScroll.current
     pendingScroll.current = null
-    requestAnimationFrame(() => {
-      window.scrollTo(0, target.scrollY)
-      const scroller = document.querySelector('.ant-layout-content') as HTMLElement | null
-      if (scroller) scroller.scrollTop = target.contentY
-    })
+    window.scrollTo(0, target.scrollY)
+    const scroller = document.querySelector('.ant-layout-content') as HTMLElement | null
+    if (scroller) scroller.scrollTop = target.contentY
   }, [loading])
 
   const openCreate = () => {

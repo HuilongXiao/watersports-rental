@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
+import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom'
 import { App, Button, Card, Checkbox, DatePicker, Form, Input, Modal, Popover, Select, Space, Table, Tabs, Tag } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -128,6 +128,10 @@ export default function Orders() {
   // 电脑版：点击左/右栏任意订单行，不再跳转详情，而是在对侧栏位浮出订单详情气泡
   const [peekOrderId, setPeekOrderId] = useState<string | null>(null)
   const [peekFrom, setPeekFrom] = useState<'left' | 'right' | null>(null)
+  // 气泡内订单详情底部操作栏的实际高度：内容区按此预留底部空间，
+  // 卡片高度随内容自适应，内容结束后直接接上操作栏，不留空隙
+  const [peekBarHeight, setPeekBarHeight] = useState(0)
+  const handlePeekBarHeight = useCallback((height: number) => setPeekBarHeight(height), [])
   const peekRef = useRef<HTMLDivElement>(null)
 
   const closePeek = () => {
@@ -337,27 +341,16 @@ export default function Orders() {
     setSearchParams(next, { replace: true })
   }, [status, filter, filtersActive, bookingDay, currentPage, setSearchParams])
 
-  // 恢复滚动：命中快照时数据首帧已渲染，立即恢复（瞬时体验）；
-  // 无快照时等待首次数据加载完成（列表高度不足时浏览器会截断 scrollTo）。
-  useEffect(() => {
-    if (snapshotRef.current) {
-      const snap = restoredScroll.current
-      restoredScroll.current = null
-      if (snap) {
-        requestAnimationFrame(() => {
-          window.scrollTo(0, snap.scrollY)
-          document.querySelector('.ant-layout-content')?.scrollTo(0, snap.contentY)
-        })
-      }
-      return
-    }
+  // 恢复滚动：用 useLayoutEffect 在浏览器绘制前同步定位，
+  // 避免先画出列表顶部、再跳到离开时的位置（会看到一次屏闪）。
+  // 命中快照时数据首帧已渲染；无快照时等首次数据加载完成（loading 变 false 的同一次提交已渲染列表）。
+  useLayoutEffect(() => {
     const snap = restoredScroll.current
-    if (!firstLoadDone.current || loading || !snap) return
+    if (!snap) return
+    if (!snapshotRef.current && (!firstLoadDone.current || loading)) return
     restoredScroll.current = null
-    requestAnimationFrame(() => {
-      window.scrollTo(0, snap.scrollY)
-      document.querySelector('.ant-layout-content')?.scrollTo(0, snap.contentY)
-    })
+    window.scrollTo(0, snap.scrollY)
+    document.querySelector('.ant-layout-content')?.scrollTo(0, snap.contentY)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading])
 
@@ -762,7 +755,9 @@ export default function Orders() {
       title: '客户',
       // 表头居中，内容仍靠左
       onHeaderCell: () => ({ style: { textAlign: 'center' as const } }),
-      width: isMobile ? undefined : '50%',
+      // 桌面端：中间「日期」列固定 140px、「项目」列固定最小可用宽度 96px，
+      // 宽度不足时只压缩客户列，日期与项目内容不换行
+      width: isMobile ? undefined : 'calc(100% - 140px - 96px)',
       render: (_, record) => {
         // 时间分隔行：colSpan 铺满整行，只在本列渲染
         if (record.__divider) {
@@ -810,7 +805,9 @@ export default function Orders() {
             : '开始时间',
       dataIndex: 'start_at',
       align: 'center',
-      width: isMobile ? 92 : '22%',
+      // 桌面端固定宽度（放得下「− 日期 +」且不换行），优先于两侧列
+      width: isMobile ? 92 : 140,
+      onHeaderCell: () => ({ style: { whiteSpace: 'nowrap' as const } }),
       render: (value: string, record) => {
         // 时间分隔行已由首列铺满，本列不再渲染
         if (record.__divider) return { children: null, props: { colSpan: 0 } }
@@ -873,7 +870,8 @@ export default function Orders() {
     {
       title: '项目',
       align: 'center',
-      width: isMobile ? 68 : '28%',
+      // 项目名最多 3 字（如「独木舟*2」），固定为最小可用宽度，不随页面变宽而变宽
+      width: isMobile ? 68 : 96,
       render: (_, record) => {
         // 时间分隔行已由首列铺满，本列不再渲染
         if (record.__divider) return { children: null, props: { colSpan: 0 } }
@@ -1277,13 +1275,21 @@ export default function Orders() {
                 flexDirection: 'column',
               }}
             >
-              <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '12px 12px 88px' }}>
+              <div
+                style={{
+                  flex: 1,
+                  minHeight: 0,
+                  overflowY: 'auto',
+                  padding: `12px 12px ${peekBarHeight}px`,
+                }}
+              >
                 {/* 直接复用订单详情页组件，保证样式与内容一致 */}
                 <OrderDetail
                   embedded
                   orderId={peekOrderId}
                   onClose={closePeek}
                   onChanged={() => load()}
+                  onActionBarHeightChange={handlePeekBarHeight}
                 />
               </div>
             </div>

@@ -25,7 +25,7 @@ from app.models.equipment import EquipmentSpec, EquipmentType, InvoiceTaxItem, S
 from app.models.group import Group
 from app.models.inventory import InventoryConfiguration
 from app.models.order import Order, OrderItem
-from app.models.payment import OrderItemSplit
+from app.models.payment import OrderItemSplit, PaymentItem
 from app.models.settings import DEFAULT_AUTO_RETURN_MINUTES, Setting
 from app.models.user import User
 from app.services import payment_method_service
@@ -696,16 +696,49 @@ def update_order(
     order.invoice_tax_rate_bp = tax_rate_bp
     order.updated_by_user_id = user.id
 
-    # 编辑订单会重建订单项目：先清空旧项目的拆分记录，避免残留
+    # 编辑订单：优先复用原有订单项目行（保持 id 不变），
+    # 避免船只调配/支付调整等引用因「删除重建」而外键失败；
+    # 仅新增缺失项、更新存活项的数量与单价快照、删除多余项。
     old_items = list_items(db, order.id)
+    pools: dict[tuple[str | None, str | None], list[OrderItem]] = {}
+    for item in old_items:
+        pools.setdefault((item.equipment_spec_id, item.sale_item_id), []).append(item)
+    reused: list[tuple[OrderItem, int, int]] = []
+    to_create: list[tuple[str | None, str | None, int, int]] = []
+    for spec_id, sale_id, quantity, catalog in resolved:
+        unit_price = _apply_invoice_tax(catalog.price, tax_rate_bp)
+        bucket = pools.get((spec_id, sale_id))
+        if bucket:
+            reused.append((bucket.pop(0), quantity, unit_price))
+        else:
+            to_create.append((spec_id, sale_id, quantity, unit_price))
+    leftover = [item for bucket in pools.values() for item in bucket]
+    if leftover:
+        # 被船只调配或按行退款/调价引用的项目不能删除，先给出明确提示
+        leftover_ids = [item.id for item in leftover]
+        referenced = db.scalar(
+            select(BoatDispatch.id).where(BoatDispatch.order_item_id.in_(leftover_ids)).limit(1)
+        ) or db.scalar(
+            select(PaymentItem.id).where(PaymentItem.order_item_id.in_(leftover_ids)).limit(1)
+        )
+        if referenced:
+            raise HTTPException(
+                status_code=409,
+                detail="该项目已有船只调配或退款/调价记录，不能删除；请先撤销相关记录",
+            )
+    # 清空旧项目的拆分记录，避免残留（项目行本身尽量保留）
     if old_items:
         db.query(OrderItemSplit).filter(
-            OrderItemSplit.order_item_id.in_([i.id for i in old_items])
+            OrderItemSplit.order_item_id.in_([item.id for item in old_items])
         ).delete(synchronize_session=False)
-    for old in old_items:
-        db.delete(old)
+    for item, quantity, unit_price in reused:
+        item.quantity = quantity
+        item.unit_price = unit_price
+        item.updated_by_user_id = user.id
+    for item in leftover:
+        db.delete(item)
     db.flush()
-    for spec_id, sale_id, quantity, catalog in resolved:
+    for spec_id, sale_id, quantity, unit_price in to_create:
         db.add(
             OrderItem(
                 id=str(uuid4()),
@@ -713,7 +746,7 @@ def update_order(
                 equipment_spec_id=spec_id,
                 sale_item_id=sale_id,
                 quantity=quantity,
-                unit_price=_apply_invoice_tax(catalog.price, tax_rate_bp),
+                unit_price=unit_price,
                 created_by_user_id=user.id,
                 updated_by_user_id=user.id,
             )

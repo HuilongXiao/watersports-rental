@@ -190,6 +190,7 @@ export default function OrderDetail({
   orderId,
   onClose,
   onChanged,
+  onActionBarHeightChange,
 }: {
   /** 嵌入订单管理页气泡时使用：不自带返回按钮与固定底部操作栏 */
   embedded?: boolean
@@ -197,6 +198,8 @@ export default function OrderDetail({
   onClose?: () => void
   /** 订单发生变化（签到/完成/取消等）后通知外层刷新列表 */
   onChanged?: () => void
+  /** 嵌入时上报底部操作栏实际高度，外层据此预留空间，避免内容与操作栏之间出现空隙 */
+  onActionBarHeightChange?: (height: number) => void
 } = {}) {
   const { id: routeId } = useParams<{ id: string }>()
   const id = embedded ? orderId : routeId
@@ -208,6 +211,18 @@ export default function OrderDetail({
   const { isMobile, isDesktop } = useLayoutMode()
 
   const [order, setOrder] = useState<Order | null>(null)
+  // 嵌入气泡时量出底部操作栏实际高度（按钮换行会变高），供外层预留底部空间
+  const actionBarRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (!embedded || !onActionBarHeightChange) return
+    const el = actionBarRef.current
+    if (!el) return
+    const report = () => onActionBarHeightChange(el.offsetHeight)
+    report()
+    const observer = new ResizeObserver(report)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [embedded, onActionBarHeightChange, order])
   const [payment, setPayment] = useState<PaymentView | null>(null)
   // 订单项目「详情」弹窗：查看所有调整项
   const [adjustDetailOpen, setAdjustDetailOpen] = useState(false)
@@ -1446,6 +1461,7 @@ export default function OrderDetail({
         <div style={{ height: isDesktop ? 48 : 'calc(72px + env(safe-area-inset-bottom, 0px))' }} />
       )}
       <div
+        ref={actionBarRef}
         style={
           embedded
             ? {

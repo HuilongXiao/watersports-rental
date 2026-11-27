@@ -80,8 +80,11 @@ def dashboard(
         .group_by(Order.status)
     ).all():
         status_amounts_fen[st] = status_amounts_fen.get(st, 0) + int(total)
-    # 今日已完成订单金额 = 已完成订单的项目金额 + 支付调整（含退款负金额）
-    today_amount_fen = status_amounts_fen.get("completed", 0)
+    # 今日销售额 = 进行中订单金额 + 已完成订单金额
+    # （订单项目金额 + 支付调整，含退款负金额）
+    today_revenue_fen = status_amounts_fen.get("in_progress", 0) + status_amounts_fen.get(
+        "completed", 0
+    )
 
     # 低库存：一次聚合当前占用（已签到未归还）数量，替代逐规格查询
     occupied_by_spec = {
@@ -122,7 +125,7 @@ def dashboard(
         "status_counts": counts,
         "status_amounts_fen": status_amounts_fen if revenue_allowed else {k: 0 for k in counts},
         "checked_in_now": checked_in_now,
-        "today_completed_amount_fen": today_amount_fen if revenue_allowed else 0,
+        "today_revenue_fen": today_revenue_fen if revenue_allowed else 0,
         "low_inventory": low_inventory,
     }
 

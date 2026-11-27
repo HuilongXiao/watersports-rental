@@ -95,7 +95,7 @@ export default function Dashboard() {
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 16 }}>
               {canViewRevenue && (
                 <span style={{ fontSize: 13, color: '#333' }}>
-                  销售额：<strong style={{ fontSize: 15 }}>¥{formatYuanShort(data.today_completed_amount_fen)}</strong>
+                  销售额：<strong style={{ fontSize: 15 }}>¥{formatYuanShort(data.today_revenue_fen)}</strong>
                 </span>
               )}
               <span style={{ fontSize: 13, color: '#333' }}>
