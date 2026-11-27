@@ -418,8 +418,8 @@ export default function OrderDetail({
   const today = formatDateTime(order.start_at).slice(0, 10) === dayjsToday()
   // 完成订单：订单日期当天或之后的日期都可以操作，且不要求签到
   const canCompleteByDate = dayjsToday() >= formatDateTime(order.start_at).slice(0, 10)
-  // 爽约只在开始日期为今天或更早时提供，未来订单不展示
-  const canMarkNoShow = canCompleteByDate
+  // 爽约：仅在订单开始时间已到（不是未来时间）时提供
+  const canMarkNoShow = !dayjs(order.start_at).isAfter(dayjs())
   const warnings = order.inventory_warnings ?? []
 
   // 客户信息单元格内容：桌面/手机两套排版共用

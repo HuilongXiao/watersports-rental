@@ -39,9 +39,9 @@ import { refreshSettingsIssues, useSettingsIssues, type SettingsIssues } from '.
 import {
   confirmUnsavedChanges,
   useBeforeUnloadWarning,
+  useHistoryBackGuard,
   type UnsavedGuard,
 } from '../unsavedGuard'
-import { useMobileBack } from '../mobileBack'
 import type {
   AppSettings,
   Catalog,
@@ -56,8 +56,8 @@ import Users from './Users'
 import Groups from './Groups'
 
 // 系统版本与发布日期：随版本发布手动同步（与 CHANGELOG 的版本标题对应）
-const APP_VERSION = '1.2.5'
-const APP_RELEASE_DATE = '2026-11-26'
+const APP_VERSION = '1.2.6'
+const APP_RELEASE_DATE = '2026-11-27'
 
 interface SettingsTabDef {
   key: string
@@ -109,13 +109,20 @@ export default function CatalogSettings() {
     const guard = guardsRef.current[key]
     return guard ? guard.confirmLeave() : true
   }, [])
-  // 手机版左缘右滑：返回设置菜单；有未保存改动时先询问
-  useMobileBack(() => {
-    if (!mobileActive) return
-    canLeave(mobileActive).then((ok) => {
-      if (ok) setMobileActive(null)
-    })
-  })
+  // 各 tab 上报是否有未保存改动（用于拦截手机边缘返回 / 浏览器后退）
+  const [dirtyMap, setDirtyMap] = useState<Record<string, boolean>>({})
+  const reportDirty = useCallback((key: string, dirty: boolean) => {
+    setDirtyMap((prev) => (prev[key] === dirty ? prev : { ...prev, [key]: dirty }))
+  }, [])
+  const activeGuardKey = isMobile
+    ? mobileActive
+    : sectionKey === '店铺管理'
+      ? storeTabKey
+      : systemTabKey
+  useHistoryBackGuard(
+    Boolean(activeGuardKey && dirtyMap[activeGuardKey]),
+    () => (activeGuardKey ? guardsRef.current[activeGuardKey] ?? null : null),
+  )
   const changeSection = useCallback(
     async (next: string) => {
       if (next === sectionKey) return
@@ -146,6 +153,7 @@ export default function CatalogSettings() {
           onNumberingChanged={refreshNumbering}
           guardKey="store-settings"
           registerGuard={registerGuard}
+          onDirtyChange={reportDirty}
         />
       ),
     },
@@ -178,7 +186,7 @@ export default function CatalogSettings() {
       key: 'basic',
       label: '基础设置',
       children: (
-        <BasicTab guardKey="basic" registerGuard={registerGuard} />
+        <BasicTab guardKey="basic" registerGuard={registerGuard} onDirtyChange={reportDirty} />
       ),
     },
     ...(canExport || canBackup
@@ -1628,10 +1636,12 @@ function StoreTab({
   onNumberingChanged,
   guardKey,
   registerGuard,
+  onDirtyChange,
 }: {
   onNumberingChanged?: () => void
   guardKey?: string
   registerGuard?: (key: string, fn: UnsavedGuard | null) => void
+  onDirtyChange?: (key: string, dirty: boolean) => void
 }) {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [minutes, setMinutes] = useState(120)
@@ -1750,6 +1760,11 @@ function StoreTab({
     shopAddress !== (settings!.shop_address ?? '')
   )
   useBeforeUnloadWarning(dirty)
+  useEffect(() => {
+    if (!guardKey || !onDirtyChange) return
+    onDirtyChange(guardKey, dirty)
+    return () => onDirtyChange(guardKey, false)
+  }, [guardKey, dirty, onDirtyChange])
   const dirtyRef = useRef(dirty)
   dirtyRef.current = dirty
   const saveRef = useRef(save)
@@ -1893,9 +1908,11 @@ function StoreTab({
 function BasicTab({
   guardKey,
   registerGuard,
+  onDirtyChange,
 }: {
   guardKey?: string
   registerGuard?: (key: string, fn: UnsavedGuard | null) => void
+  onDirtyChange?: (key: string, dirty: boolean) => void
 } = {}) {
   const { user } = useAuth()
   // 极速客户模式仅管理员与超级管理员可改
@@ -1966,6 +1983,11 @@ function BasicTab({
   // 有改动但未保存：切换 tab / 返回时提示
   const dirty = Boolean(settings) && fastMode !== settings!.fast_customer_mode
   useBeforeUnloadWarning(dirty)
+  useEffect(() => {
+    if (!guardKey || !onDirtyChange) return
+    onDirtyChange(guardKey, dirty)
+    return () => onDirtyChange(guardKey, false)
+  }, [guardKey, dirty, onDirtyChange])
   const dirtyRef = useRef(dirty)
   dirtyRef.current = dirty
   const saveRef = useRef(save)

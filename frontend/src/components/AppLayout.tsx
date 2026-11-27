@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { App, Layout, Menu, Dropdown, Typography, Modal, Input, Select, Popover } from 'antd'
 import {
   DashboardOutlined,
@@ -17,8 +17,6 @@ import WeatherCard from './WeatherCard'
 import AlertBadge from './AlertBadge'
 import OrderForm from '../pages/OrderForm'
 import { refreshSettingsIssues, useSettingsIssues } from '../settingsIssues'
-import { MobileBackContext } from '../mobileBack'
-import { readLatestOrdersSnapshot } from '../utils'
 
 const { Header, Sider, Content } = Layout
 
@@ -86,58 +84,6 @@ export default function AppLayout() {
     if (canManageSettings) refreshSettingsIssues()
   }, [canManageSettings, activeGroup])
   const settingsAlert = canManageSettings && settingsIssues.hasIssues
-
-  // 手机版：左缘右滑（系统返回）改为「返回上一层级」。
-  // 页面可注册自己的上跳动作（如设置页关闭子页面），否则按路由层级自动返回。
-  const mobileBackRef = useRef<(() => void) | null>(null)
-  const registerMobileBack = useCallback((fn: (() => void) | null) => {
-    mobileBackRef.current = fn
-  }, [])
-  useEffect(() => {
-    if (!isMobile) return
-    const GUARD = '__mobileUp'
-    // 在当前页面之上压一条哨兵记录，用来拦截系统返回
-    const pushGuard = () => {
-      if (window.history.state?.[GUARD]) return
-      window.history.pushState({ ...(window.history.state ?? {}), [GUARD]: true }, '')
-    }
-    pushGuard()
-    const goUp = () => {
-      const handler = mobileBackRef.current
-      if (handler) {
-        handler()
-        return
-      }
-      const path = location.pathname
-      const parent = path.startsWith('/orders/')
-        ? '/orders'
-        : path.startsWith('/customers/')
-          ? '/customers'
-          : path.startsWith('/dashboard/')
-            ? '/dashboard'
-            : null
-      // 最高层级（概览 / 订单 / 船只 / 设置）：不做任何事
-      if (!parent) return
-      if (parent === '/orders') {
-        const snap = readLatestOrdersSnapshot()
-        navigate(`/orders${snap ? snap.search : ''}`, { replace: true })
-      } else if (parent === '/customers') {
-        // 恢复客户列表的分页 / 筛选 / 滚动位置
-        navigate('/customers', { replace: true, state: { restoreList: true } })
-      } else {
-        navigate(parent, { replace: true })
-      }
-    }
-    const onPop = () => {
-      // 拦下这次后退并恢复到当前页，再按层级上跳
-      pushGuard()
-      goUp()
-    }
-    window.addEventListener('popstate', onPop)
-    return () => {
-      window.removeEventListener('popstate', onPop)
-    }
-  }, [isMobile, location.key, location.pathname, navigate])
 
   // 左上角标题：显示当前 Group 名称。超级管理员始终处于某个 Group 内
   // （登录后自动选中第一个 Group，切换时也只能在 Group 之间切换）。
@@ -287,7 +233,6 @@ export default function AppLayout() {
       { key: '/settings', icon: <SettingOutlined />, label: '设置', alert: settingsAlert },
     ]
     return (
-      <MobileBackContext.Provider value={registerMobileBack}>
       <Layout className="mobile-app-shell" style={mobileLayoutStyle}>
         <Header
           style={{
@@ -338,7 +283,6 @@ export default function AppLayout() {
           ))}
         </div>
       </Layout>
-      </MobileBackContext.Provider>
     )
   }
 

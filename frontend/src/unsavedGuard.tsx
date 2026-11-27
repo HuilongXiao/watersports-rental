@@ -1,5 +1,5 @@
 // 设置页未保存修改提醒：保存并继续 / 不保存 / 取消
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { Button, Modal, Space } from 'antd'
 
 export interface UnsavedGuard {
@@ -47,6 +47,50 @@ export function confirmUnsavedChanges(
       ),
     })
   })
+}
+
+/**
+ * 历史守卫：有未保存改动时拦截手机边缘返回手势 / 浏览器后退，
+ * 先询问是否保存，确认后才真正返回上一页。
+ */
+export function useHistoryBackGuard(
+  dirty: boolean,
+  getGuard: () => UnsavedGuard | null,
+) {
+  const guardRef = useRef(getGuard)
+  guardRef.current = getGuard
+  useEffect(() => {
+    if (!dirty) return
+    const pushSentinel = () => {
+      // 保留 React Router 自己的 state（usr/key/idx），只加拦截标记
+      window.history.pushState({ ...(window.history.state ?? {}), __unsavedGuard: true }, '')
+    }
+    pushSentinel()
+    let bypass = false
+    const onPop = () => {
+      // 已确认离开：交给路由正常处理
+      if (bypass) return
+      // 拦截本次后退，恢复到当前页
+      pushSentinel()
+      const guard = guardRef.current()
+      if (!guard || !guard.isDirty()) {
+        bypass = true
+        window.history.back()
+        return
+      }
+      guard.confirmLeave().then((ok) => {
+        if (!ok) return
+        bypass = true
+        window.history.back()
+      })
+    }
+    window.addEventListener('popstate', onPop)
+    return () => {
+      window.removeEventListener('popstate', onPop)
+      // 移除哨兵记录，避免保存后再返回时多退一次
+      if (window.history.state?.__unsavedGuard) window.history.back()
+    }
+  }, [dirty])
 }
 
 /** 刷新/关闭页面前提示未保存（浏览器原生提示） */
